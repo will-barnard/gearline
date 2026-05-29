@@ -24,6 +24,7 @@
           <NavItem to="/sync" icon="refresh">Sync Activity</NavItem>
           <NavItem to="/audit" icon="clipboard">Audit Logs</NavItem>
           <div class="my-3 border-t border-gray-800"></div>
+          <NavItem v-if="authStore.user?.role === 'ADMIN'" to="/users" icon="users">Users</NavItem>
           <NavItem to="/settings" icon="settings">Settings</NavItem>
         </div>
       </nav>

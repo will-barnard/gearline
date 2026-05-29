@@ -22,6 +22,7 @@ const routes = [
       { path: 'marketplaces', name: 'Marketplaces', component: () => import('@/views/MarketplacesView.vue') },
       { path: 'sync', name: 'SyncActivity', component: () => import('@/views/SyncActivityView.vue') },
       { path: 'audit', name: 'AuditLogs', component: () => import('@/views/AuditLogsView.vue') },
+      { path: 'users', name: 'Users', component: () => import('@/views/UsersView.vue'), meta: { adminOnly: true } },
       { path: 'settings', name: 'Settings', component: () => import('@/views/SettingsView.vue') }
     ]
   },
@@ -40,6 +41,9 @@ router.beforeEach(async (to) => {
     return { name: 'Login', query: { redirect: to.fullPath } }
   }
   if (to.name === 'Login' && auth.isAuthenticated) {
+    return { name: 'Dashboard' }
+  }
+  if (to.meta.adminOnly && auth.user?.role !== 'ADMIN') {
     return { name: 'Dashboard' }
   }
 })
