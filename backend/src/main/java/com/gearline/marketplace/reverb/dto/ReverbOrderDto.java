@@ -43,6 +43,36 @@ public class ReverbOrderDto {
     @JsonProperty("_links")
     private ReverbListingDto.ReverbLinks links;
 
+    /**
+     * The listing that was sold.
+     * Reverb orders are always single-item; the item detail lives here.
+     * Reverb API field: "listing"
+     */
+    private ReverbOrderListing listing;
+
+    /** Quantity sold — almost always 1 on Reverb, but captured for correctness */
+    private Integer quantity;
+
+    /** Buyer email — present on orders where the buyer has allowed contact */
+    @JsonProperty("buyer_email")
+    private String buyerEmail;
+
+    @Data
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class ReverbOrderListing {
+        /** Reverb's internal listing ID */
+        private String id;
+
+        /** Seller SKU — maps back to our Product.sku */
+        private String sku;
+
+        private String title;
+
+        /** Reverb's own slug-based listing URL */
+        @JsonProperty("_links")
+        private ReverbListingDto.ReverbLinks links;
+    }
+
     @Data
     @JsonIgnoreProperties(ignoreUnknown = true)
     public static class ReverbShippingAddress {

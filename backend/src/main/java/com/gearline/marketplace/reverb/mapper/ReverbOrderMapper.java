@@ -24,7 +24,7 @@ public class ReverbOrderMapper {
         return ImportedOrder.builder()
             .externalOrderId(dto.getId())
             .marketplaceOrderUrl(extractOrderUrl(dto))
-            .lineItems(List.of()) // Reverb orders typically have one line item; expand if needed
+            .lineItems(mapLineItems(dto))
             .subtotal(parseMoney(dto.getAmountProduct()))
             .shippingTotal(parseMoney(dto.getAmountShipping()))
             .taxTotal(parseMoney(dto.getAmountTax()))
@@ -34,6 +34,31 @@ public class ReverbOrderMapper {
             .shippingAddress(mapShippingAddress(dto.getShippingAddress()))
             .createdAt(parseDate(dto.getCreatedAt()))
             .build();
+    }
+
+    /**
+     * Reverb orders are single-item: the sold listing lives in dto.listing.
+     * We build one OrderLineItem from it, using amount_product as the unit price.
+     * The SKU is used downstream to look up the matching Product in our DB.
+     */
+    private List<OrderLineItem> mapLineItems(ReverbOrderDto dto) {
+        ReverbOrderDto.ReverbOrderListing listing = dto.getListing();
+        if (listing == null) {
+            log.warn("Reverb order {} has no listing object — line items will be empty", dto.getId());
+            return List.of();
+        }
+
+        int qty = dto.getQuantity() != null && dto.getQuantity() > 0 ? dto.getQuantity() : 1;
+
+        OrderLineItem item = OrderLineItem.builder()
+            .externalListingId(listing.getId())
+            .sku(listing.getSku())
+            .title(listing.getTitle())
+            .quantity(qty)
+            .unitPrice(parseMoney(dto.getAmountProduct()))
+            .build();
+
+        return List.of(item);
     }
 
     private BuyerInfo mapBuyerInfo(ReverbOrderDto dto) {
@@ -46,6 +71,7 @@ public class ReverbOrderMapper {
         return BuyerInfo.builder()
             .externalBuyerId(dto.getBuyerId())
             .username(dto.getBuyerName())
+            .email(dto.getBuyerEmail())
             .firstName(firstName)
             .lastName(lastName)
             .build();

@@ -42,6 +42,7 @@ public class SyncDispatcherService {
     private final ProductRepository productRepository;
     private final InventoryConsistencyService inventoryConsistencyService;
     private final ListingAttributeResolver listingAttributeResolver;
+    private final OrderImportService orderImportService;
 
     @Transactional
     public void dispatch(SyncJob job) {
@@ -165,7 +166,8 @@ public class SyncDispatcherService {
         String externalOrderId = (String) job.getPayload().get("externalOrderId");
         ImportedOrder importedOrder = connector.importOrder(account, externalOrderId);
 
-        inventoryConsistencyService.handleOrderImported(importedOrder, account);
+        // Full pipeline: save → inventory deduction → Shopify push
+        orderImportService.importOrder(importedOrder, account);
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────────

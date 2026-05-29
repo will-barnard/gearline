@@ -131,6 +131,13 @@ gearline:
     dlq-name: gearline.sync.dead-letter
     retry-delay-ms: 5000
 
+  # Order polling — how often Reverb and eBay are queried for new orders.
+  # Shopify orders arrive via webhook and are NOT polled.
+  # Override ORDER_POLL_INTERVAL_MS to adjust (default 10 minutes).
+  order-polling:
+    interval-ms: ${ORDER_POLL_INTERVAL_MS:600000}      # 10 minutes
+    initial-delay-ms: ${ORDER_POLL_INITIAL_DELAY_MS:60000}  # 1 minute after startup
+
 logging:
   level:
     com.gearline: INFO

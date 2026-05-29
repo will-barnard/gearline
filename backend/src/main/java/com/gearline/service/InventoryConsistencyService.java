@@ -80,14 +80,28 @@ public class InventoryConsistencyService {
     @Transactional
     public void handleOrderImported(ImportedOrder importedOrder, MarketplaceAccount sourceAccount) {
         for (OrderLineItem lineItem : importedOrder.getLineItems()) {
-            if (lineItem.getProductId() == null) continue;
+            // Resolve the product: prefer the internal UUID, fall back to SKU lookup.
+            // Externally-imported orders (Reverb, eBay) populate sku but not productId
+            // because the ID is only known after matching against our product catalogue.
+            Product product = null;
 
-            productRepository.findById(lineItem.getProductId()).ifPresent(product -> {
-                int newQty = Math.max(0, product.getQuantity() - lineItem.getQuantity());
-                log.info("Order imported: reducing product {} quantity {} -> {}",
-                    product.getSku(), product.getQuantity(), newQty);
-                propagateInventoryChange(product, newQty);
-            });
+            if (lineItem.getProductId() != null) {
+                product = productRepository.findById(lineItem.getProductId()).orElse(null);
+            } else if (lineItem.getSku() != null && !lineItem.getSku().isBlank()) {
+                product = productRepository.findBySku(lineItem.getSku()).orElse(null);
+                if (product == null) {
+                    log.warn("Order imported but no product found for SKU '{}' — inventory not adjusted",
+                        lineItem.getSku());
+                }
+            }
+
+            if (product == null) continue;
+
+            int qty = lineItem.getQuantity() != null ? lineItem.getQuantity() : 1;
+            int newQty = Math.max(0, product.getQuantity() - qty);
+            log.info("Order imported: reducing product {} quantity {} → {} (order from {})",
+                product.getSku(), product.getQuantity(), newQty, sourceAccount.getMarketplaceType());
+            propagateInventoryChange(product, newQty);
         }
     }
 }

@@ -81,6 +81,13 @@ public class Order extends AuditableEntity {
     @Column(name = "marketplace_order_url", length = 500)
     private String marketplaceOrderUrl;
 
+    /**
+     * Shopify order ID assigned after this order was mirrored to Shopify via the Admin API.
+     * Null until the push succeeds. Used for idempotency — we never push the same order twice.
+     */
+    @Column(name = "shopify_order_id", length = 100)
+    private String shopifyOrderId;
+
     @Column(name = "imported_at", nullable = false)
     private Instant importedAt;
 
