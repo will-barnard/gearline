@@ -4,8 +4,10 @@ WORKDIR /app
 
 # Copy the POM first and resolve all dependencies into the local repository.
 # This layer is cached and only re-runs when pom.xml changes, not when source changes.
+# dependency:go-offline fetches project deps; dependency:resolve-plugins fetches annotation
+# processor jars (Lombok, MapStruct) used by maven-compiler-plugin annotationProcessorPaths.
 COPY pom.xml ./
-RUN mvn dependency:go-offline -q
+RUN mvn dependency:go-offline dependency:resolve-plugins -q
 
 # Now copy source and build. Separated so source changes don't bust the dep cache.
 COPY src ./src
