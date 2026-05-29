@@ -20,6 +20,7 @@ public interface ProductRepository extends JpaRepository<Product, UUID>, JpaSpec
     Optional<Product> findBySku(String sku);
     Optional<Product> findByShopifyProductId(String shopifyProductId);
     Optional<Product> findByShopifyVariantId(String shopifyVariantId);
+    Optional<Product> findByShopifyInventoryItemId(String shopifyInventoryItemId);
 
     boolean existsBySku(String sku);
 

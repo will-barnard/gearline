@@ -11,7 +11,7 @@ RUN mvn dependency:go-offline dependency:resolve-plugins -q
 
 # Now copy source and build. Separated so source changes don't bust the dep cache.
 COPY src ./src
-RUN mvn package -DskipTests -q
+RUN mvn package -DskipTests
 
 FROM eclipse-temurin:21-jre-alpine
 
