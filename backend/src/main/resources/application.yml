@@ -118,6 +118,9 @@ gearline:
     client-secret: ${EBAY_CLIENT_SECRET:}
     api-base-url: https://api.ebay.com
     auth-url: https://auth.ebay.com/oauth2
+    # RuName (Redirect URL Name) assigned by the eBay Developer Portal.
+    # Register your callback URL there, then copy the RuName shown.
+    ru-name: ${EBAY_RU_NAME:}
 
   sync:
     max-retry-attempts: 5

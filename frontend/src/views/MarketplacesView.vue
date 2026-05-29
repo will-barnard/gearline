@@ -2,17 +2,28 @@
   <div class="flex flex-col h-full">
     <header class="flex h-16 flex-shrink-0 items-center justify-between border-b border-gray-800 px-6">
       <h1 class="text-lg font-semibold text-white">Marketplace Accounts</h1>
-      <button @click="showConnectModal = true" class="btn-primary px-3 py-1.5 text-sm">
-        + Connect Shopify
-      </button>
+      <div class="flex items-center gap-2">
+        <button @click="showConnectModal = 'shopify'" class="btn-primary px-3 py-1.5 text-sm">
+          + Connect Shopify
+        </button>
+        <button @click="connectEbay" class="btn-secondary px-3 py-1.5 text-sm">
+          + Connect eBay
+        </button>
+      </div>
     </header>
 
     <!-- Connection success / error banners -->
-    <div v-if="connectionResult === 'true'" class="mx-6 mt-4 rounded-lg bg-green-900/40 border border-green-700 px-4 py-3 text-sm text-green-300">
+    <div v-if="shopifyConnected === 'true'" class="mx-6 mt-4 rounded-lg bg-green-900/40 border border-green-700 px-4 py-3 text-sm text-green-300">
       Shopify store connected successfully. Webhooks have been registered.
     </div>
-    <div v-if="connectionResult === 'false'" class="mx-6 mt-4 rounded-lg bg-red-900/40 border border-red-700 px-4 py-3 text-sm text-red-300">
+    <div v-if="shopifyConnected === 'false'" class="mx-6 mt-4 rounded-lg bg-red-900/40 border border-red-700 px-4 py-3 text-sm text-red-300">
       Shopify connection failed{{ connectionError ? ': ' + connectionError : '.' }} Please try again.
+    </div>
+    <div v-if="ebayConnected === 'true'" class="mx-6 mt-4 rounded-lg bg-green-900/40 border border-green-700 px-4 py-3 text-sm text-green-300">
+      eBay account connected successfully.
+    </div>
+    <div v-if="ebayConnected === 'false'" class="mx-6 mt-4 rounded-lg bg-red-900/40 border border-red-700 px-4 py-3 text-sm text-red-300">
+      eBay connection failed{{ connectionError ? ': ' + connectionError : '.' }} Please try again.
     </div>
 
     <div class="flex-1 overflow-auto p-6 space-y-4">
@@ -60,7 +71,7 @@
     </div>
 
     <!-- Connect Shopify modal -->
-    <div v-if="showConnectModal" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+    <div v-if="showConnectModal === 'shopify'" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
       <div class="card w-full max-w-md p-6">
         <h2 class="text-base font-semibold text-white mb-4">Connect Shopify Store</h2>
 
@@ -105,13 +116,14 @@ const route = useRoute()
 const accounts = ref([])
 const loading = ref(true)
 const checking = ref({})
-const showConnectModal = ref(false)
+const showConnectModal = ref(null) // 'shopify' | null
 const shopDomain = ref('')
 const domainError = ref('')
 const connecting = ref(false)
 
-// Surface the result of a Shopify OAuth redirect
-const connectionResult = ref(route.query.shopify_connected || null)
+// Surface results from OAuth redirects
+const shopifyConnected = ref(route.query.shopify_connected || null)
+const ebayConnected = ref(route.query.ebay_connected || null)
 const connectionError = ref(route.query.error || null)
 
 async function load() {
@@ -155,8 +167,13 @@ function connectShopify() {
   window.location.href = installUrl
 }
 
+function connectEbay() {
+  const installUrl = `${import.meta.env.VITE_API_BASE_URL || ''}/api/v1/marketplace/ebay/oauth/install`
+  window.location.href = installUrl
+}
+
 function closeConnectModal() {
-  showConnectModal.value = false
+  showConnectModal.value = null
   shopDomain.value = ''
   domainError.value = ''
   connecting.value = false

@@ -43,8 +43,9 @@ public class SecurityConfig {
                 .requestMatchers("/api/v1/api-docs/**", "/api/v1/swagger-ui/**").permitAll()
                 .requestMatchers("/actuator/health").permitAll()
 
-                // Shopify OAuth callback (no auth — it's the initial handshake)
+                // Marketplace OAuth callbacks (no auth — these are browser redirects during handshake)
                 .requestMatchers("/api/v1/marketplace/shopify/oauth/**").permitAll()
+                .requestMatchers("/api/v1/marketplace/ebay/oauth/**").permitAll()
 
                 // Admin-only operations
                 .requestMatchers(HttpMethod.DELETE, "/api/v1/**").hasRole("ADMIN")

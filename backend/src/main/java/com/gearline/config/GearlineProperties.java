@@ -64,6 +64,15 @@ public class GearlineProperties {
         private String clientSecret;
         private String apiBaseUrl;
         private String authUrl;
+
+        /**
+         * eBay RuName (Redirect URL Name) — a short string assigned by eBay when you
+         * register a redirect URL in the eBay Developer Portal.
+         * It looks like: YourApp-YourApp-12345-abcde
+         * Used as the redirect_uri parameter in both the authorization URL and token exchange.
+         * Set via EBAY_RU_NAME environment variable.
+         */
+        private String ruName;
     }
 
     @Data
