@@ -5,7 +5,6 @@ import com.gearline.domain.marketplace.MarketplaceAccount;
 import com.gearline.domain.product.Product;
 import com.gearline.marketplace.common.connector.*;
 import com.gearline.marketplace.common.dto.*;
-import com.gearline.marketplace.shopify.oauth.ShopifyOAuthController;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
