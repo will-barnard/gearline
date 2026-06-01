@@ -23,7 +23,7 @@ import java.util.UUID;
 @Setter
 @NoArgsConstructor
 @AllArgsConstructor
-@Builder
+@Builder(toBuilder = true)
 @ToString(exclude = "imageUrls")
 @EqualsAndHashCode(of = "id", callSuper = false)
 public class Product extends AuditableEntity {

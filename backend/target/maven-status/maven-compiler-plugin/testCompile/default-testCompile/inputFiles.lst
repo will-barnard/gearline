@@ -1,0 +1,11 @@
+/Users/will/workspace/gearline/backend/src/test/java/com/gearline/infrastructure/messaging/SyncJobConsumerTest.java
+/Users/will/workspace/gearline/backend/src/test/java/com/gearline/infrastructure/security/CredentialEncryptorTest.java
+/Users/will/workspace/gearline/backend/src/test/java/com/gearline/marketplace/common/util/ShippingCalculatorTest.java
+/Users/will/workspace/gearline/backend/src/test/java/com/gearline/marketplace/ebay/connector/EbayConditionMappingTest.java
+/Users/will/workspace/gearline/backend/src/test/java/com/gearline/marketplace/ebay/connector/EbayOrderMapperTest.java
+/Users/will/workspace/gearline/backend/src/test/java/com/gearline/marketplace/reverb/mapper/ReverbListingMapperTest.java
+/Users/will/workspace/gearline/backend/src/test/java/com/gearline/marketplace/reverb/mapper/ReverbOrderMapperTest.java
+/Users/will/workspace/gearline/backend/src/test/java/com/gearline/service/InventoryConsistencyServiceTest.java
+/Users/will/workspace/gearline/backend/src/test/java/com/gearline/service/ListingAttributeResolverTest.java
+/Users/will/workspace/gearline/backend/src/test/java/com/gearline/service/OrderImportServiceTest.java
+/Users/will/workspace/gearline/backend/src/test/java/com/gearline/service/SyncDispatcherServiceTest.java

@@ -18,7 +18,7 @@ import java.util.Map;
  * ebay_item_specifics) are passed through in {@code extraParams}.
  */
 @Value
-@Builder
+@Builder(toBuilder = true)
 public class PublishListingRequest {
     /** Override title (falls back to product title if null) */
     String titleOverride;
