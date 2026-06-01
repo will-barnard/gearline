@@ -9,6 +9,7 @@ import com.gearline.domain.sync.SyncJob;
 import com.gearline.domain.sync.SyncJobType;
 import com.gearline.infrastructure.persistence.MarketplaceAccountRepository;
 import com.gearline.infrastructure.persistence.MarketplaceListingRepository;
+import com.gearline.infrastructure.persistence.PricingProfileRepository;
 import com.gearline.infrastructure.persistence.ProductRepository;
 import com.gearline.marketplace.common.connector.MarketplaceConnector;
 import com.gearline.marketplace.common.connector.MarketplaceConnectorRegistry;
@@ -39,6 +40,7 @@ class SyncDispatcherServiceTest {
     private MarketplaceAccountRepository accountRepository;
     private MarketplaceListingRepository listingRepository;
     private ProductRepository productRepository;
+    private PricingProfileRepository pricingProfileRepository;
     private InventoryConsistencyService inventoryConsistencyService;
     private ListingAttributeResolver listingAttributeResolver;
     private OrderImportService orderImportService;
@@ -62,6 +64,7 @@ class SyncDispatcherServiceTest {
         accountRepository = mock(MarketplaceAccountRepository.class);
         listingRepository = mock(MarketplaceListingRepository.class);
         productRepository = mock(ProductRepository.class);
+        pricingProfileRepository = mock(PricingProfileRepository.class);
         inventoryConsistencyService = mock(InventoryConsistencyService.class);
         listingAttributeResolver = mock(ListingAttributeResolver.class);
         orderImportService = mock(OrderImportService.class);
@@ -69,7 +72,7 @@ class SyncDispatcherServiceTest {
 
         dispatcher = new SyncDispatcherService(
             connectorRegistry, accountRepository, listingRepository,
-            productRepository, inventoryConsistencyService,
+            productRepository, pricingProfileRepository, inventoryConsistencyService,
             listingAttributeResolver, orderImportService
         );
 

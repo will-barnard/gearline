@@ -79,6 +79,14 @@ public class MarketplaceAccount extends AuditableEntity {
     @Builder.Default
     private ConnectionStatus connectionStatus = ConnectionStatus.DISCONNECTED;
 
+    /**
+     * Optional pricing profile applied to listings synced through this account.
+     * When set, finalPrice = product.price × (1 + profile.adjustmentPercent / 100).
+     * An explicit listing_override price always takes priority over this profile.
+     */
+    @Column(name = "pricing_profile_id")
+    private UUID pricingProfileId;
+
     @Version
     private Long version;
 }

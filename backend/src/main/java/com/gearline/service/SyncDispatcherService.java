@@ -3,10 +3,12 @@ package com.gearline.service;
 import com.gearline.domain.listing.ListingStatus;
 import com.gearline.domain.listing.MarketplaceListing;
 import com.gearline.domain.marketplace.MarketplaceAccount;
+import com.gearline.domain.pricing.PricingProfile;
 import com.gearline.domain.product.Product;
 import com.gearline.domain.sync.SyncJob;
 import com.gearline.infrastructure.persistence.MarketplaceAccountRepository;
 import com.gearline.infrastructure.persistence.MarketplaceListingRepository;
+import com.gearline.infrastructure.persistence.PricingProfileRepository;
 import com.gearline.infrastructure.persistence.ProductRepository;
 import com.gearline.marketplace.common.connector.MarketplaceConnector;
 import com.gearline.marketplace.common.connector.MarketplaceConnectorRegistry;
@@ -16,6 +18,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.Map;
@@ -40,6 +44,7 @@ public class SyncDispatcherService {
     private final MarketplaceAccountRepository accountRepository;
     private final MarketplaceListingRepository listingRepository;
     private final ProductRepository productRepository;
+    private final PricingProfileRepository pricingProfileRepository;
     private final InventoryConsistencyService inventoryConsistencyService;
     private final ListingAttributeResolver listingAttributeResolver;
     private final OrderImportService orderImportService;
@@ -73,6 +78,7 @@ public class SyncDispatcherService {
 
         // Resolve: product defaults → listing_overrides → typed PublishListingRequest
         PublishListingRequest request = listingAttributeResolver.resolve(product, listing);
+        request = applyPricingProfile(request, product, account);
 
         PublishListingResult result = connector.publishListing(account, product, request);
 
@@ -110,6 +116,7 @@ public class SyncDispatcherService {
         // Re-resolve attributes on every update so any changes to listing_overrides
         // (e.g. a newly set reverb_shipping_profile_name) are picked up automatically.
         PublishListingRequest request = listingAttributeResolver.resolve(product, listing);
+        request = applyPricingProfile(request, product, account);
 
         PublishListingResult result = connector.updateListing(account, product, listing, request);
 
@@ -185,5 +192,39 @@ public class SyncDispatcherService {
     private MarketplaceListing requireListing(UUID id) {
         return listingRepository.findById(id)
             .orElseThrow(() -> new IllegalArgumentException("MarketplaceListing not found: " + id));
+    }
+
+    /**
+     * Applies the marketplace account's pricing profile to the request.
+     *
+     * Rules (in precedence order):
+     *  1. If the request already has an explicit priceOverride (set via listing_overrides),
+     *     the profile is NOT applied — the user's manual override always wins.
+     *  2. If the account has no pricing profile, the request is returned unchanged.
+     *  3. Otherwise: finalPrice = product.price × (1 + adjustmentPercent / 100), rounded HALF_UP.
+     */
+    private PublishListingRequest applyPricingProfile(
+        PublishListingRequest request,
+        Product product,
+        MarketplaceAccount account
+    ) {
+        // Explicit listing override takes full priority
+        if (request.getPriceOverride() != null) return request;
+        if (account.getPricingProfileId() == null) return request;
+
+        PricingProfile profile = pricingProfileRepository.findById(account.getPricingProfileId())
+            .orElse(null);
+        if (profile == null || !Boolean.TRUE.equals(profile.getActive())) return request;
+
+        // finalPrice = basePrice * (1 + adjustmentPercent / 100)
+        BigDecimal factor = BigDecimal.ONE.add(
+            profile.getAdjustmentPercent().divide(BigDecimal.valueOf(100), 10, RoundingMode.HALF_UP)
+        );
+        BigDecimal adjustedPrice = product.getPrice().multiply(factor).setScale(2, RoundingMode.HALF_UP);
+
+        log.debug("Pricing profile '{}' ({}%): {} → {}",
+            profile.getName(), profile.getAdjustmentPercent(), product.getPrice(), adjustedPrice);
+
+        return request.toBuilder().priceOverride(adjustedPrice).build();
     }
 }
