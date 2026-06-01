@@ -36,15 +36,17 @@ public class ShippingDetails {
     BigDecimal heightIn;
 
     /**
-     * Seller-configured shipping profile name or ID on the target marketplace.
+     * Seller-configured shipping profile identifier on the target marketplace.
      *
-     * Reverb: listing.shipping_profile_name  (seller-defined name, e.g. "Standard Guitar")
-     * eBay:   offer.fulfillmentPolicyId       (UUID from eBay Account API)
+     * Reverb: the numeric profile ID from GET /api/shop → shipping_profiles[].id
+     *         (e.g. "456"). Sent as shipping_profile_id on the create/update request.
+     *         Store in listing_overrides as "reverb_shipping_profile_id".
      *
-     * When set, this takes precedence over any explicit rate configuration.
-     * Stored in listing_overrides as:
-     *   reverb_shipping_profile_name  → for Reverb
-     *   ebay_fulfillment_policy_id    → for eBay
+     * eBay:   the UUID fulfillment policy ID from the eBay Account API.
+     *         Sent as listingPolicies.fulfillmentPolicyId on the offer.
+     *         Store in listing_overrides as "ebay_fulfillment_policy_id".
+     *
+     * When set, this takes precedence over weight/dimension-based shipping data.
      */
     String shippingProfileName;
 

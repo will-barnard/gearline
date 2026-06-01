@@ -1,6 +1,7 @@
 package com.gearline.domain.marketplace;
 
 import com.gearline.domain.audit.AuditableEntity;
+import com.gearline.infrastructure.security.EncryptedMapConverter;
 import com.gearline.marketplace.common.connector.MarketplaceType;
 import jakarta.persistence.*;
 import lombok.*;
@@ -45,12 +46,14 @@ public class MarketplaceAccount extends AuditableEntity {
     private String externalShopUrl;
 
     /**
-     * Encrypted OAuth credentials stored as JSON.
-     * Contains: access_token, refresh_token, token_expiry, scope.
-     * Encryption handled at the service layer before persistence.
+     * OAuth credentials, encrypted at rest via AES-256-GCM.
+     * Contains: access_token, refresh_token, expires_at, token_type.
+     * Encryption is transparent — the application works with plain Maps;
+     * {@link EncryptedMapConverter} encrypts/decrypts at the JPA boundary.
+     * If CREDENTIAL_ENCRYPTION_KEY is not set, stored as plain JSON (dev mode).
      */
-    @JdbcTypeCode(SqlTypes.JSON)
-    @Column(name = "encrypted_credentials", columnDefinition = "jsonb")
+    @Convert(converter = EncryptedMapConverter.class)
+    @Column(name = "encrypted_credentials", columnDefinition = "text")
     private Map<String, String> encryptedCredentials;
 
     /**

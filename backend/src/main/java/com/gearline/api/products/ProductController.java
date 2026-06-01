@@ -9,12 +9,17 @@ import com.gearline.domain.audit.AuditEventType;
 import com.gearline.domain.user.User;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.persistence.criteria.Predicate;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.*;
+import org.springframework.data.jpa.domain.Specification;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
+
+import java.util.ArrayList;
+import java.util.List;
 
 import java.net.URI;
 import java.util.Map;
@@ -30,7 +35,7 @@ public class ProductController {
     private final AuditService auditService;
 
     @GetMapping
-    @Operation(summary = "List all products with pagination")
+    @Operation(summary = "List all products with pagination and optional search/status filter")
     public ResponseEntity<Page<ProductDto>> listProducts(
         @RequestParam(defaultValue = "0") int page,
         @RequestParam(defaultValue = "50") int size,
@@ -38,10 +43,31 @@ public class ProductController {
         @RequestParam(required = false) String search
     ) {
         Pageable pageable = PageRequest.of(page, Math.min(size, 200), Sort.by(Sort.Direction.DESC, "createdAt"));
-        Page<Product> products = status != null
-            ? productRepository.findByStatus(status, pageable)
-            : productRepository.findAll(pageable);
+        Specification<Product> spec = buildSpec(status, search);
+        Page<Product> products = productRepository.findAll(spec, pageable);
         return ResponseEntity.ok(products.map(ProductDto::from));
+    }
+
+    /**
+     * Builds a JPA Specification combining optional status and full-text search.
+     * Search matches substring (case-insensitive) against title, SKU, and brand.
+     */
+    private Specification<Product> buildSpec(ProductStatus status, String search) {
+        return (root, query, cb) -> {
+            List<Predicate> predicates = new ArrayList<>();
+            if (status != null) {
+                predicates.add(cb.equal(root.get("status"), status));
+            }
+            if (search != null && !search.isBlank()) {
+                String pattern = "%" + search.toLowerCase() + "%";
+                predicates.add(cb.or(
+                    cb.like(cb.lower(root.get("title")),  pattern),
+                    cb.like(cb.lower(root.get("sku")),    pattern),
+                    cb.like(cb.lower(root.get("brand")),  pattern)
+                ));
+            }
+            return predicates.isEmpty() ? cb.conjunction() : cb.and(predicates.toArray(new Predicate[0]));
+        };
     }
 
     @GetMapping("/{id}")

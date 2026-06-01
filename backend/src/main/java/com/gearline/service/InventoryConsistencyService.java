@@ -10,6 +10,7 @@ import com.gearline.infrastructure.persistence.MarketplaceAccountRepository;
 import com.gearline.infrastructure.persistence.MarketplaceListingRepository;
 import com.gearline.infrastructure.persistence.ProductRepository;
 import com.gearline.infrastructure.messaging.SyncJobProducer;
+import com.gearline.marketplace.common.connector.MarketplaceType;
 import com.gearline.marketplace.common.dto.ImportedOrder;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -59,6 +60,15 @@ public class InventoryConsistencyService {
         log.debug("Enqueueing inventory sync for {} active listings", activeListings.size());
 
         for (MarketplaceListing listing : activeListings) {
+            // Shopify is the source-of-truth — its inventory is updated by ShopifyOrderPushService
+            // when marketplace orders are imported, not via the sync job queue. Skipping here
+            // prevents a connector-not-found error since ShopifyConnector.syncInventory is a no-op.
+            if (listing.getMarketplaceType() == MarketplaceType.SHOPIFY) {
+                log.debug("Skipping Shopify listing {} for inventory sync (managed via webhook path)",
+                    listing.getId());
+                continue;
+            }
+
             SyncJob job = SyncJob.builder()
                 .jobType(SyncJobType.INVENTORY_SYNC)
                 .marketplaceType(listing.getMarketplaceType())

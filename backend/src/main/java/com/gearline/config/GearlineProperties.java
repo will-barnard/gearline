@@ -9,6 +9,7 @@ public class GearlineProperties {
 
     private Jwt jwt = new Jwt();
     private App app = new App();
+    private Credential credential = new Credential();
     private Shopify shopify = new Shopify();
     private Reverb reverb = new Reverb();
     private Ebay ebay = new Ebay();
@@ -25,6 +26,16 @@ public class GearlineProperties {
     @Data
     public static class App {
         private String baseUrl;
+    }
+
+    @Data
+    public static class Credential {
+        /**
+         * Base64-encoded 32-byte AES-256 key for encrypting marketplace OAuth tokens at rest.
+         * Generate with: openssl rand -base64 32
+         * If blank, credentials are stored as plain JSON (dev/CI mode — not for production).
+         */
+        private String encryptionKey;
     }
 
     @Data

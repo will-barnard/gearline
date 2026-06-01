@@ -3,6 +3,12 @@
     <header class="flex h-16 flex-shrink-0 items-center justify-between border-b border-gray-800 px-6">
       <h1 class="text-lg font-semibold text-white">Products</h1>
       <div class="flex items-center gap-3">
+        <input
+          v-model="searchQuery"
+          type="search"
+          placeholder="Search title, SKU, brand…"
+          class="input w-56 py-1.5 text-xs"
+        />
         <select v-model="statusFilter" class="input w-40 py-1.5 text-xs">
           <option value="">All statuses</option>
           <option value="ACTIVE">Active</option>
@@ -94,11 +100,26 @@ const page = ref(0)
 const totalPages = ref(1)
 const totalElements = ref(0)
 const statusFilter = ref('')
+const searchQuery = ref('')
+
+// Debounce search so we don't fire on every keystroke
+let searchTimeout = null
+watch(searchQuery, () => {
+  clearTimeout(searchTimeout)
+  searchTimeout = setTimeout(() => { page.value = 0; loadProducts() }, 300)
+})
 
 async function loadProducts() {
   loading.value = true; error.value = null
   try {
-    const res = await api.get('/products', { params: { page: page.value, size: 50, status: statusFilter.value || undefined } })
+    const res = await api.get('/products', {
+      params: {
+        page: page.value,
+        size: 50,
+        status: statusFilter.value || undefined,
+        search: searchQuery.value || undefined,
+      }
+    })
     products.value = res.data.content
     totalPages.value = res.data.totalPages
     totalElements.value = res.data.totalElements

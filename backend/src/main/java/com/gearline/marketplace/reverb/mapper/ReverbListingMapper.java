@@ -53,13 +53,18 @@ public class ReverbListingMapper {
         BigDecimal price = request.getPriceOverride() != null ? request.getPriceOverride() : product.getPrice();
         listing.put("price", Map.of("amount", price.toPlainString(), "currency", "USD"));
 
-        listing.put("inventory", Map.of("total", request.getQuantity()));
+        // Reverb requires two fields for inventory:
+        //   has_inventory: true  — tells Reverb to track stock
+        //   inventory: <n>       — flat integer (NOT a nested object)
+        // Setting inventory=0 will end the listing, so callers should not pass 0 unless intentional.
+        listing.put("has_inventory", true);
+        listing.put("inventory", request.getQuantity());
 
         listing.put("condition", Map.of("slug", mapCondition(product.getCondition())));
 
-        if (product.getBrand() != null) {
-            listing.put("make", product.getBrand());
-        }
+        // make — Reverb REQUIRES both make and model to publish.
+        // Fall back to "Unknown" rather than omitting, which would also result in "Unknown".
+        listing.put("make", product.getBrand() != null ? product.getBrand() : "Unknown");
 
         listing.put("sku", product.getSku());
 
@@ -68,11 +73,14 @@ public class ReverbListingMapper {
         Map<String, Object> extra = request.getExtraParams() != null
             ? request.getExtraParams() : Map.of();
 
-        // Model — Reverb separates make (brand) and model; stored as reverb_model override
+        // model — Reverb REQUIRES both make and model to publish.
+        // Use reverb_model override if provided; fall back to product.category, then product title.
+        // Sending an empty model causes Reverb to set it to "Unknown" and block publishing.
         String model = getString(extra, "reverb_model");
-        if (model != null) {
-            listing.put("model", model);
+        if (model == null) {
+            model = product.getCategory() != null ? product.getCategory() : product.getTitle();
         }
+        listing.put("model", model);
 
         // Year — production year for vintage gear; stored as reverb_year override
         String year = getString(extra, "reverb_year");
@@ -88,12 +96,10 @@ public class ReverbListingMapper {
 
         // ── Photos ────────────────────────────────────────────────────────────
 
+        // Reverb expects photos as a plain array of URL strings: ["url1", "url2"]
+        // NOT as an array of objects like [{"source": "url"}].
         if (request.getImageUrls() != null && !request.getImageUrls().isEmpty()) {
-            List<Map<String, String>> photos = new ArrayList<>();
-            for (String url : request.getImageUrls()) {
-                photos.add(Map.of("source", url));
-            }
-            listing.put("photos", photos);
+            listing.put("photos", new ArrayList<>(request.getImageUrls()));
         }
 
         // ── Category ──────────────────────────────────────────────────────────
@@ -107,9 +113,11 @@ public class ReverbListingMapper {
         ShippingDetails shipping = request.getShippingDetails();
         if (shipping != null) {
             if (shipping.getShippingProfileName() != null) {
-                // Seller has a named shipping profile configured on Reverb.
-                // This takes precedence over all explicit shipping fields.
-                listing.put("shipping_profile_name", shipping.getShippingProfileName());
+                // Seller has a Reverb shipping profile configured.
+                // The value stored in ShippingDetails.shippingProfileName for Reverb
+                // is the numeric profile ID (e.g. "456") from GET /api/shop.
+                // The API field is shipping_profile_id, not shipping_profile_name.
+                listing.put("shipping_profile_id", shipping.getShippingProfileName());
             } else {
                 // Build an explicit shipping block from physical data.
                 buildShippingBlock(listing, shipping);

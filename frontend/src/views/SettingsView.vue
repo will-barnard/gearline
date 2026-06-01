@@ -41,7 +41,7 @@
           <div class="flex items-center justify-between rounded-lg border border-gray-800 p-4">
             <div>
               <p class="font-medium text-gray-200">eBay</p>
-              <p class="text-xs text-gray-500 mt-0.5">Connector available — implementation in progress</p>
+              <p class="text-xs text-gray-500 mt-0.5">List items, sync inventory, and import orders via eBay Inventory &amp; Fulfillment APIs</p>
             </div>
             <router-link to="/marketplaces" class="btn-secondary px-3 py-1.5 text-xs">Manage</router-link>
           </div>

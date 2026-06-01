@@ -256,5 +256,19 @@ public class ShopifyWebhookProcessor {
                 product.setQuantity(Math.max(0, qty));
             }
         }
+
+        // Images — extract src URLs from Shopify's images array, sorted by position.
+        // These flow through to Reverb (photos) and eBay (product.imageUrls) at publish time.
+        JsonNode images = payload.path("images");
+        if (images.isArray() && !images.isEmpty()) {
+            List<String> urls = new java.util.ArrayList<>();
+            images.forEach(img -> {
+                String src = img.path("src").asText();
+                if (!src.isBlank()) urls.add(src);
+            });
+            if (!urls.isEmpty()) {
+                product.setImageUrls(urls);
+            }
+        }
     }
 }

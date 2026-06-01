@@ -70,6 +70,8 @@ public class EbayApiClient {
      *
      * POST /sell/inventory/v1/offer
      * Returns {"offerId": "..."}.
+     *
+     * Note: eBay requires the Content-Language header on offer create/update calls.
      */
     @SuppressWarnings("unchecked")
     public Map<String, Object> createOffer(MarketplaceAccount account, Map<String, Object> body) {
@@ -77,6 +79,7 @@ public class EbayApiClient {
             return webClient.post()
                 .uri("/sell/inventory/v1/offer")
                 .header(HttpHeaders.AUTHORIZATION, bearer(account))
+                .header("Content-Language", "en-US")
                 .bodyValue(body)
                 .retrieve()
                 .bodyToMono(Map.class)
@@ -92,12 +95,15 @@ public class EbayApiClient {
      *
      * PUT /sell/inventory/v1/offer/{offerId}
      * Returns 204 No Content on success.
+     *
+     * Note: eBay requires the Content-Language header on offer create/update calls.
      */
     public void updateOffer(MarketplaceAccount account, String offerId, Map<String, Object> body) {
         try {
             webClient.put()
                 .uri("/sell/inventory/v1/offer/{offerId}", offerId)
                 .header(HttpHeaders.AUTHORIZATION, bearer(account))
+                .header("Content-Language", "en-US")
                 .bodyValue(body)
                 .retrieve()
                 .toBodilessEntity()

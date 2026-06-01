@@ -3,20 +3,27 @@ package com.gearline.api.listings;
 import com.gearline.api.ResourceNotFoundException;
 import com.gearline.domain.listing.ListingStatus;
 import com.gearline.domain.listing.MarketplaceListing;
+import com.gearline.domain.marketplace.MarketplaceAccount;
+import com.gearline.domain.product.Product;
 import com.gearline.domain.sync.SyncJob;
 import com.gearline.domain.sync.SyncJobType;
 import com.gearline.domain.user.User;
+import com.gearline.infrastructure.persistence.MarketplaceAccountRepository;
 import com.gearline.infrastructure.persistence.MarketplaceListingRepository;
+import com.gearline.infrastructure.persistence.ProductRepository;
 import com.gearline.infrastructure.messaging.SyncJobProducer;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.*;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.server.ResponseStatusException;
 
+import java.net.URI;
 import java.util.List;
 import java.util.UUID;
 
@@ -27,6 +34,8 @@ import java.util.UUID;
 public class ListingController {
 
     private final MarketplaceListingRepository listingRepository;
+    private final MarketplaceAccountRepository accountRepository;
+    private final ProductRepository productRepository;
     private final SyncJobProducer syncJobProducer;
 
     @GetMapping
@@ -56,6 +65,41 @@ public class ListingController {
     public ResponseEntity<List<ListingDto>> getListingsForProduct(@PathVariable UUID productId) {
         return ResponseEntity.ok(listingRepository.findByProductId(productId)
             .stream().map(ListingDto::from).toList());
+    }
+
+    @PostMapping
+    @Operation(summary = "Create a new listing record for a product on a marketplace account")
+    public ResponseEntity<ListingDto> createListing(
+        @Valid @RequestBody CreateListingRequest request
+    ) {
+        Product product = productRepository.findById(request.productId())
+            .orElseThrow(() -> new ResourceNotFoundException("Product", request.productId()));
+
+        MarketplaceAccount account = accountRepository.findById(request.marketplaceAccountId())
+            .orElseThrow(() -> new ResourceNotFoundException("MarketplaceAccount", request.marketplaceAccountId()));
+
+        // Prevent duplicate listings for the same product+account combination
+        if (listingRepository.findByProductIdAndMarketplaceAccountId(
+                product.getId(), account.getId()).isPresent()) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                "A listing already exists for this product on that marketplace account");
+        }
+
+        MarketplaceListing listing = MarketplaceListing.builder()
+            .productId(product.getId())
+            .marketplaceAccountId(account.getId())
+            .marketplaceType(account.getMarketplaceType())
+            .listingStatus(ListingStatus.PENDING)
+            .build();
+
+        if (request.overrides() != null) {
+            listing.getListingOverrides().putAll(request.overrides());
+        }
+
+        MarketplaceListing saved = listingRepository.save(listing);
+        return ResponseEntity
+            .created(URI.create("/api/v1/listings/" + saved.getId()))
+            .body(ListingDto.from(saved));
     }
 
     @PostMapping("/{id}/publish")

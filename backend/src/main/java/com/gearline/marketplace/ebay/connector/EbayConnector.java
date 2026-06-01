@@ -67,6 +67,7 @@ public class EbayConnector implements MarketplaceConnector {
         Product product,
         PublishListingRequest request
     ) {
+        ensureValidToken(account);
         try {
             String sku = product.getSku();
 
@@ -109,6 +110,7 @@ public class EbayConnector implements MarketplaceConnector {
         MarketplaceListing existingListing,
         PublishListingRequest request
     ) {
+        ensureValidToken(account);
         try {
             String sku = product.getSku();
             String offerId = getOfferId(existingListing);
@@ -153,6 +155,7 @@ public class EbayConnector implements MarketplaceConnector {
 
     @Override
     public void delistListing(MarketplaceAccount account, MarketplaceListing listing) {
+        ensureValidToken(account);
         String offerId = getOfferId(listing);
         if (offerId == null) {
             log.warn("eBay delistListing: no ebay_offer_id in metadata for listing {} — skipping withdraw",
@@ -178,6 +181,7 @@ public class EbayConnector implements MarketplaceConnector {
         // the PUT inventory_item endpoint is a full replace. We build a minimal
         // body containing only the availability block and send it. The Inventory API
         // spec treats omitted fields as unchanged for quantity-only updates.
+        ensureValidToken(account);
         try {
             // We need the SKU to build the URI — retrieve it from the listing's product
             // via the external listing ID. The SKU is embedded in marketplace metadata
@@ -212,6 +216,7 @@ public class EbayConnector implements MarketplaceConnector {
     @Override
     @SuppressWarnings("unchecked")
     public List<ImportedOrder> importOrders(MarketplaceAccount account, Instant since) {
+        ensureValidToken(account);
         List<ImportedOrder> results = new ArrayList<>();
         String sinceStr = since.toString(); // ISO-8601
 
@@ -248,6 +253,7 @@ public class EbayConnector implements MarketplaceConnector {
 
     @Override
     public ImportedOrder importOrder(MarketplaceAccount account, String externalOrderId) {
+        ensureValidToken(account);
         try {
             Map<String, Object> raw = ebayApiClient.getOrder(account, externalOrderId);
             ImportedOrder order = orderMapper.map(raw);
@@ -278,19 +284,30 @@ public class EbayConnector implements MarketplaceConnector {
         productBlock.put("title", title);
         if (description != null) productBlock.put("description", description);
 
-        // images
+        // images — eBay allows up to 12 image URLs on the product block
         List<String> imageUrls = request.getImageUrls() != null && !request.getImageUrls().isEmpty()
             ? request.getImageUrls()
             : product.getImageUrls();
         if (imageUrls != null && !imageUrls.isEmpty()) {
-            List<Map<String, Object>> imageAspects = new ArrayList<>();
             List<String> urlList = new ArrayList<>(imageUrls);
-            // eBay allows up to 12 images
             if (urlList.size() > 12) urlList = urlList.subList(0, 12);
-            Map<String, Object> aspect = new LinkedHashMap<>();
-            aspect.put("imageUrls", urlList);
-            imageAspects.add(aspect);
             productBlock.put("imageUrls", urlList);
+        }
+
+        // aspects (item specifics) — eBay expects Map<String, List<String>> at product.aspects.
+        // These come from extraParams["ebay_item_specifics"] as Map<String, String>.
+        // Note: itemSpecifics belongs on the inventory item PUT, NOT on the offer body.
+        @SuppressWarnings("unchecked")
+        Map<String, Object> extraParams = request.getExtraParams() != null ? request.getExtraParams() : Map.of();
+        Object specificsRaw = extraParams.get("ebay_item_specifics");
+        if (specificsRaw instanceof Map) {
+            @SuppressWarnings("unchecked")
+            Map<String, String> specifics = (Map<String, String>) specificsRaw;
+            if (!specifics.isEmpty()) {
+                Map<String, List<String>> aspects = new LinkedHashMap<>();
+                specifics.forEach((k, v) -> aspects.put(k, List.of(v)));
+                productBlock.put("aspects", aspects);
+            }
         }
 
         body.put("product", productBlock);
@@ -339,7 +356,6 @@ public class EbayConnector implements MarketplaceConnector {
      * Builds the body for POST /sell/inventory/v1/offer (create) or
      * PUT /sell/inventory/v1/offer/{offerId} (update).
      */
-    @SuppressWarnings("unchecked")
     private Map<String, Object> buildOfferBody(String sku, Product product, PublishListingRequest request) {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("sku", sku);
@@ -363,7 +379,7 @@ public class EbayConnector implements MarketplaceConnector {
             body.put("categoryId", request.getCategoryId());
         }
 
-        // listing policies
+        // listing policies + merchant location
         Map<String, Object> extraParams = request.getExtraParams();
         if (extraParams != null) {
             Map<String, Object> policies = new LinkedHashMap<>();
@@ -375,18 +391,15 @@ public class EbayConnector implements MarketplaceConnector {
             if (paymentPolicy != null)     policies.put("paymentPolicyId", paymentPolicy.toString());
             if (!policies.isEmpty()) body.put("listingPolicies", policies);
 
-            // item specifics
-            Object specificsRaw = extraParams.get("ebay_item_specifics");
-            if (specificsRaw instanceof Map) {
-                Map<String, String> specifics = (Map<String, String>) specificsRaw;
-                if (!specifics.isEmpty()) {
-                    List<Map<String, Object>> nameValueList = new ArrayList<>();
-                    specifics.forEach((k, v) -> nameValueList.add(Map.of(
-                        "name", k, "value", List.of(v)
-                    )));
-                    body.put("itemSpecifics", Map.of("nameValueList", nameValueList));
-                }
+            // merchantLocationKey — required by eBay before an offer can be published.
+            // Sellers must configure an inventory location via the Inventory Location API;
+            // the key is stored in extraParams as "ebay_merchant_location_key".
+            Object locationKey = extraParams.get("ebay_merchant_location_key");
+            if (locationKey != null) {
+                body.put("merchantLocationKey", locationKey.toString());
             }
+            // Note: item specifics (ebay_item_specifics) are sent as product.aspects on the
+            // inventory item PUT, not here. See buildInventoryItemBody().
         }
 
         return body;
@@ -435,5 +448,21 @@ public class EbayConnector implements MarketplaceConnector {
         // Callers that need this should ensure "sku" is stored in marketplaceMetadata
         // at publish time, or pass the Product directly.
         return null;
+    }
+
+    // ── Token management ───────────────────────────────────────────────────────
+
+    /**
+     * Proactively refreshes the eBay access token if it has expired or is within
+     * the 5-minute expiry buffer checked by {@link EbayAuthProvider#areCredentialsValid}.
+     *
+     * Called at the top of every public connector method so tokens are always
+     * fresh before the first API call of a sync cycle.
+     */
+    private void ensureValidToken(MarketplaceAccount account) {
+        if (!authProvider.areCredentialsValid(account)) {
+            log.info("eBay token expired or near-expiry for account {} — refreshing", account.getId());
+            authProvider.refreshAccessToken(account);
+        }
     }
 }
