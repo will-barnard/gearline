@@ -43,6 +43,16 @@ public class InventoryConsistencyService {
     /**
      * Called when a product's quantity changes (Shopify webhook, manual update, etc.)
      * Propagates the new quantity to all active marketplace listings.
+     *
+     * ── Zero-quantity behaviour ─────────────────────────────────────────────
+     * When {@code newQuantity} reaches 0 the item has sold out.  Instead of
+     * sending a quantity-update (which leaves the listing visible at 0 stock),
+     * we enqueue a {@code LISTING_DELIST} job so the item is completely removed
+     * from each marketplace.  This prevents "sold out" listings from confusing
+     * buyers and avoids marketplace penalties for unfulfillable orders.
+     *
+     * Shopify listings are always skipped — inventory there is managed through
+     * the webhook path and ShopifyConnector.syncInventory is intentionally a no-op.
      */
     @Transactional
     @Retryable(
@@ -57,29 +67,50 @@ public class InventoryConsistencyService {
         productRepository.save(product);
 
         List<MarketplaceListing> activeListings = listingRepository.findActiveListingsForProduct(product.getId());
-        log.debug("Enqueueing inventory sync for {} active listings", activeListings.size());
+
+        if (newQuantity == 0) {
+            log.info("Product {} qty reached 0 — delisting from {} active channel(s)",
+                product.getSku(), activeListings.size());
+        } else {
+            log.debug("Enqueueing inventory sync for {} active listings", activeListings.size());
+        }
 
         for (MarketplaceListing listing : activeListings) {
             // Shopify is the source-of-truth — its inventory is updated by ShopifyOrderPushService
-            // when marketplace orders are imported, not via the sync job queue. Skipping here
-            // prevents a connector-not-found error since ShopifyConnector.syncInventory is a no-op.
+            // when marketplace orders are imported, not via the sync job queue.
             if (listing.getMarketplaceType() == MarketplaceType.SHOPIFY) {
-                log.debug("Skipping Shopify listing {} for inventory sync (managed via webhook path)",
+                log.debug("Skipping Shopify listing {} for inventory propagation (managed via webhook path)",
                     listing.getId());
                 continue;
             }
 
-            SyncJob job = SyncJob.builder()
-                .jobType(SyncJobType.INVENTORY_SYNC)
-                .marketplaceType(listing.getMarketplaceType())
-                .marketplaceAccountId(listing.getMarketplaceAccountId())
-                .productId(product.getId())
-                .listingId(listing.getId())
-                .payload(Map.of("newQuantity", newQuantity))
-                .idempotencyKey("inv-" + product.getId() + "-" + listing.getId() + "-" + System.currentTimeMillis())
-                .build();
-
-            syncJobProducer.enqueue(job);
+            if (newQuantity == 0) {
+                // Sold out — take the listing down on this marketplace
+                SyncJob job = SyncJob.builder()
+                    .jobType(SyncJobType.LISTING_DELIST)
+                    .marketplaceType(listing.getMarketplaceType())
+                    .marketplaceAccountId(listing.getMarketplaceAccountId())
+                    .productId(product.getId())
+                    .listingId(listing.getId())
+                    .payload(Map.of())
+                    .idempotencyKey("delist-soldout-" + listing.getId() + "-" + System.currentTimeMillis())
+                    .build();
+                syncJobProducer.enqueue(job);
+                log.info("Enqueued LISTING_DELIST for {} listing {} (product {} sold out)",
+                    listing.getMarketplaceType(), listing.getId(), product.getSku());
+            } else {
+                // Quantity update — push new stock level to marketplace
+                SyncJob job = SyncJob.builder()
+                    .jobType(SyncJobType.INVENTORY_SYNC)
+                    .marketplaceType(listing.getMarketplaceType())
+                    .marketplaceAccountId(listing.getMarketplaceAccountId())
+                    .productId(product.getId())
+                    .listingId(listing.getId())
+                    .payload(Map.of("newQuantity", newQuantity))
+                    .idempotencyKey("inv-" + product.getId() + "-" + listing.getId() + "-" + System.currentTimeMillis())
+                    .build();
+                syncJobProducer.enqueue(job);
+            }
         }
     }
 

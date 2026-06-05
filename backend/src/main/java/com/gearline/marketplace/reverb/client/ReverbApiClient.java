@@ -167,6 +167,40 @@ public class ReverbApiClient {
         }
     }
 
+    /**
+     * Marks a Reverb order as shipped with tracking information.
+     *
+     * Reverb API: POST /api/v3.0/my/orders/{orderId}/ship
+     * Body: {"shipment": {"tracking_number": "...", "provider": "UPS"}}
+     *
+     * @param account        the Reverb marketplace account
+     * @param orderId        Reverb order ID (from Order.externalOrderId)
+     * @param trackingNumber carrier tracking number
+     * @param carrier        carrier name, e.g. "USPS", "UPS", "FedEx"
+     */
+    public void markOrderShipped(MarketplaceAccount account, String orderId,
+                                  String trackingNumber, String carrier) {
+        Map<String, Object> body = Map.of(
+            "shipment", Map.of(
+                "tracking_number", trackingNumber != null ? trackingNumber : "",
+                "provider", carrier != null ? carrier : "Other"
+            )
+        );
+
+        try {
+            webClient.post()
+                .uri("/my/orders/{id}/ship", orderId)
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + getAccessToken(account))
+                .bodyValue(body)
+                .retrieve()
+                .toBodilessEntity()
+                .block();
+        } catch (WebClientResponseException e) {
+            throw new ReverbApiException(
+                "Failed to mark Reverb order " + orderId + " as shipped: " + e.getResponseBodyAsString(), e);
+        }
+    }
+
     private String getAccessToken(MarketplaceAccount account) {
         Map<String, String> creds = account.getEncryptedCredentials();
         if (creds == null || !creds.containsKey("access_token")) {

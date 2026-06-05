@@ -16,6 +16,7 @@ import com.gearline.infrastructure.persistence.MarketplaceListingRepository;
 import com.gearline.infrastructure.persistence.ProductRepository;
 import com.gearline.infrastructure.persistence.SyncJobRepository;
 import com.gearline.marketplace.common.connector.MarketplaceType;
+import com.gearline.service.FulfillmentNotificationService;
 import com.gearline.service.InventoryConsistencyService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -45,8 +46,10 @@ import java.util.Map;
  * Publish. Only at that point does a LISTING_PUBLISH job enter the queue.
  *
  * Automatic operations (no review required):
- *   - inventory_levels/update  → immediate cross-channel inventory propagation
+ *   - inventory_levels/update  → immediate cross-channel inventory propagation (delist at qty=0)
+ *   - products/update          → LISTING_UPDATE jobs fired for all ACTIVE listings
  *   - orders/create            → immediate order import and inventory deduction
+ *   - fulfillments/create      → tracking info forwarded to Reverb/eBay via FulfillmentNotificationService
  */
 @Service
 @RequiredArgsConstructor
@@ -60,6 +63,7 @@ public class ShopifyWebhookProcessor {
     private final SyncJobRepository syncJobRepository;
     private final SyncJobProducer syncJobProducer;
     private final InventoryConsistencyService inventoryConsistencyService;
+    private final FulfillmentNotificationService fulfillmentNotificationService;
 
     @Async
     public void processAsync(String topic, String shopDomain, byte[] rawBody) {
@@ -69,6 +73,7 @@ public class ShopifyWebhookProcessor {
                 case "products/update"         -> processProductUpdate(shopDomain, rawBody);
                 case "products/create"         -> processProductCreate(shopDomain, rawBody);
                 case "orders/create"           -> processOrderCreate(shopDomain, rawBody);
+                case "fulfillments/create"     -> processFulfillmentCreate(shopDomain, rawBody);
                 default -> log.debug("Unhandled Shopify webhook topic: {}", topic);
             }
         } catch (Exception e) {
@@ -137,7 +142,7 @@ public class ShopifyWebhookProcessor {
         }
     }
 
-    // ── products/update — update product, flag active listings for re-review ──
+    // ── products/update — update product, auto-push changes to active listings ─
 
     @Transactional
     protected void processProductUpdate(String shopDomain, byte[] rawBody) throws Exception {
@@ -150,17 +155,41 @@ public class ShopifyWebhookProcessor {
             applyProductFields(product, payload);
             productRepository.save(product);
 
-            // Transition ACTIVE listings to NEEDS_REVIEW so the user can verify the
-            // changes look correct before the updated data is pushed to the marketplace.
-            // PENDING / FAILED listings are unchanged — they haven't been published yet.
+            // For ACTIVE listings (already published to a marketplace), immediately enqueue a
+            // LISTING_UPDATE job so the change cascades automatically — no human review required.
+            // Shopify is the source of truth; price or title changes there should propagate
+            // to every live marketplace listing without friction.
+            //
+            // NEEDS_REVIEW / PENDING / FAILED listings are left alone — they haven't been
+            // published yet and will pick up the current product data when they are published.
             List<MarketplaceListing> activeListings =
                 listingRepository.findByProductIdAndListingStatus(product.getId(), ListingStatus.ACTIVE);
 
             for (MarketplaceListing listing : activeListings) {
-                listing.setListingStatus(ListingStatus.NEEDS_REVIEW);
-                listingRepository.save(listing);
-                log.info("Flagged listing {} ({}) as NEEDS_REVIEW after product update",
-                    listing.getId(), listing.getMarketplaceType());
+                if (listing.getMarketplaceType() == MarketplaceType.SHOPIFY) continue;
+
+                String idempotencyKey = "shopify-product-update-" + shopifyProductId
+                    + "-listing-" + listing.getId()
+                    + "-" + payload.path("updated_at").asText(String.valueOf(System.currentTimeMillis()));
+
+                if (syncJobRepository.existsByIdempotencyKey(idempotencyKey)) {
+                    log.debug("Skipping duplicate LISTING_UPDATE for listing {}", listing.getId());
+                    continue;
+                }
+
+                SyncJob job = SyncJob.builder()
+                    .jobType(SyncJobType.LISTING_UPDATE)
+                    .marketplaceType(listing.getMarketplaceType())
+                    .marketplaceAccountId(listing.getMarketplaceAccountId())
+                    .productId(product.getId())
+                    .listingId(listing.getId())
+                    .payload(Map.of("shopifyProductId", shopifyProductId))
+                    .idempotencyKey(idempotencyKey)
+                    .build();
+
+                syncJobProducer.enqueue(job);
+                log.info("Enqueued LISTING_UPDATE for {} listing {} after Shopify product update",
+                    listing.getMarketplaceType(), listing.getId());
             }
         });
     }
@@ -191,6 +220,35 @@ public class ShopifyWebhookProcessor {
                     syncJobProducer.enqueue(job);
                 }
             });
+    }
+
+    // ── fulfillments/create — forward tracking to origin marketplace ─────────
+
+    @Transactional
+    protected void processFulfillmentCreate(String shopDomain, byte[] rawBody) throws Exception {
+        JsonNode payload = objectMapper.readTree(rawBody);
+
+        // Shopify sends the Shopify order ID as "order_id" on the fulfillment object
+        String shopifyOrderId = payload.path("order_id").asText(null);
+        String trackingNumber = payload.path("tracking_number").asText(null);
+        String trackingCarrier = payload.path("tracking_company").asText(null);
+
+        // Prefer the first URL from tracking_urls array if available; fall back to tracking_url
+        String trackingUrl = null;
+        JsonNode urlsNode = payload.path("tracking_urls");
+        if (urlsNode.isArray() && urlsNode.size() > 0) {
+            trackingUrl = urlsNode.get(0).asText(null);
+        }
+        if (trackingUrl == null || trackingUrl.isBlank()) {
+            trackingUrl = payload.path("tracking_url").asText(null);
+        }
+
+        log.info("Shopify fulfillments/create: orderId={} carrier={} tracking={} shop={}",
+            shopifyOrderId, trackingCarrier, trackingNumber, shopDomain);
+
+        // Delegate to the notification service which handles marketplace routing
+        fulfillmentNotificationService.notifyMarketplace(
+            shopifyOrderId, trackingNumber, trackingCarrier, trackingUrl);
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────────

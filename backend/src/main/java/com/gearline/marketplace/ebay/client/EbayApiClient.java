@@ -219,6 +219,57 @@ public class EbayApiClient {
         }
     }
 
+    /**
+     * Creates a shipping fulfillment record on an eBay order (marks it as shipped).
+     *
+     * eBay Sell Fulfillment API:
+     *   POST /sell/fulfillment/v1/order/{orderId}/shippingFulfillment
+     *
+     * Request body:
+     * <pre>
+     * {
+     *   "lineItems": [{"lineItemId": "...", "quantity": 1}, ...],
+     *   "shippedDate": "2024-01-10T00:00:00.000Z",
+     *   "shippingCarrierCode": "USPS",
+     *   "trackingNumber": "12345"
+     * }
+     * </pre>
+     *
+     * The {@code lineItems} list is built from the Order's stored line items;
+     * each item's {@code externalListingId} holds the eBay lineItemId captured
+     * at import time.
+     *
+     * @param account      the eBay marketplace account
+     * @param orderId      eBay order ID (from Order.externalOrderId)
+     * @param lineItems    list of {lineItemId, quantity} maps for every line in the order
+     * @param trackingNumber carrier tracking number
+     * @param carrier        eBay carrier code (e.g. "USPS", "UPS", "FedEx")
+     * @param shippedDate    ISO-8601 timestamp of shipment
+     */
+    public void markOrderShipped(MarketplaceAccount account, String orderId,
+                                  java.util.List<Map<String, Object>> lineItems,
+                                  String trackingNumber, String carrier, String shippedDate) {
+        Map<String, Object> body = new java.util.LinkedHashMap<>();
+        body.put("lineItems", lineItems);
+        body.put("shippedDate", shippedDate);
+        body.put("shippingCarrierCode", carrier != null ? carrier : "OTHER");
+        body.put("trackingNumber", trackingNumber != null ? trackingNumber : "");
+
+        try {
+            webClient.post()
+                .uri("/sell/fulfillment/v1/order/{orderId}/shippingFulfillment", orderId)
+                .header(HttpHeaders.AUTHORIZATION, bearer(account))
+                .bodyValue(body)
+                .retrieve()
+                .toBodilessEntity()
+                .block();
+        } catch (WebClientResponseException e) {
+            throw new EbayApiException(
+                "Failed to mark eBay order " + orderId + " as shipped: "
+                    + e.getStatusCode() + " — " + e.getResponseBodyAsString(), e);
+        }
+    }
+
     // ── Helpers ────────────────────────────────────────────────────────────────
 
     private String bearer(MarketplaceAccount account) {

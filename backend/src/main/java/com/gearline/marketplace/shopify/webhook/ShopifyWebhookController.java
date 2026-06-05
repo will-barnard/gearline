@@ -64,6 +64,16 @@ public class ShopifyWebhookController {
         return handleWebhook(topic, shopDomain, hmacHeader, rawBody);
     }
 
+    @PostMapping("/fulfillments/create")
+    public ResponseEntity<Void> fulfillmentCreated(
+        @RequestHeader("X-Shopify-Hmac-Sha256") String hmacHeader,
+        @RequestHeader("X-Shopify-Shop-Domain") String shopDomain,
+        @RequestHeader("X-Shopify-Topic") String topic,
+        @RequestBody byte[] rawBody
+    ) {
+        return handleWebhook(topic, shopDomain, hmacHeader, rawBody);
+    }
+
     // ── Internal dispatch ──────────────────────────────────────────────────────
 
     private ResponseEntity<Void> handleWebhook(String topic, String shopDomain, String hmacHeader, byte[] rawBody) {

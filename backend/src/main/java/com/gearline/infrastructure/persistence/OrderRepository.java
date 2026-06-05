@@ -15,6 +15,8 @@ import java.util.UUID;
 public interface OrderRepository extends JpaRepository<Order, UUID> {
     Optional<Order> findByMarketplaceTypeAndExternalOrderId(MarketplaceType type, String externalOrderId);
     boolean existsByMarketplaceTypeAndExternalOrderId(MarketplaceType type, String externalOrderId);
+    /** Look up a Gearline order by its mirrored Shopify order ID. Used for fulfillment notification. */
+    Optional<Order> findByShopifyOrderId(String shopifyOrderId);
     Page<Order> findByOrderStatus(OrderStatus status, Pageable pageable);
     Page<Order> findByMarketplaceAccountId(UUID accountId, Pageable pageable);
 }

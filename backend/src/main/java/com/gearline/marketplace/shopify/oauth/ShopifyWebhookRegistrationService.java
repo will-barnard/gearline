@@ -41,7 +41,8 @@ public class ShopifyWebhookRegistrationService {
         "products/create",
         "products/update",
         "inventory_levels/update",
-        "orders/create"
+        "orders/create",
+        "fulfillments/create"   // → forward tracking info to Reverb/eBay
     );
 
     /**
@@ -91,6 +92,7 @@ public class ShopifyWebhookRegistrationService {
             case "products/update"         -> "/webhooks/shopify/products/update";
             case "inventory_levels/update" -> "/webhooks/shopify/inventory-levels/update";
             case "orders/create"           -> "/webhooks/shopify/orders/create";
+            case "fulfillments/create"     -> "/webhooks/shopify/fulfillments/create";
             default -> "/webhooks/shopify/" + topic.replace("/", "/");
         };
     }

@@ -94,6 +94,18 @@ public class Order extends AuditableEntity {
     @Column(name = "fulfilled_at")
     private Instant fulfilledAt;
 
+    /** Carrier tracking number from the Shopify fulfillment (e.g. "1Z999AA10123456784"). */
+    @Column(name = "tracking_number", length = 200)
+    private String trackingNumber;
+
+    /** Carrier name from the Shopify fulfillment (e.g. "UPS", "USPS", "FedEx"). */
+    @Column(name = "tracking_carrier", length = 100)
+    private String trackingCarrier;
+
+    /** Carrier tracking URL from the Shopify fulfillment. */
+    @Column(name = "tracking_url", length = 1000)
+    private String trackingUrl;
+
     @Version
     private Long version;
 }
