@@ -64,9 +64,17 @@
                 <span :class="statusBadge(p.status)">{{ p.status }}</span>
               </td>
               <td class="px-4 py-3 text-right">
-                <router-link :to="`/products/${p.id}`" class="text-xs text-brand-400 hover:text-brand-300">
-                  View →
-                </router-link>
+                <div class="flex items-center justify-end gap-3">
+                  <router-link :to="`/products/${p.id}`" class="text-xs text-brand-400 hover:text-brand-300">
+                    View →
+                  </router-link>
+                  <button
+                    v-if="p.status !== 'ARCHIVED'"
+                    @click="archiveProduct(p)"
+                    class="text-xs text-red-500 hover:text-red-400"
+                    title="Archive product"
+                  >Archive</button>
+                </div>
               </td>
             </tr>
             <tr v-if="products.length === 0">
@@ -125,6 +133,16 @@ async function loadProducts() {
     totalElements.value = res.data.totalElements
   } catch (e) { error.value = 'Failed to load products' }
   finally { loading.value = false }
+}
+
+async function archiveProduct(product) {
+  if (!confirm(`Archive "${product.title}"? This will delist it from any active marketplaces.`)) return
+  try {
+    await api.delete(`/products/${product.id}`)
+    await loadProducts()
+  } catch (e) {
+    alert('Failed to archive product. You may need admin permissions.')
+  }
 }
 
 function statusBadge(s) {
