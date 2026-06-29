@@ -2,6 +2,10 @@ FROM maven:3.9-eclipse-temurin-21-alpine AS builder
 
 WORKDIR /app
 
+# MAVEN_OPTS caps the Maven JVM heap. Without this, Maven happily allocates
+# several GB on the first run and gets OOM-killed on constrained CI/deploy servers.
+ENV MAVEN_OPTS="-Xmx512m -XX:+TieredCompilation -XX:TieredStopAtLevel=1"
+
 # Copy the POM first and resolve all dependencies into the local repository.
 # This layer is cached and only re-runs when pom.xml changes, not when source changes.
 # dependency:go-offline fetches project deps; dependency:resolve-plugins fetches annotation
