@@ -91,7 +91,7 @@ springdoc:
 gearline:
   jwt:
     secret: ${JWT_SECRET:change-me-in-production-use-at-least-64-char-secret-key-here-ok}
-    access-token-expiry-ms: 900000     # 15 minutes
+    access-token-expiry-ms: 28800000   # 8 hours
     refresh-token-expiry-ms: 604800000  # 7 days
 
   app:
