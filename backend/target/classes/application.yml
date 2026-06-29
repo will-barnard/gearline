@@ -106,7 +106,7 @@ gearline:
   shopify:
     client-id: ${SHOPIFY_CLIENT_ID:}
     client-secret: ${SHOPIFY_CLIENT_SECRET:}
-    scopes: read_products,write_products,read_inventory,write_inventory,read_orders,write_orders
+    scopes: read_products,write_products,read_inventory,write_inventory,read_orders,write_orders,read_fulfillments,write_fulfillments
     # Shopify Flows "Send HTTP Request" — static token auth (not HMAC).
     # Set SHOPIFY_FLOW_SECRET to the token you configure in your Flow.
     # Set SHOPIFY_FLOW_TOKEN_HEADER if you use a custom header name (default: X-Shopify-Flow-Token).

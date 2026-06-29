@@ -105,7 +105,7 @@ public class ShopifyWebhookProcessor {
     // ── products/create — upsert product, flag listings for review ────────────
 
     @Transactional
-    protected void processProductCreate(String shopDomain, byte[] rawBody) throws Exception {
+    public void processProductCreate(String shopDomain, byte[] rawBody) throws Exception {
         JsonNode payload = objectMapper.readTree(rawBody);
         String shopifyProductId = payload.path("id").asText();
 

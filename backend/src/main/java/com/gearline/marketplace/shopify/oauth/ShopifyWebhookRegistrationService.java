@@ -76,8 +76,18 @@ public class ShopifyWebhookRegistrationService {
             shopifyApiClient.registerWebhook(account, topic, endpoint);
             log.info("Registered Shopify webhook: {} → {}", topic, endpoint);
         } catch (ShopifyApiException e) {
-            // Non-fatal — log and continue with remaining topics
-            log.error("Failed to register Shopify webhook '{}': {}", topic, e.getMessage());
+            String msg = e.getMessage() != null ? e.getMessage() : "";
+            if (msg.contains("already been taken")) {
+                // Webhook already exists for this topic+address — nothing to do
+                log.info("Shopify webhook already registered (skipping): {} → {}", topic, endpoint);
+            } else if (msg.contains("Invalid topic") || msg.contains("missing access scope")) {
+                // Scope not granted for this topic — warn clearly so it's easy to find
+                log.warn("Shopify webhook '{}' could not be registered — missing access scope. " +
+                    "Grant the required scope in the Shopify Partners Dashboard and reconnect the store.", topic);
+            } else {
+                // Unexpected error — log at ERROR so it stands out
+                log.error("Failed to register Shopify webhook '{}': {}", topic, e.getMessage());
+            }
         }
     }
 

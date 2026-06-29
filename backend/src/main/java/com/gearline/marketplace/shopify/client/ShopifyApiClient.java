@@ -1,14 +1,21 @@
 package com.gearline.marketplace.shopify.client;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.gearline.domain.marketplace.MarketplaceAccount;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Low-level HTTP client for the Shopify Admin REST API.
@@ -29,10 +36,15 @@ public class ShopifyApiClient {
 
     private static final String API_VERSION = "2024-10";
 
-    private final WebClient.Builder webClientBuilder;
+    private static final Pattern NEXT_PAGE_INFO_PATTERN =
+        Pattern.compile("<[^>]*[?&]page_info=([^&>]+)[^>]*>;\\s*rel=\"next\"");
 
-    public ShopifyApiClient(WebClient.Builder webClientBuilder) {
+    private final WebClient.Builder webClientBuilder;
+    private final ObjectMapper objectMapper;
+
+    public ShopifyApiClient(WebClient.Builder webClientBuilder, ObjectMapper objectMapper) {
         this.webClientBuilder = webClientBuilder;
+        this.objectMapper = objectMapper;
     }
 
     /**
@@ -138,6 +150,69 @@ public class ShopifyApiClient {
                 "Token exchange failed for shop " + shopDomain + ": HTTP " + e.getStatusCode()
                     + " — " + e.getResponseBodyAsString(), e
             );
+        }
+    }
+
+    /**
+     * Fetches one page of products from the Shopify Admin REST API.
+     *
+     * Shopify uses cursor-based pagination: the first call omits {@code pageInfo};
+     * subsequent calls pass the {@code nextPageInfo} value from the previous page's
+     * {@link ShopifyProductsPage} response until {@code hasNextPage()} returns false.
+     *
+     * Endpoint: GET /admin/api/{version}/products.json?limit=250&status=active[&page_info=...]
+     *
+     * @param account  the connected Shopify account
+     * @param pageInfo cursor for the next page, or {@code null} for the first page
+     * @return the page of products and the next page cursor (null if last page)
+     */
+    public ShopifyProductsPage fetchProducts(MarketplaceAccount account, String pageInfo) {
+        String uri = "/admin/api/" + API_VERSION + "/products.json?limit=250&status=active";
+        if (pageInfo != null && !pageInfo.isBlank()) {
+            // When page_info is supplied, Shopify ignores all other filters — just cursor + limit
+            uri = "/admin/api/" + API_VERSION + "/products.json?limit=250&page_info=" + pageInfo;
+        }
+
+        try {
+            ResponseEntity<String> entity = buildClient(account)
+                .get()
+                .uri(uri)
+                .header("X-Shopify-Access-Token", getAccessToken(account))
+                .retrieve()
+                .toEntity(String.class)
+                .block();
+
+            if (entity == null || entity.getBody() == null) {
+                return new ShopifyProductsPage(List.of(), null);
+            }
+
+            // Parse products array from {"products": [...]}
+            JsonNode root = objectMapper.readTree(entity.getBody());
+            JsonNode productsNode = root.path("products");
+            List<JsonNode> products = new ArrayList<>();
+            if (productsNode.isArray()) {
+                productsNode.forEach(products::add);
+            }
+
+            // Extract next page cursor from Link header
+            String nextPageInfo = null;
+            String linkHeader = entity.getHeaders().getFirst(HttpHeaders.LINK);
+            if (linkHeader != null) {
+                Matcher m = NEXT_PAGE_INFO_PATTERN.matcher(linkHeader);
+                if (m.find()) {
+                    nextPageInfo = m.group(1);
+                }
+            }
+
+            log.debug("Fetched {} products from Shopify (nextPageInfo={})", products.size(), nextPageInfo);
+            return new ShopifyProductsPage(products, nextPageInfo);
+
+        } catch (WebClientResponseException e) {
+            throw new ShopifyApiException(
+                "Failed to fetch Shopify products: HTTP " + e.getStatusCode()
+                    + " — " + e.getResponseBodyAsString(), e);
+        } catch (Exception e) {
+            throw new ShopifyApiException("Failed to parse Shopify products response: " + e.getMessage(), e);
         }
     }
 

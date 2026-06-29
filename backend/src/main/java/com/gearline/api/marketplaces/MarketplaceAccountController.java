@@ -9,6 +9,7 @@ import com.gearline.infrastructure.persistence.PricingProfileRepository;
 import com.gearline.marketplace.common.connector.MarketplaceConnectorRegistry;
 import com.gearline.marketplace.common.connector.ConnectorHealthResult;
 import com.gearline.marketplace.common.connector.MarketplaceType;
+import com.gearline.marketplace.shopify.sync.ShopifyInitialSyncService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -31,6 +32,7 @@ public class MarketplaceAccountController {
     private final MarketplaceAccountRepository accountRepository;
     private final MarketplaceConnectorRegistry connectorRegistry;
     private final PricingProfileRepository pricingProfileRepository;
+    private final ShopifyInitialSyncService shopifyInitialSyncService;
 
     @GetMapping
     @Operation(summary = "List all connected marketplace accounts")
@@ -100,6 +102,24 @@ public class MarketplaceAccountController {
         }
         account = accountRepository.save(account);
         return ResponseEntity.ok(MarketplaceAccountDto.from(account, resolveProfile(account)));
+    }
+
+    @PostMapping("/{id}/sync-products")
+    @Operation(summary = "Trigger a one-off bulk import of all active products from a Shopify store")
+    public ResponseEntity<Map<String, String>> syncProducts(@PathVariable UUID id) {
+        MarketplaceAccount account = accountRepository.findById(id)
+            .orElseThrow(() -> new ResourceNotFoundException("MarketplaceAccount", id));
+
+        if (account.getMarketplaceType() != MarketplaceType.SHOPIFY) {
+            return ResponseEntity.badRequest()
+                .body(Map.of("error", "Product sync is only available for Shopify accounts"));
+        }
+
+        // Runs asynchronously — returns immediately while sync proceeds in background
+        shopifyInitialSyncService.syncAllProducts(account);
+
+        return ResponseEntity.accepted()
+            .body(Map.of("message", "Product sync started. Products will appear in Gearline as they are imported."));
     }
 
     @PatchMapping("/{id}/pricing-profile")

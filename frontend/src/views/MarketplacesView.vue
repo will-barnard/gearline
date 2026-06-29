@@ -75,6 +75,15 @@
               </div>
               <div class="flex items-center gap-2">
                 <button
+                  v-if="account.marketplaceType === 'SHOPIFY'"
+                  @click="syncProducts(account)"
+                  :disabled="syncing[account.id]"
+                  class="btn-secondary px-3 py-1.5 text-xs text-brand-400"
+                  title="Import all existing products from this Shopify store"
+                >
+                  {{ syncing[account.id] ? 'Syncing…' : 'Sync Products' }}
+                </button>
+                <button
                   @click="healthCheck(account.id)"
                   :disabled="checking[account.id]"
                   class="btn-secondary px-3 py-1.5 text-xs"
@@ -308,6 +317,7 @@ const route = useRoute()
 const accounts = ref([])
 const loading = ref(true)
 const checking = ref({})
+const syncing = ref({})
 const showConnectModal = ref(null) // 'shopify' | 'reverb' | null
 
 // Shopify fields
@@ -369,6 +379,20 @@ async function healthCheck(id) {
 async function toggleActive(account) {
   await api.patch(`/marketplace/accounts/${account.id}/toggle`, null, { params: { active: !account.active } })
   load()
+}
+
+async function syncProducts(account) {
+  syncing.value[account.id] = true
+  try {
+    await api.post(`/marketplace/accounts/${account.id}/sync-products`)
+    // Sync runs in the background — poll for new products by reloading after a short delay
+    setTimeout(() => load(), 3000)
+  } catch (e) {
+    console.error('Product sync failed:', e)
+  } finally {
+    // Keep the button disabled for a few seconds so the user knows it fired
+    setTimeout(() => { syncing.value[account.id] = false }, 5000)
+  }
 }
 
 function connectShopify() {
