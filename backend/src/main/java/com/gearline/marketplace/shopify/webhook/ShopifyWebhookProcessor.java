@@ -148,11 +148,58 @@ public class ShopifyWebhookProcessor {
     protected void processProductUpdate(String shopDomain, byte[] rawBody) throws Exception {
         JsonNode payload = objectMapper.readTree(rawBody);
         String shopifyProductId = payload.path("id").asText();
+        String shopifyStatus = payload.path("status").asText("active"); // "active" | "draft" | "archived"
 
-        log.info("Shopify products/update: productId={} shop={}", shopifyProductId, shopDomain);
+        log.info("Shopify products/update: productId={} status={} shop={}", shopifyProductId, shopifyStatus, shopDomain);
 
         productRepository.findByShopifyProductId(shopifyProductId).ifPresent(product -> {
+
+            // ── Draft / archived in Shopify → archive in Gearline and delist ────
+            if ("draft".equals(shopifyStatus) || "archived".equals(shopifyStatus)) {
+                if (product.getStatus() != ProductStatus.ARCHIVED) {
+                    product.setStatus(ProductStatus.ARCHIVED);
+                    productRepository.save(product);
+                    log.info("Archived product {} because Shopify status changed to '{}'",
+                        product.getSku(), shopifyStatus);
+                }
+
+                // Delist any active marketplace listings for this product
+                List<MarketplaceListing> activeListings =
+                    listingRepository.findByProductIdAndListingStatus(product.getId(), ListingStatus.ACTIVE);
+
+                for (MarketplaceListing listing : activeListings) {
+                    if (listing.getMarketplaceType() == MarketplaceType.SHOPIFY) continue;
+
+                    String idempotencyKey = "shopify-product-delist-" + shopifyProductId
+                        + "-listing-" + listing.getId()
+                        + "-" + payload.path("updated_at").asText(String.valueOf(System.currentTimeMillis()));
+
+                    if (!syncJobRepository.existsByIdempotencyKey(idempotencyKey)) {
+                        syncJobProducer.enqueue(SyncJob.builder()
+                            .jobType(SyncJobType.LISTING_DELIST)
+                            .marketplaceType(listing.getMarketplaceType())
+                            .marketplaceAccountId(listing.getMarketplaceAccountId())
+                            .productId(product.getId())
+                            .listingId(listing.getId())
+                            .payload(Map.of("shopifyProductId", shopifyProductId, "reason", shopifyStatus))
+                            .idempotencyKey(idempotencyKey)
+                            .build());
+                        log.info("Enqueued LISTING_DELIST for {} listing {} — Shopify product went {}",
+                            listing.getMarketplaceType(), listing.getId(), shopifyStatus);
+                    }
+                }
+                return; // No further processing for inactive products
+            }
+
+            // ── Active product — apply field changes and propagate to live listings ─
             applyProductFields(product, payload);
+
+            // If product was previously archived (e.g. re-activated in Shopify), restore it
+            if (product.getStatus() == ProductStatus.ARCHIVED) {
+                product.setStatus(ProductStatus.ACTIVE);
+                log.info("Restored product {} to ACTIVE — Shopify status is now 'active'", product.getSku());
+            }
+
             productRepository.save(product);
 
             // For ACTIVE listings (already published to a marketplace), immediately enqueue a
