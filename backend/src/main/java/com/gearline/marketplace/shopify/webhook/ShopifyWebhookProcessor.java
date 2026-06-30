@@ -337,7 +337,10 @@ public class ShopifyWebhookProcessor {
 
     /**
      * Updates mutable Product fields from a Shopify webhook payload.
-     * Shopify IDs are never changed here; they were set at creation.
+     *
+     * All fields that can change in Shopify are kept in sync here, including SKU.
+     * Shopify's own IDs (shopifyProductId, shopifyVariantId, shopifyInventoryItemId)
+     * are never overwritten — they are identity keys set at creation.
      */
     private void applyProductFields(Product product, JsonNode payload) {
         if (payload.has("title") && !payload.path("title").asText().isBlank()) {
@@ -349,9 +352,22 @@ public class ShopifyWebhookProcessor {
         if (payload.has("vendor") && !payload.path("vendor").asText().isBlank()) {
             product.setBrand(payload.path("vendor").asText());
         }
-        // Update price and quantity from first variant if present
+        // product_type → category (informational; used for marketplace listing categorisation)
+        if (payload.has("product_type") && !payload.path("product_type").asText().isBlank()) {
+            product.setCategory(payload.path("product_type").asText());
+        }
+
+        // Variant fields — price, quantity, and importantly SKU
         JsonNode variant = payload.path("variants").path(0);
         if (!variant.isMissingNode()) {
+            // SKU: update whenever Shopify has a non-blank value.
+            // If the product was imported before a SKU was set (stored as "SHOPIFY-{id}"),
+            // this will replace the placeholder with the real SKU once the merchant adds one.
+            String newSku = variant.path("sku").asText();
+            if (!newSku.isBlank()) {
+                product.setSku(newSku);
+            }
+
             String priceStr = variant.path("price").asText();
             if (!priceStr.isBlank()) {
                 try { product.setPrice(new BigDecimal(priceStr)); } catch (NumberFormatException ignored) {}
@@ -359,6 +375,16 @@ public class ShopifyWebhookProcessor {
             int qty = variant.path("inventory_quantity").asInt(Integer.MIN_VALUE);
             if (qty != Integer.MIN_VALUE) {
                 product.setQuantity(Math.max(0, qty));
+            }
+
+            // Keep variant/inventory IDs current in case Shopify ever reassigns them
+            String variantId = variant.path("id").asText();
+            if (!variantId.isBlank() && !variantId.equals("null")) {
+                product.setShopifyVariantId(variantId);
+            }
+            String inventoryItemId = variant.path("inventory_item_id").asText();
+            if (!inventoryItemId.isBlank() && !inventoryItemId.equals("null")) {
+                product.setShopifyInventoryItemId(inventoryItemId);
             }
         }
 
