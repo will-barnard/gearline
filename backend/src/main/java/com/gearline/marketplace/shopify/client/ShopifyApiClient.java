@@ -216,6 +216,50 @@ public class ShopifyApiClient {
         }
     }
 
+    /**
+     * Fetches all metafields for a Shopify product.
+     *
+     * Endpoint: GET /admin/api/{version}/products/{productId}/metafields.json
+     *
+     * Returns a list of metafield nodes. Each node has "namespace", "key", "value", and "type".
+     * Returns an empty list on any error — metafields are best-effort; a failure here
+     * should never block normal product processing.
+     *
+     * @param account          the connected Shopify account
+     * @param shopifyProductId the numeric Shopify product ID
+     * @return list of metafield JsonNodes (may be empty, never null)
+     */
+    public List<JsonNode> fetchProductMetafields(MarketplaceAccount account, String shopifyProductId) {
+        try {
+            String uri = "/admin/api/" + API_VERSION + "/products/" + shopifyProductId + "/metafields.json";
+            String body = buildClient(account)
+                .get()
+                .uri(uri)
+                .header("X-Shopify-Access-Token", getAccessToken(account))
+                .retrieve()
+                .bodyToMono(String.class)
+                .block();
+
+            if (body == null) return List.of();
+
+            JsonNode root = objectMapper.readTree(body);
+            JsonNode metafields = root.path("metafields");
+            if (!metafields.isArray()) return List.of();
+
+            List<JsonNode> result = new ArrayList<>();
+            metafields.forEach(result::add);
+            return result;
+
+        } catch (WebClientResponseException e) {
+            log.warn("Could not fetch metafields for Shopify product {}: HTTP {}",
+                shopifyProductId, e.getStatusCode());
+            return List.of();
+        } catch (Exception e) {
+            log.warn("Error parsing metafields for Shopify product {}: {}", shopifyProductId, e.getMessage());
+            return List.of();
+        }
+    }
+
     // ── Helpers ────────────────────────────────────────────────────────────────
 
     private WebClient buildClient(MarketplaceAccount account) {

@@ -94,6 +94,16 @@ public class ReverbListingMapper {
             listing.put("finish", finish);
         }
 
+        // ── Video ─────────────────────────────────────────────────────────────
+
+        // Reverb accepts a video_link field with a full YouTube URL.
+        // Check listing override first (reverb_video_url), then fall back to the product's synced videoUrl.
+        String videoUrl = getString(extra, "reverb_video_url");
+        if (videoUrl == null) videoUrl = product.getVideoUrl();
+        if (videoUrl != null && !videoUrl.isBlank()) {
+            listing.put("video_link", videoUrl);
+        }
+
         // ── Photos ────────────────────────────────────────────────────────────
 
         // Reverb expects photos as a plain array of URL strings: ["url1", "url2"]

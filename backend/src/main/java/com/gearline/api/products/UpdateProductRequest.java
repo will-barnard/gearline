@@ -15,5 +15,6 @@ public record UpdateProductRequest(
     ProductCondition condition,
     @DecimalMin("0.00") BigDecimal price,
     @Min(0) Integer quantity,
-    List<String> imageUrls
+    List<String> imageUrls,
+    String videoUrl
 ) {}

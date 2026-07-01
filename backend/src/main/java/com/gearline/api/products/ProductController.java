@@ -133,6 +133,7 @@ public class ProductController {
         if (request.price() != null) product.setPrice(request.price());
         if (request.quantity() != null) product.setQuantity(request.quantity());
         if (request.imageUrls() != null) product.setImageUrls(request.imageUrls());
+        if (request.videoUrl() != null) product.setVideoUrl(request.videoUrl().isBlank() ? null : request.videoUrl());
 
         Product saved = productRepository.save(product);
 

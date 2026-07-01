@@ -32,6 +32,40 @@
             <h2 class="mb-3 text-sm font-semibold uppercase tracking-wider text-gray-500">Description</h2>
             <p class="text-sm text-gray-300 leading-relaxed">{{ product.description }}</p>
           </div>
+
+          <!-- Video URL -->
+          <div class="card">
+            <h2 class="mb-3 text-sm font-semibold uppercase tracking-wider text-gray-500">Demo Video</h2>
+            <div v-if="product.videoUrl && !editingVideo" class="space-y-3">
+              <div class="aspect-video w-full overflow-hidden rounded-lg bg-gray-900">
+                <iframe
+                  :src="youtubeEmbedUrl(product.videoUrl)"
+                  class="h-full w-full"
+                  frameborder="0"
+                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                  allowfullscreen
+                ></iframe>
+              </div>
+              <div class="flex items-center gap-2">
+                <a :href="product.videoUrl" target="_blank" class="truncate text-xs text-brand-400 hover:text-brand-300">{{ product.videoUrl }}</a>
+                <button @click="editingVideo = true; videoUrlDraft = product.videoUrl" class="ml-auto shrink-0 text-xs text-gray-500 hover:text-gray-300">Edit</button>
+                <button @click="saveVideoUrl(null)" class="shrink-0 text-xs text-red-500 hover:text-red-400">Remove</button>
+              </div>
+            </div>
+            <div v-else-if="editingVideo || !product.videoUrl" class="space-y-2">
+              <input
+                v-model="videoUrlDraft"
+                type="url"
+                placeholder="https://www.youtube.com/watch?v=..."
+                class="input w-full text-sm"
+              />
+              <p class="text-xs text-gray-500">Paste a YouTube URL. It will sync automatically to Reverb listings.</p>
+              <div class="flex gap-2">
+                <button @click="saveVideoUrl(videoUrlDraft)" class="btn-primary px-3 py-1.5 text-xs">Save</button>
+                <button v-if="editingVideo" @click="editingVideo = false" class="btn-secondary px-3 py-1.5 text-xs">Cancel</button>
+              </div>
+            </div>
+          </div>
         </div>
 
         <!-- Listings sidebar -->
@@ -499,6 +533,10 @@ const editOverrides = ref({})
 const savingOverridesId = ref(null)
 const overridesSavedId = ref(null)
 
+// Video URL editor state
+const editingVideo = ref(false)
+const videoUrlDraft = ref('')
+
 // ── Computed ──────────────────────────────────────────────────────────────────
 
 const existingAccountIds = computed(() =>
@@ -796,6 +834,30 @@ function listingBadge(s) {
     DELISTED: 'badge-gray',
     SOLD: 'badge-blue',
   }[s] || 'badge-gray'
+}
+
+// ── Video URL helpers ─────────────────────────────────────────────────────────
+
+function youtubeEmbedUrl(url) {
+  if (!url) return null
+  // Handle youtu.be short links
+  const shortMatch = url.match(/youtu\.be\/([A-Za-z0-9_-]+)/)
+  if (shortMatch) return `https://www.youtube.com/embed/${shortMatch[1]}`
+  // Handle standard watch?v= links and embed links
+  const idMatch = url.match(/[?&]v=([A-Za-z0-9_-]+)/) || url.match(/\/embed\/([A-Za-z0-9_-]+)/)
+  if (idMatch) return `https://www.youtube.com/embed/${idMatch[1]}`
+  return null
+}
+
+async function saveVideoUrl(url) {
+  try {
+    const res = await api.put(`/products/${product.value.id}`, { videoUrl: url || '' })
+    product.value = res.data
+    editingVideo.value = false
+    videoUrlDraft.value = ''
+  } catch (e) {
+    alert('Failed to save video URL')
+  }
 }
 
 onMounted(load)

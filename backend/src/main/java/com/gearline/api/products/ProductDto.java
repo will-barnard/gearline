@@ -20,6 +20,7 @@ public record ProductDto(
     BigDecimal weightKg,
     String serialNumber,
     List<String> imageUrls,
+    String videoUrl,
     ProductStatus status,
     String shopifyProductId,
     Instant createdAt,
@@ -30,7 +31,7 @@ public record ProductDto(
             p.getId(), p.getSku(), p.getTitle(), p.getDescription(),
             p.getBrand(), p.getCategory(), p.getCondition(), p.getPrice(),
             p.getQuantity(), p.getWeightKg(), p.getSerialNumber(),
-            p.getImageUrls(), p.getStatus(), p.getShopifyProductId(),
+            p.getImageUrls(), p.getVideoUrl(), p.getStatus(), p.getShopifyProductId(),
             p.getCreatedAt(), p.getUpdatedAt()
         );
     }

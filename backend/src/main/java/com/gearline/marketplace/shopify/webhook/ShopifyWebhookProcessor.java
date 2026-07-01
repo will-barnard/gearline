@@ -16,6 +16,7 @@ import com.gearline.infrastructure.persistence.MarketplaceListingRepository;
 import com.gearline.infrastructure.persistence.ProductRepository;
 import com.gearline.infrastructure.persistence.SyncJobRepository;
 import com.gearline.marketplace.common.connector.MarketplaceType;
+import com.gearline.marketplace.shopify.client.ShopifyApiClient;
 import com.gearline.service.FulfillmentNotificationService;
 import com.gearline.service.InventoryConsistencyService;
 import lombok.RequiredArgsConstructor;
@@ -64,6 +65,7 @@ public class ShopifyWebhookProcessor {
     private final SyncJobProducer syncJobProducer;
     private final InventoryConsistencyService inventoryConsistencyService;
     private final FulfillmentNotificationService fulfillmentNotificationService;
+    private final ShopifyApiClient shopifyApiClient;
 
     @Async
     public void processAsync(String topic, String shopDomain, byte[] rawBody) {
@@ -115,6 +117,7 @@ public class ShopifyWebhookProcessor {
         Product product = productRepository.findByShopifyProductId(shopifyProductId)
             .orElseGet(() -> buildProductFromPayload(payload));
         applyProductFields(product, payload);
+        applyMetafields(product, shopDomain, shopifyProductId);
         product = productRepository.save(product);
 
         // Create NEEDS_REVIEW listings for every active non-Shopify marketplace account
@@ -193,6 +196,7 @@ public class ShopifyWebhookProcessor {
 
             // ── Active product — apply field changes and propagate to live listings ─
             applyProductFields(product, payload);
+            applyMetafields(product, shopDomain, shopifyProductId);
 
             // If product was previously archived (e.g. re-activated in Shopify), restore it
             if (product.getStatus() == ProductStatus.ARCHIVED) {
@@ -299,6 +303,41 @@ public class ShopifyWebhookProcessor {
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────────
+
+    /**
+     * Fetches metafields from Shopify for the given product and applies any
+     * known values to the Product entity.
+     *
+     * Currently handled metafields:
+     *   namespace=custom, key=youtube_url → product.videoUrl
+     *
+     * This is a best-effort call — any API or parse error is logged and ignored
+     * so that a missing metafield never blocks product processing.
+     */
+    private void applyMetafields(Product product, String shopDomain, String shopifyProductId) {
+        // Locate the Shopify account by shop domain so we can authenticate the metafields API call.
+        // externalAccountId is set to the shop domain during OAuth (same value as externalShopUrl).
+        accountRepository.findByExternalAccountId(shopDomain).ifPresentOrElse(account -> {
+            try {
+                List<JsonNode> metafields =
+                    shopifyApiClient.fetchProductMetafields(account, shopifyProductId);
+
+                for (JsonNode mf : metafields) {
+                    String ns  = mf.path("namespace").asText("");
+                    String key = mf.path("key").asText("");
+                    String val = mf.path("value").asText("");
+
+                    if ("custom".equals(ns) && "youtube_url".equals(key) && !val.isBlank()) {
+                        product.setVideoUrl(val);
+                        log.debug("Set videoUrl={} on product {} from Shopify metafield",
+                            val, shopifyProductId);
+                    }
+                }
+            } catch (Exception e) {
+                log.warn("Could not apply metafields for product {}: {}", shopifyProductId, e.getMessage());
+            }
+        }, () -> log.debug("No Shopify account found for shop domain {} — skipping metafields", shopDomain));
+    }
 
     /**
      * Builds a new Product shell from a Shopify products/create payload.

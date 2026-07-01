@@ -86,6 +86,14 @@ public class Product extends AuditableEntity {
     @Column(name = "shopify_inventory_item_id", length = 50)
     private String shopifyInventoryItemId;
 
+    /**
+     * YouTube (or other) video URL for this product.
+     * Synced automatically from the Shopify product metafield {@code custom.youtube_url}.
+     * Forwarded to Reverb as {@code video_link} when a listing is published or updated.
+     */
+    @Column(name = "video_url", length = 500)
+    private String videoUrl;
+
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 20)
     @Builder.Default
