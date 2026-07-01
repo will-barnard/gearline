@@ -327,16 +327,68 @@ public class ShopifyWebhookProcessor {
                     String key = mf.path("key").asText("");
                     String val = mf.path("value").asText("");
 
-                    if ("custom".equals(ns) && "youtube_url".equals(key) && !val.isBlank()) {
-                        product.setVideoUrl(val);
-                        log.debug("Set videoUrl={} on product {} from Shopify metafield",
-                            val, shopifyProductId);
+                    if (!"custom".equals(ns) || val.isBlank()) continue;
+
+                    switch (key) {
+                        case "youtube_url"      -> product.setVideoUrl(val);
+                        case "reverb_model"     -> product.setModel(val);
+                        case "reverb_year"      -> product.setYearMade(val);
+                        case "reverb_finish"    -> product.setFinish(val);
+                        case "condition_notes"  -> product.setConditionNotes(val);
+                        case "condition"        -> {
+                            ProductCondition parsed = parseCondition(val);
+                            if (parsed != null) {
+                                product.setCondition(parsed);
+                            } else {
+                                log.warn("Unrecognised condition value '{}' on product {} — keeping existing",
+                                    val, shopifyProductId);
+                            }
+                        }
+                        default -> log.debug("Unhandled Shopify metafield custom.{} on product {}",
+                            key, shopifyProductId);
                     }
                 }
+                log.debug("Applied metafields to product {} from Shopify", shopifyProductId);
             } catch (Exception e) {
                 log.warn("Could not apply metafields for product {}: {}", shopifyProductId, e.getMessage());
             }
         }, () -> log.debug("No Shopify account found for shop domain {} — skipping metafields", shopDomain));
+    }
+
+    /**
+     * Parses a condition string from a Shopify metafield into a {@link ProductCondition}.
+     *
+     * Accepts both our enum names (case-insensitive, spaces/hyphens treated as underscores)
+     * and Reverb condition slugs, so sellers can use whichever is more natural in Shopify:
+     *
+     *   "Brand New" / "new" / "brand-new"     → NEW
+     *   "Mint"                                 → MINT
+     *   "Excellent"                            → EXCELLENT
+     *   "Very Good" / "very-good"              → VERY_GOOD
+     *   "Good"                                 → GOOD
+     *   "Fair"                                 → FAIR
+     *   "Poor"                                 → POOR
+     *   "Open Box" / "B-Stock" / "b-stock"    → OPEN_BOX
+     *   "Used"                                 → USED
+     *   "For Parts" / "non-functioning"        → FOR_PARTS
+     */
+    private ProductCondition parseCondition(String raw) {
+        if (raw == null || raw.isBlank()) return null;
+        String normalised = raw.strip().toUpperCase()
+            .replace("-", "_")
+            .replace(" ", "_");
+
+        // Direct enum name match
+        try { return ProductCondition.valueOf(normalised); } catch (IllegalArgumentException ignored) {}
+
+        // Reverb slug aliases and common variations
+        return switch (normalised) {
+            case "BRAND_NEW"        -> ProductCondition.NEW;
+            case "VERY_GOOD_PLUS"   -> ProductCondition.VERY_GOOD;
+            case "B_STOCK"          -> ProductCondition.OPEN_BOX;
+            case "NON_FUNCTIONING"  -> ProductCondition.FOR_PARTS;
+            default                 -> null;
+        };
     }
 
     /**

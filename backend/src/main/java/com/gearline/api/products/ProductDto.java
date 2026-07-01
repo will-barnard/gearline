@@ -14,7 +14,11 @@ public record ProductDto(
     String description,
     String brand,
     String category,
+    String model,
+    String yearMade,
+    String finish,
     ProductCondition condition,
+    String conditionNotes,
     BigDecimal price,
     Integer quantity,
     BigDecimal weightKg,
@@ -29,9 +33,10 @@ public record ProductDto(
     public static ProductDto from(Product p) {
         return new ProductDto(
             p.getId(), p.getSku(), p.getTitle(), p.getDescription(),
-            p.getBrand(), p.getCategory(), p.getCondition(), p.getPrice(),
-            p.getQuantity(), p.getWeightKg(), p.getSerialNumber(),
-            p.getImageUrls(), p.getVideoUrl(), p.getStatus(), p.getShopifyProductId(),
+            p.getBrand(), p.getCategory(), p.getModel(), p.getYearMade(), p.getFinish(),
+            p.getCondition(), p.getConditionNotes(), p.getPrice(), p.getQuantity(), p.getWeightKg(),
+            p.getSerialNumber(), p.getImageUrls(), p.getVideoUrl(),
+            p.getStatus(), p.getShopifyProductId(),
             p.getCreatedAt(), p.getUpdatedAt()
         );
     }

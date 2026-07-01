@@ -94,6 +94,39 @@ public class Product extends AuditableEntity {
     @Column(name = "video_url", length = 500)
     private String videoUrl;
 
+    /**
+     * Instrument model name (e.g. "Stratocaster", "CP-70").
+     * Synced from Shopify metafield {@code custom.reverb_model}.
+     * Forwarded to Reverb as {@code model}; Reverb requires both make and model to publish.
+     */
+    @Column(name = "model", length = 200)
+    private String model;
+
+    /**
+     * Year the instrument was made (e.g. "1965", "circa 1972").
+     * Synced from Shopify metafield {@code custom.reverb_year}.
+     * Forwarded to Reverb as {@code year}.
+     */
+    @Column(name = "year_made", length = 20)
+    private String yearMade;
+
+    /**
+     * Instrument finish / colour (e.g. "Sunburst", "Olympic White").
+     * Synced from Shopify metafield {@code custom.reverb_finish}.
+     * Forwarded to Reverb as {@code finish}.
+     */
+    @Column(name = "finish", length = 100)
+    private String finish;
+
+    /**
+     * Free-text notes describing the specific condition of this item
+     * (e.g. "Small crack in headstock, repaired. No impact on playability.").
+     * Synced from Shopify metafield {@code custom.condition_notes}.
+     * Forwarded to Reverb as {@code condition_description}.
+     */
+    @Column(name = "condition_notes", length = 1000)
+    private String conditionNotes;
+
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 20)
     @Builder.Default

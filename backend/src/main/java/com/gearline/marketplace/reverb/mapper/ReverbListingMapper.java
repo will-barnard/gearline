@@ -73,23 +73,34 @@ public class ReverbListingMapper {
         Map<String, Object> extra = request.getExtraParams() != null
             ? request.getExtraParams() : Map.of();
 
-        // model — Reverb REQUIRES both make and model to publish.
-        // Use reverb_model override if provided; fall back to product.category, then product title.
-        // Sending an empty model causes Reverb to set it to "Unknown" and block publishing.
-        String model = getString(extra, "reverb_model");
-        if (model == null) {
-            model = product.getCategory() != null ? product.getCategory() : product.getTitle();
+        // condition_description — optional free-text notes about the item's specific state.
+        // Resolution order: listing override (reverb_condition_notes) → product.conditionNotes
+        String conditionNotes = getString(extra, "reverb_condition_notes");
+        if (conditionNotes == null) conditionNotes = product.getConditionNotes();
+        if (conditionNotes != null && !conditionNotes.isBlank()) {
+            listing.put("condition_description", conditionNotes);
         }
+
+        // model — Reverb REQUIRES both make and model to publish.
+        // Resolution order: listing override → product.model (from Shopify metafield) → product.category → product.title
+        String model = getString(extra, "reverb_model");
+        if (model == null) model = product.getModel();
+        if (model == null) model = product.getCategory();
+        if (model == null) model = product.getTitle();
         listing.put("model", model);
 
-        // Year — production year for vintage gear; stored as reverb_year override
+        // Year — production year for vintage gear.
+        // Resolution order: listing override → product.yearMade (from Shopify metafield)
         String year = getString(extra, "reverb_year");
+        if (year == null) year = product.getYearMade();
         if (year != null) {
             listing.put("year", year);
         }
 
-        // Finish — colour/finish description; stored as reverb_finish override
+        // Finish — colour/finish description.
+        // Resolution order: listing override → product.finish (from Shopify metafield)
         String finish = getString(extra, "reverb_finish");
+        if (finish == null) finish = product.getFinish();
         if (finish != null) {
             listing.put("finish", finish);
         }

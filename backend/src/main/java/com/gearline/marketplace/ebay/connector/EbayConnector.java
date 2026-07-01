@@ -295,25 +295,53 @@ public class EbayConnector implements MarketplaceConnector {
         }
 
         // aspects (item specifics) — eBay expects Map<String, List<String>> at product.aspects.
-        // These come from extraParams["ebay_item_specifics"] as Map<String, String>.
-        // Note: itemSpecifics belongs on the inventory item PUT, NOT on the offer body.
+        // Auto-populate from product fields first, then merge any caller-supplied overrides
+        // from extraParams["ebay_item_specifics"] (caller values win on conflict).
+        // Note: aspects belong on the inventory item PUT, NOT on the offer body.
         @SuppressWarnings("unchecked")
         Map<String, Object> extraParams = request.getExtraParams() != null ? request.getExtraParams() : Map.of();
+
+        Map<String, List<String>> aspects = new LinkedHashMap<>();
+        if (product.getBrand() != null && !product.getBrand().isBlank()) {
+            aspects.put("Brand", List.of(product.getBrand()));
+        }
+        if (product.getModel() != null && !product.getModel().isBlank()) {
+            aspects.put("Model", List.of(product.getModel()));
+        }
+        if (product.getYearMade() != null && !product.getYearMade().isBlank()) {
+            aspects.put("Year Manufactured", List.of(product.getYearMade()));
+        }
+        if (product.getFinish() != null && !product.getFinish().isBlank()) {
+            aspects.put("Color", List.of(product.getFinish()));
+        }
+        // Caller-provided specifics override auto-populated values
         Object specificsRaw = extraParams.get("ebay_item_specifics");
         if (specificsRaw instanceof Map) {
             @SuppressWarnings("unchecked")
             Map<String, String> specifics = (Map<String, String>) specificsRaw;
-            if (!specifics.isEmpty()) {
-                Map<String, List<String>> aspects = new LinkedHashMap<>();
-                specifics.forEach((k, v) -> aspects.put(k, List.of(v)));
-                productBlock.put("aspects", aspects);
-            }
+            specifics.forEach((k, v) -> aspects.put(k, List.of(v)));
+        }
+        if (!aspects.isEmpty()) {
+            productBlock.put("aspects", aspects);
         }
 
         body.put("product", productBlock);
 
         // condition
         body.put("condition", mapEbayCondition(product.getCondition()));
+
+        // conditionDescription — free-text notes about the item's state.
+        // Resolution order: extraParams override → product.conditionNotes
+        String conditionDescription = null;
+        Object cdOverride = extraParams.get("ebay_condition_description");
+        if (cdOverride instanceof String s && !s.isBlank()) conditionDescription = s;
+        if (conditionDescription == null && product.getConditionNotes() != null
+                && !product.getConditionNotes().isBlank()) {
+            conditionDescription = product.getConditionNotes();
+        }
+        if (conditionDescription != null) {
+            body.put("conditionDescription", conditionDescription);
+        }
 
         // package weight and size
         ShippingDetails shipping = request.getShippingDetails();
@@ -408,22 +436,27 @@ public class EbayConnector implements MarketplaceConnector {
     // ── Condition mapping ──────────────────────────────────────────────────────
 
     /**
-     * Maps Gearline's {@link ProductCondition} to eBay's condition enum string.
+     * Maps Gearline's {@link ProductCondition} to eBay Inventory API condition enum strings.
      *
-     * eBay condition values (Inventory API):
-     *   NEW, LIKE_NEW, NEW_OTHER, VERY_GOOD, GOOD, ACCEPTABLE, FOR_PARTS_OR_NOT_WORKING
+     * Valid eBay Inventory API condition values:
+     *   NEW, LIKE_NEW, NEW_OTHER, NEW_WITH_DEFECTS, SELLER_REFURBISHED,
+     *   USED_EXCELLENT, USED_VERY_GOOD, USED_GOOD, USED_ACCEPTABLE,
+     *   FOR_PARTS_OR_NOT_WORKING
+     *
+     * IMPORTANT: "VERY_GOOD", "GOOD", "ACCEPTABLE" (without the "USED_" prefix) are NOT
+     * valid strings and will be rejected by the eBay API with a 400 error.
      */
     private String mapEbayCondition(ProductCondition condition) {
         if (condition == null) return "USED_EXCELLENT";
         return switch (condition) {
             case NEW       -> "NEW";
             case OPEN_BOX  -> "NEW_OTHER";
-            case MINT,
-                 EXCELLENT -> "LIKE_NEW";
-            case VERY_GOOD -> "VERY_GOOD";
-            case GOOD      -> "GOOD";
+            case MINT      -> "LIKE_NEW";
+            case EXCELLENT -> "USED_EXCELLENT";
+            case VERY_GOOD -> "USED_VERY_GOOD";
+            case GOOD      -> "USED_GOOD";
             case FAIR,
-                 USED      -> "ACCEPTABLE";
+                 USED      -> "USED_ACCEPTABLE";
             case POOR,
                  FOR_PARTS -> "FOR_PARTS_OR_NOT_WORKING";
         };
