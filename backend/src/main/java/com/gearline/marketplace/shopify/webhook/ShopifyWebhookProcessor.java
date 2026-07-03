@@ -26,8 +26,11 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * Processes Shopify webhook payloads asynchronously.
@@ -119,6 +122,13 @@ public class ShopifyWebhookProcessor {
         applyProductFields(product, payload);
         applyMetafields(product, shopDomain, shopifyProductId);
         product = productRepository.save(product);
+
+        // Don't create marketplace listings if the product has an excluded tag
+        if (isExcludedByTags(payload, shopDomain)) {
+            log.info("Product {} imported but not queued for marketplace listing — matches an excluded tag",
+                product.getSku());
+            return;
+        }
 
         // Create NEEDS_REVIEW listings for every active non-Shopify marketplace account
         final Product savedProduct = product;
@@ -228,6 +238,15 @@ public class ShopifyWebhookProcessor {
         if (wasArchived) {
             // Product was just restored. Any previous marketplace listings were deisted
             // and are no longer ACTIVE, so there's nothing to send LISTING_UPDATE to.
+
+            // Respect excluded tags on restoration — if the product has been tagged to
+            // stay off marketplaces, don't re-queue it even after it's re-activated.
+            if (isExcludedByTags(payload, shopDomain)) {
+                log.info("Restored product {} not queued for marketplace listing — matches an excluded tag",
+                    product.getSku());
+                return;
+            }
+
             // For each connected non-Shopify marketplace:
             //   - If a listing record exists and is in a terminal state (INACTIVE, DELISTED,
             //     FAILED, SOLD) → reset it to NEEDS_REVIEW so the user can re-publish.
@@ -419,6 +438,40 @@ public class ShopifyWebhookProcessor {
                 log.warn("Could not apply metafields for product {}: {}", shopifyProductId, e.getMessage());
             }
         }, () -> log.debug("No Shopify account found for shop domain {} — skipping metafields", shopDomain));
+    }
+
+    /**
+     * Returns true if the product payload contains any Shopify tag that appears
+     * in the Shopify account's {@code syncSettings["excluded_tags"]} list.
+     *
+     * When true, the product is still imported/updated in Gearline but NEEDS_REVIEW
+     * marketplace listings are NOT created — the item is intentionally kept off
+     * all external marketplaces (e.g. in-store-only or consignment inventory).
+     *
+     * Tag matching is case-insensitive and trims surrounding whitespace.
+     */
+    private boolean isExcludedByTags(JsonNode payload, String shopDomain) {
+        String tagsStr = payload.path("tags").asText("");
+        if (tagsStr.isBlank()) return false;
+
+        Set<String> productTags = Arrays.stream(tagsStr.split(","))
+            .map(String::strip)
+            .map(String::toLowerCase)
+            .filter(t -> !t.isBlank())
+            .collect(Collectors.toSet());
+
+        return accountRepository.findByExternalAccountId(shopDomain)
+            .map(account -> {
+                Object raw = account.getSyncSettings() != null
+                    ? account.getSyncSettings().get("excluded_tags") : null;
+                if (raw instanceof List<?> excluded) {
+                    return excluded.stream()
+                        .map(t -> t.toString().toLowerCase().strip())
+                        .anyMatch(productTags::contains);
+                }
+                return false;
+            })
+            .orElse(false);
     }
 
     /**

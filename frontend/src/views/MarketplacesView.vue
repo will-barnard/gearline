@@ -72,6 +72,29 @@
                     Remove
                   </button>
                 </div>
+
+                <!-- Excluded tags (Shopify only) -->
+                <div v-if="account.marketplaceType === 'SHOPIFY'" class="mt-2">
+                  <div class="flex items-center gap-2 flex-wrap">
+                    <span class="text-xs text-gray-500">Excluded tags:</span>
+                    <template v-if="account.excludedTags && account.excludedTags.length">
+                      <span
+                        v-for="tag in account.excludedTags"
+                        :key="tag"
+                        class="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs bg-gray-700 text-gray-300"
+                      >
+                        {{ tag }}
+                      </span>
+                    </template>
+                    <span v-else class="text-xs text-gray-600 italic">none</span>
+                    <button
+                      @click="openTagEditor(account)"
+                      class="text-xs text-gray-500 hover:text-gray-300 underline underline-offset-2"
+                    >
+                      Edit
+                    </button>
+                  </div>
+                </div>
               </div>
               <div class="flex items-center gap-2">
                 <button
@@ -273,6 +296,53 @@
       </div>
     </div>
 
+    <!-- ── Excluded Tags editor modal ───────────────────────────────────── -->
+    <div v-if="editingTagsAccount" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+      <div class="card w-full max-w-md p-6">
+        <h2 class="text-base font-semibold text-white mb-1">Excluded Tags</h2>
+        <p class="text-xs text-gray-500 mb-4">
+          Products tagged with any of these Shopify tags will be imported into Gearline
+          but will <strong class="text-gray-300">not</strong> appear in the marketplace
+          review queue. Useful for in-store-only inventory, consignment items, or anything
+          you never intend to list on Reverb or eBay.
+        </p>
+
+        <!-- Current tags as removable chips -->
+        <div class="flex flex-wrap gap-2 mb-3 min-h-[2rem]">
+          <span
+            v-for="tag in tagEditorTags"
+            :key="tag"
+            class="inline-flex items-center gap-1.5 rounded px-2 py-1 text-xs bg-gray-700 text-gray-200"
+          >
+            {{ tag }}
+            <button @click="removeTag(tag)" class="text-gray-400 hover:text-red-400 leading-none">✕</button>
+          </span>
+          <span v-if="tagEditorTags.length === 0" class="text-xs text-gray-600 italic self-center">No tags configured</span>
+        </div>
+
+        <!-- Add a tag -->
+        <div class="flex gap-2">
+          <input
+            v-model="tagInput"
+            type="text"
+            placeholder="e.g. no-marketplace"
+            class="flex-1 rounded-lg bg-gray-800 border border-gray-700 focus:border-brand-500 px-3 py-2 text-sm text-white placeholder-gray-600 outline-none"
+            @keydown.enter.prevent="addTag"
+            @keydown.comma.prevent="addTag"
+          />
+          <button @click="addTag" class="btn-secondary px-3 py-2 text-sm">Add</button>
+        </div>
+        <p class="mt-1 text-xs text-gray-600">Press Enter or comma to add. Matching is case-insensitive.</p>
+
+        <div class="mt-6 flex gap-3 justify-end">
+          <button @click="editingTagsAccount = null" class="btn-secondary px-4 py-2 text-sm">Cancel</button>
+          <button @click="saveTags" :disabled="savingTags" class="btn-primary px-4 py-2 text-sm">
+            {{ savingTags ? 'Saving…' : 'Save' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- ── Assign Pricing Profile modal ──────────────────────────────────── -->
     <div v-if="assigningAccount" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
       <div class="card w-full max-w-sm p-6">
@@ -347,6 +417,12 @@ const profileForm = ref({ name: '', adjustmentPercent: 0, active: true })
 
 // Assign profile
 const assigningAccount = ref(null)
+
+// Excluded tags editor
+const editingTagsAccount = ref(null)
+const tagEditorTags = ref([])
+const tagInput = ref('')
+const savingTags = ref(false)
 
 const activeProfiles = computed(() => profiles.value.filter(p => p.active))
 
@@ -503,6 +579,38 @@ async function assignProfile(profileId) {
 async function clearProfile(account) {
   await api.patch(`/marketplace/accounts/${account.id}/pricing-profile`, { pricingProfileId: null })
   load()
+}
+
+// ── Excluded tags ─────────────────────────────────────────────────────────────
+function openTagEditor(account) {
+  editingTagsAccount.value = account
+  tagEditorTags.value = [...(account.excludedTags || [])]
+  tagInput.value = ''
+}
+
+function addTag() {
+  const tag = tagInput.value.trim().toLowerCase().replace(/,/g, '')
+  if (tag && !tagEditorTags.value.includes(tag)) {
+    tagEditorTags.value.push(tag)
+  }
+  tagInput.value = ''
+}
+
+function removeTag(tag) {
+  tagEditorTags.value = tagEditorTags.value.filter(t => t !== tag)
+}
+
+async function saveTags() {
+  savingTags.value = true
+  try {
+    await api.patch(`/marketplace/accounts/${editingTagsAccount.value.id}/settings`, {
+      excludedTags: tagEditorTags.value
+    })
+    editingTagsAccount.value = null
+    load()
+  } finally {
+    savingTags.value = false
+  }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

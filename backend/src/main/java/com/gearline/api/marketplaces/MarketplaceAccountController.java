@@ -19,6 +19,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.net.URI;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -148,6 +149,34 @@ public class MarketplaceAccountController {
         return pricingProfileRepository.findById(a.getPricingProfileId()).orElse(null);
     }
 
+    @PatchMapping("/{id}/settings")
+    @Operation(summary = "Update sync settings for a marketplace account (e.g. excluded tags)")
+    public ResponseEntity<MarketplaceAccountDto> updateSettings(
+        @PathVariable UUID id,
+        @RequestBody UpdateAccountSettingsRequest req
+    ) {
+        MarketplaceAccount account = accountRepository.findById(id)
+            .orElseThrow(() -> new ResourceNotFoundException("MarketplaceAccount", id));
+
+        if (account.getSyncSettings() == null) {
+            account.setSyncSettings(new java.util.HashMap<>());
+        }
+
+        if (req.excludedTags() != null) {
+            // Normalise: lowercase + strip whitespace, then deduplicate
+            List<String> normalised = req.excludedTags().stream()
+                .map(String::strip)
+                .map(String::toLowerCase)
+                .filter(t -> !t.isBlank())
+                .distinct()
+                .toList();
+            account.getSyncSettings().put("excluded_tags", new ArrayList<>(normalised));
+        }
+
+        account = accountRepository.save(account);
+        return ResponseEntity.ok(MarketplaceAccountDto.from(account, resolveProfile(account)));
+    }
+
     // ── Inner request records ──────────────────────────────────────────────────
 
     public record CreateMarketplaceAccountRequest(
@@ -157,4 +186,6 @@ public class MarketplaceAccountController {
     ) {}
 
     public record AssignPricingProfileRequest(UUID pricingProfileId) {}
+
+    public record UpdateAccountSettingsRequest(List<String> excludedTags) {}
 }
