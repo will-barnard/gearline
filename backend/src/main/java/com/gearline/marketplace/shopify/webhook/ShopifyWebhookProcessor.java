@@ -119,38 +119,83 @@ public class ShopifyWebhookProcessor {
         // Upsert the Product record
         Product product = productRepository.findByShopifyProductId(shopifyProductId)
             .orElseGet(() -> buildProductFromPayload(payload));
+
+        boolean wasArchived = product.getStatus() == ProductStatus.ARCHIVED;
+
         applyProductFields(product, payload);
         applyMetafields(product, shopDomain, shopifyProductId);
-        product = productRepository.save(product);
 
-        // Don't create marketplace listings if the product has an excluded tag
+        // Products arriving via this path are always active: the initial sync filters
+        // status=active, and real-time creates are for newly-published products.
+        // Restore the status here so that a product previously archived (because it was
+        // drafted) is correctly re-activated when it shows up in a resync.
+        if (product.getStatus() == ProductStatus.ARCHIVED) {
+            product.setStatus(ProductStatus.ACTIVE);
+            log.info("Restored archived product {} to ACTIVE during sync", product.getSku());
+        }
+
+        product = productRepository.save(product);
+        final Product saved = product;
+
+        // ── Excluded-tag handling ─────────────────────────────────────────────
+        // If the product carries a tag that is configured to suppress marketplace
+        // listings, cancel any NEEDS_REVIEW listings that may already exist (e.g.
+        // created before the tag was added or the exclusion list was configured),
+        // then bail out without creating new ones.
         if (isExcludedByTags(payload, shopDomain)) {
-            log.info("Product {} imported but not queued for marketplace listing — matches an excluded tag",
-                product.getSku());
+            listingRepository.findByProductIdAndListingStatus(saved.getId(), ListingStatus.NEEDS_REVIEW)
+                .forEach(l -> {
+                    l.setListingStatus(ListingStatus.INACTIVE);
+                    listingRepository.save(l);
+                    log.info("Cancelled NEEDS_REVIEW listing {} for excluded product {}", l.getId(), saved.getSku());
+                });
+            log.info("Product {} not queued for marketplace listing — matches an excluded tag", saved.getSku());
             return;
         }
 
-        // Create NEEDS_REVIEW listings for every active non-Shopify marketplace account
-        final Product savedProduct = product;
+        // ── Listing upsert ────────────────────────────────────────────────────
+        // For each connected non-Shopify marketplace account:
+        //   - ACTIVE / NEEDS_REVIEW / PENDING / PUBLISHING → already in flight, leave alone
+        //   - SOLD                                         → completed sale, leave alone
+        //   - INACTIVE / DELISTED / FAILED                → terminal; reset to NEEDS_REVIEW
+        //     so the user can review and re-publish (covers the wasArchived case as well
+        //     as terminal listings from a previous failed publish attempt)
+        //   - No listing exists                           → create a fresh NEEDS_REVIEW row
         List<MarketplaceAccount> accounts = accountRepository.findByActiveTrue().stream()
             .filter(a -> a.getMarketplaceType() != MarketplaceType.SHOPIFY)
             .toList();
 
         for (MarketplaceAccount account : accounts) {
-            // Idempotent — only create if one doesn't already exist for this product+account
-            if (listingRepository.findByProductIdAndMarketplaceAccountId(
-                    savedProduct.getId(), account.getId()).isEmpty()) {
+            java.util.Optional<MarketplaceListing> existing =
+                listingRepository.findByProductIdAndMarketplaceAccountId(saved.getId(), account.getId());
 
+            if (existing.isPresent()) {
+                MarketplaceListing listing = existing.get();
+                ListingStatus status = listing.getListingStatus();
+                boolean live = status == ListingStatus.ACTIVE
+                    || status == ListingStatus.NEEDS_REVIEW
+                    || status == ListingStatus.PENDING
+                    || status == ListingStatus.PUBLISHING;
+                boolean sold = status == ListingStatus.SOLD;
+
+                if (!live && !sold) {
+                    listing.setListingStatus(ListingStatus.NEEDS_REVIEW);
+                    listing.setExternalListingId(null); // stale ID from old listing
+                    listingRepository.save(listing);
+                    log.info("Reset {} listing {} to NEEDS_REVIEW for product {}{}",
+                        account.getMarketplaceType(), listing.getId(), saved.getSku(),
+                        wasArchived ? " (was archived)" : "");
+                }
+            } else {
                 MarketplaceListing listing = MarketplaceListing.builder()
-                    .productId(savedProduct.getId())
+                    .productId(saved.getId())
                     .marketplaceAccountId(account.getId())
                     .marketplaceType(account.getMarketplaceType())
                     .listingStatus(ListingStatus.NEEDS_REVIEW)
                     .build();
                 listingRepository.save(listing);
-
                 log.info("Created NEEDS_REVIEW listing for product {} on {} account {}",
-                    savedProduct.getSku(), account.getMarketplaceType(), account.getId());
+                    saved.getSku(), account.getMarketplaceType(), account.getId());
             }
         }
     }
