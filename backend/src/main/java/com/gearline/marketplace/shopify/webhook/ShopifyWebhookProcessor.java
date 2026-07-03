@@ -155,94 +155,160 @@ public class ShopifyWebhookProcessor {
 
         log.info("Shopify products/update: productId={} status={} shop={}", shopifyProductId, shopifyStatus, shopDomain);
 
-        productRepository.findByShopifyProductId(shopifyProductId).ifPresent(product -> {
+        java.util.Optional<Product> maybeProduct = productRepository.findByShopifyProductId(shopifyProductId);
 
-            // ── Draft / archived in Shopify → archive in Gearline and delist ────
-            if ("draft".equals(shopifyStatus) || "archived".equals(shopifyStatus)) {
-                if (product.getStatus() != ProductStatus.ARCHIVED) {
-                    product.setStatus(ProductStatus.ARCHIVED);
-                    productRepository.save(product);
-                    log.info("Archived product {} because Shopify status changed to '{}'",
-                        product.getSku(), shopifyStatus);
-                }
+        // ── Product not yet in Gearline + now active → import it ─────────────
+        //
+        // This covers the draft→active transition for products that were NEVER
+        // imported: the initial sync filters status=active, so any product that
+        // was a draft at connect-time is absent from the DB. When it's made active
+        // later, Shopify sends products/update (not products/create), so we must
+        // fall through to create-semantics here or the product is silently lost.
+        if (maybeProduct.isEmpty()) {
+            if ("active".equals(shopifyStatus)) {
+                log.info("Product {} not in Gearline yet but now active — importing via create path",
+                    shopifyProductId);
+                processProductCreate(shopDomain, rawBody);
+            }
+            // Draft/archived products that were never imported can stay that way.
+            return;
+        }
 
-                // Delist any active marketplace listings for this product
-                List<MarketplaceListing> activeListings =
-                    listingRepository.findByProductIdAndListingStatus(product.getId(), ListingStatus.ACTIVE);
+        Product product = maybeProduct.get();
 
-                for (MarketplaceListing listing : activeListings) {
-                    if (listing.getMarketplaceType() == MarketplaceType.SHOPIFY) continue;
-
-                    String idempotencyKey = "shopify-product-delist-" + shopifyProductId
-                        + "-listing-" + listing.getId()
-                        + "-" + payload.path("updated_at").asText(String.valueOf(System.currentTimeMillis()));
-
-                    if (!syncJobRepository.existsByIdempotencyKey(idempotencyKey)) {
-                        syncJobProducer.enqueue(SyncJob.builder()
-                            .jobType(SyncJobType.LISTING_DELIST)
-                            .marketplaceType(listing.getMarketplaceType())
-                            .marketplaceAccountId(listing.getMarketplaceAccountId())
-                            .productId(product.getId())
-                            .listingId(listing.getId())
-                            .payload(Map.of("shopifyProductId", shopifyProductId, "reason", shopifyStatus))
-                            .idempotencyKey(idempotencyKey)
-                            .build());
-                        log.info("Enqueued LISTING_DELIST for {} listing {} — Shopify product went {}",
-                            listing.getMarketplaceType(), listing.getId(), shopifyStatus);
-                    }
-                }
-                return; // No further processing for inactive products
+        // ── Draft / archived in Shopify → archive in Gearline and delist ────
+        if ("draft".equals(shopifyStatus) || "archived".equals(shopifyStatus)) {
+            if (product.getStatus() != ProductStatus.ARCHIVED) {
+                product.setStatus(ProductStatus.ARCHIVED);
+                productRepository.save(product);
+                log.info("Archived product {} because Shopify status changed to '{}'",
+                    product.getSku(), shopifyStatus);
             }
 
-            // ── Active product — apply field changes and propagate to live listings ─
-            applyProductFields(product, payload);
-            applyMetafields(product, shopDomain, shopifyProductId);
-
-            // If product was previously archived (e.g. re-activated in Shopify), restore it
-            if (product.getStatus() == ProductStatus.ARCHIVED) {
-                product.setStatus(ProductStatus.ACTIVE);
-                log.info("Restored product {} to ACTIVE — Shopify status is now 'active'", product.getSku());
-            }
-
-            productRepository.save(product);
-
-            // For ACTIVE listings (already published to a marketplace), immediately enqueue a
-            // LISTING_UPDATE job so the change cascades automatically — no human review required.
-            // Shopify is the source of truth; price or title changes there should propagate
-            // to every live marketplace listing without friction.
-            //
-            // NEEDS_REVIEW / PENDING / FAILED listings are left alone — they haven't been
-            // published yet and will pick up the current product data when they are published.
+            // Delist any active marketplace listings for this product
             List<MarketplaceListing> activeListings =
                 listingRepository.findByProductIdAndListingStatus(product.getId(), ListingStatus.ACTIVE);
 
             for (MarketplaceListing listing : activeListings) {
                 if (listing.getMarketplaceType() == MarketplaceType.SHOPIFY) continue;
 
-                String idempotencyKey = "shopify-product-update-" + shopifyProductId
+                String idempotencyKey = "shopify-product-delist-" + shopifyProductId
                     + "-listing-" + listing.getId()
                     + "-" + payload.path("updated_at").asText(String.valueOf(System.currentTimeMillis()));
 
-                if (syncJobRepository.existsByIdempotencyKey(idempotencyKey)) {
-                    log.debug("Skipping duplicate LISTING_UPDATE for listing {}", listing.getId());
-                    continue;
+                if (!syncJobRepository.existsByIdempotencyKey(idempotencyKey)) {
+                    syncJobProducer.enqueue(SyncJob.builder()
+                        .jobType(SyncJobType.LISTING_DELIST)
+                        .marketplaceType(listing.getMarketplaceType())
+                        .marketplaceAccountId(listing.getMarketplaceAccountId())
+                        .productId(product.getId())
+                        .listingId(listing.getId())
+                        .payload(Map.of("shopifyProductId", shopifyProductId, "reason", shopifyStatus))
+                        .idempotencyKey(idempotencyKey)
+                        .build());
+                    log.info("Enqueued LISTING_DELIST for {} listing {} — Shopify product went {}",
+                        listing.getMarketplaceType(), listing.getId(), shopifyStatus);
                 }
-
-                SyncJob job = SyncJob.builder()
-                    .jobType(SyncJobType.LISTING_UPDATE)
-                    .marketplaceType(listing.getMarketplaceType())
-                    .marketplaceAccountId(listing.getMarketplaceAccountId())
-                    .productId(product.getId())
-                    .listingId(listing.getId())
-                    .payload(Map.of("shopifyProductId", shopifyProductId))
-                    .idempotencyKey(idempotencyKey)
-                    .build();
-
-                syncJobProducer.enqueue(job);
-                log.info("Enqueued LISTING_UPDATE for {} listing {} after Shopify product update",
-                    listing.getMarketplaceType(), listing.getId());
             }
-        });
+            return; // No further processing for inactive products
+        }
+
+        // ── Active product — apply field changes and propagate to live listings ─
+        applyProductFields(product, payload);
+        applyMetafields(product, shopDomain, shopifyProductId);
+
+        boolean wasArchived = product.getStatus() == ProductStatus.ARCHIVED;
+        if (wasArchived) {
+            product.setStatus(ProductStatus.ACTIVE);
+            log.info("Restored product {} to ACTIVE — Shopify status is now 'active'", product.getSku());
+        }
+
+        productRepository.save(product);
+
+        if (wasArchived) {
+            // Product was just restored. Any previous marketplace listings were deisted
+            // and are no longer ACTIVE, so there's nothing to send LISTING_UPDATE to.
+            // For each connected non-Shopify marketplace:
+            //   - If a listing record exists and is in a terminal state (INACTIVE, DELISTED,
+            //     FAILED, SOLD) → reset it to NEEDS_REVIEW so the user can re-publish.
+            //   - If a listing record exists and is already live/pending (ACTIVE, NEEDS_REVIEW,
+            //     PENDING, PUBLISHING) → leave it alone.
+            //   - If no listing record exists at all → create a fresh NEEDS_REVIEW one.
+            final Product restoredProduct = product;
+            List<MarketplaceAccount> accounts = accountRepository.findByActiveTrue().stream()
+                .filter(a -> a.getMarketplaceType() != MarketplaceType.SHOPIFY)
+                .toList();
+
+            for (MarketplaceAccount account : accounts) {
+                java.util.Optional<MarketplaceListing> existing =
+                    listingRepository.findByProductIdAndMarketplaceAccountId(
+                        restoredProduct.getId(), account.getId());
+
+                if (existing.isPresent()) {
+                    MarketplaceListing listing = existing.get();
+                    ListingStatus status = listing.getListingStatus();
+                    boolean alreadyLive = status == ListingStatus.ACTIVE
+                        || status == ListingStatus.NEEDS_REVIEW
+                        || status == ListingStatus.PENDING
+                        || status == ListingStatus.PUBLISHING;
+                    if (!alreadyLive) {
+                        listing.setListingStatus(ListingStatus.NEEDS_REVIEW);
+                        listing.setExternalListingId(null); // stale ID from old listing
+                        listingRepository.save(listing);
+                        log.info("Reset listing {} to NEEDS_REVIEW for restored product {} on {}",
+                            listing.getId(), restoredProduct.getSku(), account.getMarketplaceType());
+                    }
+                } else {
+                    MarketplaceListing listing = MarketplaceListing.builder()
+                        .productId(restoredProduct.getId())
+                        .marketplaceAccountId(account.getId())
+                        .marketplaceType(account.getMarketplaceType())
+                        .listingStatus(ListingStatus.NEEDS_REVIEW)
+                        .build();
+                    listingRepository.save(listing);
+                    log.info("Created NEEDS_REVIEW listing for restored product {} on {} account {}",
+                        restoredProduct.getSku(), account.getMarketplaceType(), account.getId());
+                }
+            }
+            return;
+        }
+
+        // For ACTIVE listings (already published to a marketplace), immediately enqueue a
+        // LISTING_UPDATE job so the change cascades automatically — no human review required.
+        // Shopify is the source of truth; price or title changes there should propagate
+        // to every live marketplace listing without friction.
+        //
+        // NEEDS_REVIEW / PENDING / FAILED listings are left alone — they haven't been
+        // published yet and will pick up the current product data when they are published.
+        List<MarketplaceListing> activeListings =
+            listingRepository.findByProductIdAndListingStatus(product.getId(), ListingStatus.ACTIVE);
+
+        for (MarketplaceListing listing : activeListings) {
+            if (listing.getMarketplaceType() == MarketplaceType.SHOPIFY) continue;
+
+            String idempotencyKey = "shopify-product-update-" + shopifyProductId
+                + "-listing-" + listing.getId()
+                + "-" + payload.path("updated_at").asText(String.valueOf(System.currentTimeMillis()));
+
+            if (syncJobRepository.existsByIdempotencyKey(idempotencyKey)) {
+                log.debug("Skipping duplicate LISTING_UPDATE for listing {}", listing.getId());
+                continue;
+            }
+
+            SyncJob job = SyncJob.builder()
+                .jobType(SyncJobType.LISTING_UPDATE)
+                .marketplaceType(listing.getMarketplaceType())
+                .marketplaceAccountId(listing.getMarketplaceAccountId())
+                .productId(product.getId())
+                .listingId(listing.getId())
+                .payload(Map.of("shopifyProductId", shopifyProductId))
+                .idempotencyKey(idempotencyKey)
+                .build();
+
+            syncJobProducer.enqueue(job);
+            log.info("Enqueued LISTING_UPDATE for {} listing {} after Shopify product update",
+                listing.getMarketplaceType(), listing.getId());
+        }
     }
 
     // ── orders/create — auto-process immediately ──────────────────────────────
