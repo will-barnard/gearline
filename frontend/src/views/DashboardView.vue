@@ -42,19 +42,27 @@
             </thead>
             <tbody>
               <tr v-for="l in reviewListings" :key="l.id" class="table-row">
-                <td class="px-4 py-3 text-xs text-gray-400 font-mono">{{ l.productId }}</td>
+                <td class="px-4 py-3">
+                  <router-link
+                    :to="`/products/${l.productId}`"
+                    class="text-sm text-white hover:text-brand-400 transition-colors font-medium"
+                  >{{ l.productTitle || l.productSku || l.productId }}</router-link>
+                  <p v-if="l.productSku" class="text-xs text-gray-500 font-mono mt-0.5">{{ l.productSku }}</p>
+                </td>
                 <td class="px-4 py-3">
                   <span class="badge-blue">{{ l.marketplaceType }}</span>
                 </td>
                 <td class="px-4 py-3 text-right text-gray-200 text-xs">
-                  {{ l.syncedPrice ? `$${l.syncedPrice}` : '—' }}
+                  {{ formatPrice(l.syncedPrice ?? l.productPrice) }}
                 </td>
-                <td class="px-4 py-3 text-right text-gray-200 text-xs">{{ l.syncedQuantity ?? '—' }}</td>
+                <td class="px-4 py-3 text-right text-gray-200 text-xs">
+                  {{ l.syncedQuantity ?? l.productQuantity ?? '—' }}
+                </td>
                 <td class="px-4 py-3 text-xs text-gray-500">{{ formatDate(l.createdAt) }}</td>
                 <td class="px-4 py-3 text-right">
                   <div class="flex items-center justify-end gap-3">
                     <router-link
-                      :to="`/listings?highlight=${l.id}`"
+                      :to="`/products/${l.productId}`"
                       class="text-xs text-gray-400 hover:text-white transition-colors"
                     >Configure</router-link>
                     <button
@@ -198,6 +206,11 @@ async function publishListing(id) {
 function formatDate(d) {
   if (!d) return '—'
   return new Date(d).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+}
+
+function formatPrice(v) {
+  if (v == null) return '—'
+  return '$' + Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
 
 onMounted(loadStats)

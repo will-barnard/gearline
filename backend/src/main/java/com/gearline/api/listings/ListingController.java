@@ -25,7 +25,10 @@ import org.springframework.web.server.ResponseStatusException;
 
 import java.net.URI;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 @RestController
 @RequestMapping("/api/v1/listings")
@@ -49,22 +52,28 @@ public class ListingController {
         Page<MarketplaceListing> listings = status != null
             ? listingRepository.findByListingStatus(status, pageable)
             : listingRepository.findAll(pageable);
-        return ResponseEntity.ok(listings.map(ListingDto::from));
+
+        Map<UUID, Product> productMap = fetchProductMap(
+            listings.stream().map(MarketplaceListing::getProductId).collect(Collectors.toSet()));
+
+        return ResponseEntity.ok(listings.map(l -> ListingDto.from(l, productMap.get(l.getProductId()))));
     }
 
     @GetMapping("/{id}")
     @Operation(summary = "Get a listing by ID")
     public ResponseEntity<ListingDto> getListing(@PathVariable UUID id) {
-        return ResponseEntity.ok(ListingDto.from(
-            listingRepository.findById(id).orElseThrow(() -> new ResourceNotFoundException("Listing", id))
-        ));
+        MarketplaceListing listing = listingRepository.findById(id)
+            .orElseThrow(() -> new ResourceNotFoundException("Listing", id));
+        Product product = productRepository.findById(listing.getProductId()).orElse(null);
+        return ResponseEntity.ok(ListingDto.from(listing, product));
     }
 
     @GetMapping("/product/{productId}")
     @Operation(summary = "Get all listings for a product")
     public ResponseEntity<List<ListingDto>> getListingsForProduct(@PathVariable UUID productId) {
+        Product product = productRepository.findById(productId).orElse(null);
         return ResponseEntity.ok(listingRepository.findByProductId(productId)
-            .stream().map(ListingDto::from).toList());
+            .stream().map(l -> ListingDto.from(l, product)).toList());
     }
 
     @PostMapping
@@ -157,6 +166,18 @@ public class ListingController {
             listing.getListingOverrides().putAll(request.overrides());
         }
 
-        return ResponseEntity.ok(ListingDto.from(listingRepository.save(listing)));
+        MarketplaceListing saved = listingRepository.save(listing);
+        Product product = productRepository.findById(saved.getProductId()).orElse(null);
+        return ResponseEntity.ok(ListingDto.from(saved, product));
+    }
+
+    // ── Helpers ────────────────────────────────────────────────────────────────
+
+    /** Batch-fetches products by ID and returns them keyed by UUID. */
+    private Map<UUID, Product> fetchProductMap(Set<UUID> productIds) {
+        if (productIds.isEmpty()) return Map.of();
+        return productRepository.findAllById(productIds)
+            .stream()
+            .collect(Collectors.toMap(Product::getId, p -> p));
     }
 }
