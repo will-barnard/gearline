@@ -153,6 +153,29 @@ public class ListingController {
         return ResponseEntity.accepted().build();
     }
 
+    @DeleteMapping("/{id}")
+    @Operation(summary = "Dismiss a listing — sets it to INACTIVE without touching the marketplace. " +
+        "Use for NEEDS_REVIEW listings you have decided not to publish, or to clean up stale records.")
+    public ResponseEntity<Void> dismissListing(
+        @PathVariable UUID id,
+        @AuthenticationPrincipal User currentUser
+    ) {
+        MarketplaceListing listing = listingRepository.findById(id)
+            .orElseThrow(() -> new ResourceNotFoundException("Listing", id));
+
+        // Only allow dismissing listings that haven't been published — if the listing
+        // is ACTIVE on a marketplace, the user must Delist it first so the marketplace
+        // record is properly removed before we mark it inactive here.
+        if (listing.getListingStatus() == ListingStatus.ACTIVE) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                "Cannot dismiss an ACTIVE listing — delist it from the marketplace first.");
+        }
+
+        listing.setListingStatus(ListingStatus.INACTIVE);
+        listingRepository.save(listing);
+        return ResponseEntity.noContent().build();
+    }
+
     @PatchMapping("/{id}/overrides")
     @Operation(summary = "Update marketplace-specific overrides for a listing")
     public ResponseEntity<ListingDto> updateOverrides(

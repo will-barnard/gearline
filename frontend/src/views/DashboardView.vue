@@ -61,6 +61,12 @@
                 <td class="px-4 py-3 text-xs text-gray-500">{{ formatDate(l.createdAt) }}</td>
                 <td class="px-4 py-3 text-right">
                   <div class="flex items-center justify-end gap-3">
+                    <button
+                      @click="dismissListing(l.id)"
+                      :disabled="publishing[l.id]"
+                      class="text-xs text-gray-500 hover:text-red-400 transition-colors disabled:opacity-50"
+                      title="Remove from review queue without publishing"
+                    >Archive</button>
                     <router-link
                       :to="`/products/${l.productId}`"
                       class="text-xs text-gray-400 hover:text-white transition-colors"
@@ -198,6 +204,19 @@ async function publishListing(id) {
     stats.value.pendingReviewListings = Math.max(0, stats.value.pendingReviewListings - 1)
   } catch (e) {
     console.error('Publish failed', e)
+  } finally {
+    delete publishing.value[id]
+  }
+}
+
+async function dismissListing(id) {
+  publishing.value[id] = true
+  try {
+    await api.delete(`/listings/${id}`)
+    reviewListings.value = reviewListings.value.filter(l => l.id !== id)
+    stats.value.pendingReviewListings = Math.max(0, stats.value.pendingReviewListings - 1)
+  } catch (e) {
+    console.error('Dismiss failed', e)
   } finally {
     delete publishing.value[id]
   }

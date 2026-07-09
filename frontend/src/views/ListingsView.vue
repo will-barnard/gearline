@@ -26,8 +26,8 @@
         <table class="w-full text-sm">
           <thead>
             <tr class="border-b border-gray-800 bg-gray-900">
+              <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Product</th>
               <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Marketplace</th>
-              <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">External ID</th>
               <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Status</th>
               <th class="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Price</th>
               <th class="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Qty</th>
@@ -39,37 +39,62 @@
           <tbody>
             <tr v-for="l in listings" :key="l.id" class="table-row">
               <td class="px-4 py-3">
-                <span class="badge-blue">{{ l.marketplaceType }}</span>
+                <router-link
+                  :to="`/products/${l.productId}`"
+                  class="text-sm text-white hover:text-brand-400 transition-colors font-medium"
+                >{{ l.productTitle || l.productSku || l.productId }}</router-link>
+                <p v-if="l.productSku" class="text-xs text-gray-500 font-mono mt-0.5">{{ l.productSku }}</p>
               </td>
-              <td class="px-4 py-3 font-mono text-xs text-gray-400">{{ l.externalListingId || '—' }}</td>
+              <td class="px-4 py-3">
+                <div class="flex flex-col gap-1">
+                  <span class="badge-blue">{{ l.marketplaceType }}</span>
+                  <span v-if="l.externalListingId" class="font-mono text-xs text-gray-500">{{ l.externalListingId }}</span>
+                </div>
+              </td>
               <td class="px-4 py-3">
                 <span :class="listingBadge(l.listingStatus)">{{ l.listingStatus }}</span>
               </td>
-              <td class="px-4 py-3 text-right text-gray-200">{{ l.syncedPrice ? `$${l.syncedPrice}` : '—' }}</td>
-              <td class="px-4 py-3 text-right text-gray-200">{{ l.syncedQuantity ?? '—' }}</td>
+              <td class="px-4 py-3 text-right text-gray-200 text-xs">
+                {{ formatPrice(l.syncedPrice ?? l.productPrice) }}
+              </td>
+              <td class="px-4 py-3 text-right text-gray-200 text-xs">
+                {{ l.syncedQuantity ?? l.productQuantity ?? '—' }}
+              </td>
               <td class="px-4 py-3 text-xs text-gray-500">{{ formatDate(l.lastSyncAt) }}</td>
               <td class="px-4 py-3 max-w-xs">
                 <span v-if="l.lastError" class="text-xs text-red-400 truncate block" :title="l.lastError">{{ l.lastError }}</span>
               </td>
               <td class="px-4 py-3">
-                <div class="flex gap-2 justify-end">
-                  <!-- NEEDS_REVIEW gets a prominent amber Publish button -->
+                <div class="flex gap-2 justify-end items-center">
+                  <!-- NEEDS_REVIEW: Publish + Archive -->
+                  <template v-if="l.listingStatus === 'NEEDS_REVIEW'">
+                    <button
+                      @click="publishListing(l.id)"
+                      class="rounded px-3 py-1 text-xs font-medium bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 transition-colors"
+                    >Publish</button>
+                    <button
+                      @click="dismissListing(l.id)"
+                      class="text-xs text-gray-500 hover:text-red-400 transition-colors"
+                      title="Remove from review queue without publishing"
+                    >Archive</button>
+                  </template>
+                  <!-- ACTIVE: Delist -->
                   <button
-                    v-if="l.listingStatus === 'NEEDS_REVIEW'"
-                    @click="publishListing(l.id)"
-                    class="rounded px-3 py-1 text-xs font-medium bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 transition-colors"
-                  >Publish</button>
-                  <!-- Other non-active statuses get a quieter link -->
-                  <button
-                    v-else-if="l.listingStatus !== 'ACTIVE'"
-                    @click="publishListing(l.id)"
-                    class="text-xs text-brand-400 hover:text-brand-300 transition-colors"
-                  >Publish</button>
-                  <button
-                    v-if="l.listingStatus === 'ACTIVE'"
+                    v-else-if="l.listingStatus === 'ACTIVE'"
                     @click="delistListing(l.id)"
                     class="text-xs text-red-400 hover:text-red-300 transition-colors"
                   >Delist</button>
+                  <!-- Other terminal statuses (FAILED, INACTIVE, DELISTED): can re-publish or dismiss -->
+                  <template v-else-if="['FAILED','INACTIVE','DELISTED'].includes(l.listingStatus)">
+                    <button
+                      @click="publishListing(l.id)"
+                      class="text-xs text-brand-400 hover:text-brand-300 transition-colors"
+                    >Re-publish</button>
+                    <button
+                      @click="dismissListing(l.id)"
+                      class="text-xs text-gray-500 hover:text-red-400 transition-colors"
+                    >Archive</button>
+                  </template>
                 </div>
               </td>
             </tr>
@@ -115,6 +140,11 @@ async function delistListing(id) {
   load()
 }
 
+async function dismissListing(id) {
+  await api.delete(`/listings/${id}`)
+  load()
+}
+
 function listingBadge(s) {
   const map = {
     ACTIVE:       'badge-green',
@@ -132,6 +162,11 @@ function listingBadge(s) {
 function formatDate(d) {
   if (!d) return '—'
   return new Date(d).toLocaleString()
+}
+
+function formatPrice(v) {
+  if (v == null) return '—'
+  return '$' + Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
 
 watch(statusFilter, load)
