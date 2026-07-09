@@ -153,15 +153,16 @@ public class ReverbApiClient {
     /**
      * Fetches the seller's saved shipping profiles from Reverb.
      *
-     * Reverb API: GET /api/shipping_profiles
-     * Returns a list of objects; each has at minimum "id" (integer) and "name" (string).
-     * The profile "id" is what must be sent as "shipping_profile_id" on a listing.
+     * Per Reverb API docs, shipping profiles are NOT at their own endpoint — they are
+     * embedded in the shop response: GET /api/shop → response.shipping_profiles[]
+     * Each profile has "id" (string) and "name" (string).
+     * The profile "id" is what must be sent as "shipping_profile_id" when creating a listing.
      */
     @SuppressWarnings("unchecked")
     public List<Map<String, Object>> getShippingProfiles(MarketplaceAccount account) {
         try {
             Map<String, Object> response = webClient.get()
-                .uri("/shipping_profiles")
+                .uri("/shop")
                 .header(HttpHeaders.AUTHORIZATION, "Bearer " + getAccessToken(account))
                 .retrieve()
                 .bodyToMono(new ParameterizedTypeReference<Map<String, Object>>() {})
@@ -171,7 +172,7 @@ public class ReverbApiClient {
             return profiles != null ? profiles : List.of();
         } catch (WebClientResponseException e) {
             throw new ReverbApiException(
-                "Reverb API error fetching shipping profiles (HTTP " + e.getStatusCode().value() + "): "
+                "Reverb API error fetching shop (HTTP " + e.getStatusCode().value() + "): "
                 + e.getResponseBodyAsString(), e);
         }
     }
