@@ -1,6 +1,7 @@
 package com.gearline.api;
 
 import com.gearline.api.auth.InvalidCredentialsException;
+import com.gearline.marketplace.reverb.client.ReverbApiException;
 import io.jsonwebtoken.JwtException;
 import jakarta.persistence.OptimisticLockException;
 import jakarta.validation.ConstraintViolationException;
@@ -80,6 +81,15 @@ public class GlobalExceptionHandler {
         detail.setTitle("Data integrity violation");
         detail.setDetail("A resource with these values already exists.");
         return ResponseEntity.status(HttpStatus.CONFLICT).body(detail);
+    }
+
+    @ExceptionHandler(ReverbApiException.class)
+    public ResponseEntity<ProblemDetail> handleReverbApiException(ReverbApiException ex) {
+        log.error("Reverb API error: {}", ex.getMessage());
+        ProblemDetail detail = ProblemDetail.forStatus(HttpStatus.BAD_GATEWAY);
+        detail.setTitle("Reverb API error");
+        detail.setDetail(ex.getMessage());
+        return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(detail);
     }
 
     @ExceptionHandler(ResourceNotFoundException.class)
