@@ -185,8 +185,20 @@
                         :limit="LIMITS.REVERB.finish"
                       />
                       <div>
-                        <label class="text-xs text-gray-500">Shipping profile ID</label>
-                        <input v-model="editOverrides[l.id].reverb_shipping_profile_name" placeholder="Numeric profile ID" class="input w-full mt-1 py-1 text-xs" />
+                        <label class="text-xs text-gray-500">Shipping profile</label>
+                        <select
+                          v-model="editOverrides[l.id].reverb_shipping_profile_name"
+                          class="input w-full mt-1 py-1 text-xs"
+                        >
+                          <option value="">
+                            {{ reverbProfilesLoading[l.marketplaceAccountId] ? 'Loading…' : '— Select profile —' }}
+                          </option>
+                          <option
+                            v-for="p in reverbProfilesFor(l.marketplaceAccountId)"
+                            :key="p.id"
+                            :value="String(p.id)"
+                          >{{ p.name }}</option>
+                        </select>
                       </div>
                     </div>
                   </template>
@@ -332,8 +344,20 @@
                   size="sm"
                 />
                 <div>
-                  <label class="block text-xs font-medium text-gray-400 mb-1">Shipping profile ID</label>
-                  <input v-model="publishForm.reverb_shipping_profile_name" placeholder="Numeric profile ID" class="input w-full py-1.5 text-sm" />
+                  <label class="block text-xs font-medium text-gray-400 mb-1">Shipping profile</label>
+                  <select
+                    v-model="publishForm.reverb_shipping_profile_name"
+                    class="input w-full py-1.5 text-sm"
+                  >
+                    <option value="">
+                      {{ reverbProfilesLoading[publishForm.accountId] ? 'Loading…' : '— Select profile —' }}
+                    </option>
+                    <option
+                      v-for="p in reverbProfilesFor(publishForm.accountId)"
+                      :key="p.id"
+                      :value="String(p.id)"
+                    >{{ p.name }}</option>
+                  </select>
                 </div>
               </div>
             </template>
@@ -406,7 +430,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, defineComponent, h } from 'vue'
+import { ref, computed, onMounted, watch, defineComponent, h } from 'vue'
 import { useRoute } from 'vue-router'
 import api from '@/lib/api'
 
@@ -533,6 +557,10 @@ const editOverrides = ref({})
 const savingOverridesId = ref(null)
 const overridesSavedId = ref(null)
 
+// Reverb shipping profiles — keyed by accountId, loaded on demand
+const reverbShippingProfiles = ref({}) // { [accountId]: [{id, name}, ...] }
+const reverbProfilesLoading = ref({})  // { [accountId]: boolean }
+
 // Video URL editor state
 const editingVideo = ref(false)
 const videoUrlDraft = ref('')
@@ -554,6 +582,13 @@ const selectedAccountType = computed(() => {
 const publishValidationErrors = computed(() => {
   if (!selectedAccountType.value || !product.value) return []
   return validateFields(publishForm.value, selectedAccountType.value, product.value)
+})
+
+// Load Reverb shipping profiles as soon as a Reverb account is chosen in the publish modal
+watch(() => publishForm.value.accountId, (accountId) => {
+  if (selectedAccountType.value === 'REVERB' && accountId) {
+    loadReverbShippingProfiles(accountId)
+  }
 })
 
 // ── Validation helpers ────────────────────────────────────────────────────────
@@ -747,6 +782,38 @@ async function delistListing(listing) {
 
 function toggleOverridesEditor(listingId) {
   overridesOpen.value = overridesOpen.value === listingId ? null : listingId
+  // Eagerly load Reverb shipping profiles if opening a Reverb listing
+  if (overridesOpen.value) {
+    const listing = listings.value.find(l => l.id === listingId)
+    if (listing?.marketplaceType === 'REVERB') {
+      loadReverbShippingProfiles(listing.marketplaceAccountId)
+    }
+  }
+}
+
+// ── Reverb shipping profiles ──────────────────────────────────────────────────
+
+/**
+ * Fetches shipping profiles for a Reverb account and caches them by account ID.
+ * No-ops if already loaded or currently loading.
+ */
+async function loadReverbShippingProfiles(accountId) {
+  if (!accountId) return
+  if (reverbShippingProfiles.value[accountId] || reverbProfilesLoading.value[accountId]) return
+  reverbProfilesLoading.value[accountId] = true
+  try {
+    const res = await api.get(`/marketplace/accounts/${accountId}/reverb/shipping-profiles`)
+    reverbShippingProfiles.value[accountId] = res.data
+  } catch (e) {
+    console.error('Failed to load Reverb shipping profiles', e)
+    reverbShippingProfiles.value[accountId] = [] // empty = fall back to typed input
+  } finally {
+    reverbProfilesLoading.value[accountId] = false
+  }
+}
+
+function reverbProfilesFor(accountId) {
+  return reverbShippingProfiles.value[accountId] || []
 }
 
 async function saveOverrides(listing) {

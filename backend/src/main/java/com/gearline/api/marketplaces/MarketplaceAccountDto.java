@@ -28,14 +28,25 @@ public record MarketplaceAccountDto(
      * listing creation. Stored in syncSettings["excluded_tags"]. Shopify-specific;
      * will be empty for Reverb and eBay accounts.
      */
-    List<String> excludedTags
+    List<String> excludedTags,
+    /**
+     * Free-text suffix appended to every listing description for this account,
+     * separated by two newlines. Stored in syncSettings["description_suffix"].
+     * Useful for adding boilerplate like shipping notes to all listings.
+     */
+    String descriptionSuffix
 ) {
     /** Use when PricingProfile entity is already available (avoids extra DB lookup). */
     public static MarketplaceAccountDto from(MarketplaceAccount a, PricingProfile profile) {
         List<String> excluded = Collections.emptyList();
-        Object raw = a.getSyncSettings() != null ? a.getSyncSettings().get("excluded_tags") : null;
-        if (raw instanceof List<?> list) {
+        Object rawTags = a.getSyncSettings() != null ? a.getSyncSettings().get("excluded_tags") : null;
+        if (rawTags instanceof List<?> list) {
             excluded = list.stream().map(Object::toString).toList();
+        }
+        String suffix = null;
+        Object rawSuffix = a.getSyncSettings() != null ? a.getSyncSettings().get("description_suffix") : null;
+        if (rawSuffix instanceof String s && !s.isBlank()) {
+            suffix = s;
         }
         return new MarketplaceAccountDto(
             a.getId(), a.getMarketplaceType(), a.getDisplayName(),
@@ -44,7 +55,8 @@ public record MarketplaceAccountDto(
             profile != null ? profile.getId() : null,
             profile != null ? profile.getName() : null,
             // NOTE: encryptedCredentials deliberately omitted from DTO
-            excluded
+            excluded,
+            suffix
         );
     }
 

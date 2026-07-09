@@ -95,6 +95,21 @@
                     </button>
                   </div>
                 </div>
+
+                <!-- Description suffix (all marketplace types) -->
+                <div class="mt-2 flex items-start gap-2">
+                  <span class="text-xs text-gray-500 shrink-0 mt-0.5">Description suffix:</span>
+                  <span
+                    v-if="account.descriptionSuffix"
+                    class="text-xs text-gray-400 italic truncate max-w-xs"
+                    :title="account.descriptionSuffix"
+                  >{{ account.descriptionSuffix }}</span>
+                  <span v-else class="text-xs text-gray-600 italic">none</span>
+                  <button
+                    @click="openSuffixEditor(account)"
+                    class="text-xs text-gray-500 hover:text-gray-300 underline underline-offset-2 shrink-0"
+                  >Edit</button>
+                </div>
               </div>
               <div class="flex items-center gap-2">
                 <button
@@ -343,6 +358,33 @@
       </div>
     </div>
 
+    <!-- ── Description Suffix editor modal ──────────────────────────────── -->
+    <div v-if="editingSuffixAccount" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+      <div class="card w-full max-w-md p-6">
+        <h2 class="text-base font-semibold text-white mb-1">Description Suffix</h2>
+        <p class="text-xs text-gray-500 mb-4">
+          This text is appended to <em>every</em> listing description for
+          <strong class="text-gray-300">{{ editingSuffixAccount.displayName }}</strong>,
+          separated by a blank line. Leave empty to remove the suffix.
+        </p>
+
+        <textarea
+          v-model="suffixEditorText"
+          rows="4"
+          placeholder="e.g. Contact us for international shipping quotes."
+          class="w-full rounded-lg bg-gray-800 border border-gray-700 focus:border-brand-500 px-3 py-2 text-sm text-white placeholder-gray-600 outline-none resize-y"
+        ></textarea>
+        <p class="mt-1 text-xs text-gray-600">{{ suffixEditorText.length }} characters</p>
+
+        <div class="mt-6 flex gap-3 justify-end">
+          <button @click="editingSuffixAccount = null" class="btn-secondary px-4 py-2 text-sm">Cancel</button>
+          <button @click="saveSuffix" :disabled="savingSuffix" class="btn-primary px-4 py-2 text-sm">
+            {{ savingSuffix ? 'Saving…' : 'Save' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- ── Assign Pricing Profile modal ──────────────────────────────────── -->
     <div v-if="assigningAccount" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
       <div class="card w-full max-w-sm p-6">
@@ -423,6 +465,11 @@ const editingTagsAccount = ref(null)
 const tagEditorTags = ref([])
 const tagInput = ref('')
 const savingTags = ref(false)
+
+// Description suffix editor
+const editingSuffixAccount = ref(null)
+const suffixEditorText = ref('')
+const savingSuffix = ref(false)
 
 const activeProfiles = computed(() => profiles.value.filter(p => p.active))
 
@@ -610,6 +657,25 @@ async function saveTags() {
     load()
   } finally {
     savingTags.value = false
+  }
+}
+
+// ── Description suffix ────────────────────────────────────────────────────────
+function openSuffixEditor(account) {
+  editingSuffixAccount.value = account
+  suffixEditorText.value = account.descriptionSuffix || ''
+}
+
+async function saveSuffix() {
+  savingSuffix.value = true
+  try {
+    await api.patch(`/marketplace/accounts/${editingSuffixAccount.value.id}/settings`, {
+      descriptionSuffix: suffixEditorText.value
+    })
+    editingSuffixAccount.value = null
+    load()
+  } finally {
+    savingSuffix.value = false
   }
 }
 

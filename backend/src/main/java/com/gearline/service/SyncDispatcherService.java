@@ -76,8 +76,8 @@ public class SyncDispatcherService {
                 .marketplaceType(job.getMarketplaceType())
                 .build());
 
-        // Resolve: product defaults → listing_overrides → typed PublishListingRequest
-        PublishListingRequest request = listingAttributeResolver.resolve(product, listing);
+        // Resolve: product defaults → listing_overrides → account settings → typed PublishListingRequest
+        PublishListingRequest request = listingAttributeResolver.resolve(product, listing, account);
         request = applyPricingProfile(request, product, account);
 
         PublishListingResult result = connector.publishListing(account, product, request);
@@ -115,7 +115,7 @@ public class SyncDispatcherService {
 
         // Re-resolve attributes on every update so any changes to listing_overrides
         // (e.g. a newly set reverb_shipping_profile_name) are picked up automatically.
-        PublishListingRequest request = listingAttributeResolver.resolve(product, listing);
+        PublishListingRequest request = listingAttributeResolver.resolve(product, listing, account);
         request = applyPricingProfile(request, product, account);
 
         PublishListingResult result = connector.updateListing(account, product, listing, request);

@@ -1,9 +1,9 @@
 package com.gearline.service;
 
 import com.gearline.domain.listing.MarketplaceListing;
+import com.gearline.domain.marketplace.MarketplaceAccount;
 import com.gearline.domain.product.Product;
 import com.gearline.marketplace.common.dto.PublishListingRequest;
-import com.gearline.marketplace.common.dto.ShippingDetails;
 import com.gearline.marketplace.common.util.ShippingCalculator;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -51,6 +51,12 @@ import java.util.Map;
  *   ebay_category_id             — eBay leaf category ID (numeric string)
  *   ebay_item_specifics          — JSON object of name→value pairs for eBay item specifics
  * </pre>
+ *
+ * <h3>Account-level description suffix</h3>
+ * <p>If {@code MarketplaceAccount.syncSettings["description_suffix"]} is set, its value is
+ * appended to every listing description for that account, separated by two newlines.
+ * This is resolved after listing-level overrides, so the suffix is always present
+ * regardless of whether a per-listing description override is set.</p>
  */
 @Service
 @RequiredArgsConstructor
@@ -67,13 +73,19 @@ public class ListingAttributeResolver {
     private final ShippingCalculator shippingCalculator;
 
     /**
-     * Resolve a complete {@link PublishListingRequest} for the given product and listing.
+     * Resolve a complete {@link PublishListingRequest} for the given product, listing, and account.
      *
      * @param product the canonical product record
      * @param listing the marketplace listing, whose {@code listingOverrides} map may be empty
      *                but is never null (default is {@code {}})
+     * @param account the connected marketplace account, used to apply account-level settings
+     *                such as the description suffix
      */
-    public PublishListingRequest resolve(Product product, MarketplaceListing listing) {
+    public PublishListingRequest resolve(
+        Product product,
+        MarketplaceListing listing,
+        MarketplaceAccount account
+    ) {
         Map<String, Object> overrides = listing.getListingOverrides();
         if (overrides == null) {
             overrides = Map.of();
@@ -84,7 +96,7 @@ public class ListingAttributeResolver {
 
         return PublishListingRequest.builder()
             .titleOverride(getString(overrides, "title"))
-            .descriptionOverride(getString(overrides, "description"))
+            .descriptionOverride(resolveDescription(overrides, product, account))
             .priceOverride(getDecimal(overrides, "price"))
             .quantity(product.getQuantity())
             .imageUrls(resolveImageUrls(overrides, product))
@@ -96,6 +108,36 @@ public class ListingAttributeResolver {
     }
 
     // ── Private helpers ────────────────────────────────────────────────────────
+
+    /**
+     * Resolves the listing description, in priority order:
+     *  1. per-listing override (description key)
+     *  2. canonical product description
+     *
+     * Then appends the account-level description suffix (if configured) separated
+     * by two newlines, so it appears as a distinct paragraph regardless of the
+     * source of the base description.
+     */
+    private String resolveDescription(Map<String, Object> overrides, Product product, MarketplaceAccount account) {
+        // Base: override wins, else product description
+        String base = getString(overrides, "description");
+        if (base == null && product.getDescription() != null && !product.getDescription().isBlank()) {
+            base = product.getDescription();
+        }
+
+        // Append account-level suffix, if configured
+        String suffix = null;
+        if (account != null && account.getSyncSettings() != null) {
+            Object raw = account.getSyncSettings().get("description_suffix");
+            if (raw instanceof String s && !s.isBlank()) {
+                suffix = s;
+            }
+        }
+
+        if (suffix == null) return base;
+        if (base == null || base.isBlank()) return suffix;
+        return base + "\n\n" + suffix;
+    }
 
     /**
      * Returns image URLs from the overrides map if present, otherwise falls back

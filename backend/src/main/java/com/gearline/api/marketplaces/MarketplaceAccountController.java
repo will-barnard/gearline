@@ -9,6 +9,7 @@ import com.gearline.infrastructure.persistence.PricingProfileRepository;
 import com.gearline.marketplace.common.connector.MarketplaceConnectorRegistry;
 import com.gearline.marketplace.common.connector.ConnectorHealthResult;
 import com.gearline.marketplace.common.connector.MarketplaceType;
+import com.gearline.marketplace.reverb.client.ReverbApiClient;
 import com.gearline.marketplace.shopify.sync.ShopifyInitialSyncService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -34,6 +35,7 @@ public class MarketplaceAccountController {
     private final MarketplaceConnectorRegistry connectorRegistry;
     private final PricingProfileRepository pricingProfileRepository;
     private final ShopifyInitialSyncService shopifyInitialSyncService;
+    private final ReverbApiClient reverbApiClient;
 
     @GetMapping
     @Operation(summary = "List all connected marketplace accounts")
@@ -142,6 +144,27 @@ public class MarketplaceAccountController {
         return ResponseEntity.ok(MarketplaceAccountDto.from(account, profile));
     }
 
+    @GetMapping("/{id}/reverb/shipping-profiles")
+    @Operation(summary = "Fetch shipping profiles saved on the seller's Reverb account")
+    public ResponseEntity<List<Map<String, Object>>> getReverbShippingProfiles(@PathVariable UUID id) {
+        MarketplaceAccount account = accountRepository.findById(id)
+            .orElseThrow(() -> new ResourceNotFoundException("MarketplaceAccount", id));
+
+        if (account.getMarketplaceType() != MarketplaceType.REVERB) {
+            return ResponseEntity.badRequest().build();
+        }
+
+        // Fetch from Reverb and slim down to just id + name — the ID is what
+        // gets sent as shipping_profile_id when publishing a listing.
+        List<Map<String, Object>> all = reverbApiClient.getShippingProfiles(account);
+        List<Map<String, Object>> slimmed = all.stream()
+            .filter(p -> p.get("id") != null && p.get("name") != null)
+            .map(p -> Map.<String, Object>of("id", p.get("id"), "name", p.get("name")))
+            .toList();
+
+        return ResponseEntity.ok(slimmed);
+    }
+
     // ── Helpers ────────────────────────────────────────────────────────────────
 
     private PricingProfile resolveProfile(MarketplaceAccount a) {
@@ -173,6 +196,16 @@ public class MarketplaceAccountController {
             account.getSyncSettings().put("excluded_tags", new ArrayList<>(normalised));
         }
 
+        // description_suffix: store as-is (allow blank to clear it)
+        if (req.descriptionSuffix() != null) {
+            String suffix = req.descriptionSuffix().strip();
+            if (suffix.isBlank()) {
+                account.getSyncSettings().remove("description_suffix");
+            } else {
+                account.getSyncSettings().put("description_suffix", suffix);
+            }
+        }
+
         account = accountRepository.save(account);
         return ResponseEntity.ok(MarketplaceAccountDto.from(account, resolveProfile(account)));
     }
@@ -187,5 +220,8 @@ public class MarketplaceAccountController {
 
     public record AssignPricingProfileRequest(UUID pricingProfileId) {}
 
-    public record UpdateAccountSettingsRequest(List<String> excludedTags) {}
+    public record UpdateAccountSettingsRequest(
+        List<String> excludedTags,
+        String descriptionSuffix
+    ) {}
 }
