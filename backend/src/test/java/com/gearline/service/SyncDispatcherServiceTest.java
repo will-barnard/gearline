@@ -101,7 +101,7 @@ class SyncDispatcherServiceTest {
         when(productRepository.findById(productId)).thenReturn(Optional.of(product));
         when(listingRepository.findById(listingId)).thenReturn(Optional.of(listing));
         when(connectorRegistry.getConnector(MarketplaceType.REVERB)).thenReturn(connector);
-        when(listingAttributeResolver.resolve(any(), any())).thenReturn(resolvedRequest);
+        when(listingAttributeResolver.resolve(any(), any(), any())).thenReturn(resolvedRequest);
         when(listingRepository.findByProductIdAndMarketplaceAccountId(any(), any()))
             .thenReturn(Optional.of(listing));
     }

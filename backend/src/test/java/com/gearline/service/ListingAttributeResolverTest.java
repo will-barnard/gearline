@@ -42,7 +42,7 @@ class ListingAttributeResolverTest {
 
     @Test
     void quantity_alwaysTakenFromProduct() {
-        PublishListingRequest req = resolver.resolve(buildProduct(5), listingWith(Map.of()));
+        PublishListingRequest req = resolver.resolve(buildProduct(5), listingWith(Map.of()), null);
         assertThat(req.getQuantity()).isEqualTo(5);
     }
 
@@ -51,14 +51,16 @@ class ListingAttributeResolverTest {
         // With override
         PublishListingRequest withOverride = resolver.resolve(
             buildProduct(1),
-            listingWith(Map.of("title", "Custom Title"))
+            listingWith(Map.of("title", "Custom Title")),
+            null
         );
         assertThat(withOverride.getTitleOverride()).isEqualTo("Custom Title");
 
         // Without override — field should be null (connector falls back to product.title)
         PublishListingRequest withoutOverride = resolver.resolve(
             buildProduct(1),
-            listingWith(Map.of())
+            listingWith(Map.of()),
+            null
         );
         assertThat(withoutOverride.getTitleOverride()).isNull();
     }
@@ -67,14 +69,15 @@ class ListingAttributeResolverTest {
     void priceOverride_parsedFromDecimalString() {
         PublishListingRequest req = resolver.resolve(
             buildProduct(1),
-            listingWith(Map.of("price", "1299.99"))
+            listingWith(Map.of("price", "1299.99")),
+            null
         );
         assertThat(req.getPriceOverride()).isEqualByComparingTo("1299.99");
     }
 
     @Test
     void priceOverride_null_whenNotSet() {
-        PublishListingRequest req = resolver.resolve(buildProduct(1), listingWith(Map.of()));
+        PublishListingRequest req = resolver.resolve(buildProduct(1), listingWith(Map.of()), null);
         assertThat(req.getPriceOverride()).isNull();
     }
 
@@ -83,7 +86,8 @@ class ListingAttributeResolverTest {
         // Malformed decimal should be ignored gracefully
         PublishListingRequest req = resolver.resolve(
             buildProduct(1),
-            listingWith(Map.of("price", "not-a-number"))
+            listingWith(Map.of("price", "not-a-number")),
+            null
         );
         assertThat(req.getPriceOverride()).isNull();
     }
@@ -92,7 +96,8 @@ class ListingAttributeResolverTest {
     void categoryId_setFromOverride() {
         PublishListingRequest req = resolver.resolve(
             buildProduct(1),
-            listingWith(Map.of("category_id", "reverb-cat-uuid"))
+            listingWith(Map.of("category_id", "reverb-cat-uuid")),
+            null
         );
         assertThat(req.getCategoryId()).isEqualTo("reverb-cat-uuid");
     }
@@ -104,7 +109,7 @@ class ListingAttributeResolverTest {
         Product product = buildProduct(1).toBuilder()
             .imageUrls(List.of("https://example.com/img1.jpg"))
             .build();
-        PublishListingRequest req = resolver.resolve(product, listingWith(Map.of()));
+        PublishListingRequest req = resolver.resolve(product, listingWith(Map.of()), null);
         assertThat(req.getImageUrls()).containsExactly("https://example.com/img1.jpg");
     }
 
@@ -115,7 +120,8 @@ class ListingAttributeResolverTest {
             .build();
         PublishListingRequest req = resolver.resolve(
             product,
-            listingWith(Map.of("image_urls", List.of("https://example.com/new.jpg")))
+            listingWith(Map.of("image_urls", List.of("https://example.com/new.jpg"))),
+            null
         );
         assertThat(req.getImageUrls()).containsExactly("https://example.com/new.jpg");
     }
@@ -130,7 +136,7 @@ class ListingAttributeResolverTest {
         overrides.put("reverb_year", "1965");          // passthrough
         overrides.put("ebay_category_id", "12345");    // passthrough
 
-        PublishListingRequest req = resolver.resolve(buildProduct(1), listingWith(overrides));
+        PublishListingRequest req = resolver.resolve(buildProduct(1), listingWith(overrides), null);
 
         // Resolved key should NOT appear in extraParams
         assertThat(req.getExtraParams()).doesNotContainKey("price");
@@ -146,7 +152,8 @@ class ListingAttributeResolverTest {
     void extraParams_isEmpty_whenNoPassthroughKeys() {
         PublishListingRequest req = resolver.resolve(
             buildProduct(1),
-            listingWith(Map.of("price", "400.00", "title", "Custom"))
+            listingWith(Map.of("price", "400.00", "title", "Custom")),
+            null
         );
         assertThat(req.getExtraParams()).isEmpty();
     }
@@ -163,7 +170,7 @@ class ListingAttributeResolverTest {
         Product product = buildProduct(1);
         MarketplaceListing listing = listingWith(Map.of());
 
-        PublishListingRequest req = resolver.resolve(product, listing);
+        PublishListingRequest req = resolver.resolve(product, listing, null);
 
         assertThat(req.getShippingDetails()).isSameAs(expected);
         verify(shippingCalculator).resolveShipping(eq(product), any());
@@ -173,7 +180,7 @@ class ListingAttributeResolverTest {
     void overrides_nullMap_treatedAsEmpty() {
         MarketplaceListing listing = listingWith(null);
         // Should not throw and should produce a valid request
-        PublishListingRequest req = resolver.resolve(buildProduct(2), listing);
+        PublishListingRequest req = resolver.resolve(buildProduct(2), listing, null);
         assertThat(req.getQuantity()).isEqualTo(2);
         assertThat(req.getPriceOverride()).isNull();
     }
