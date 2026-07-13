@@ -250,10 +250,13 @@ public class ProductController {
 
         if (!result.success()) {
             int status = result.isConflict() ? 409 : 400;
-            return ResponseEntity.status(status).body(Map.of(
-                "error", result.message(),
-                "conflict", result.isConflict()
-            ));
+            var body = new java.util.LinkedHashMap<String, Object>();
+            body.put("error",                result.message());
+            body.put("conflict",             result.isConflict());
+            body.put("shopifySku",           result.shopifySku() != null ? result.shopifySku() : "");
+            body.put("conflictProductId",    result.conflictProductId() != null ? result.conflictProductId() : "");
+            body.put("conflictProductTitle", result.conflictProductTitle() != null ? result.conflictProductTitle() : "");
+            return ResponseEntity.status(status).body(body);
         }
 
         Product updated = productRepository.findById(id)
@@ -265,13 +268,14 @@ public class ProductController {
                    "skuChanged", String.valueOf(result.skuChanged()),
                    "oldSku", result.oldSku() != null ? result.oldSku() : ""));
 
-        return ResponseEntity.ok(Map.of(
-            "product",    ProductDto.from(updated),
-            "skuChanged", result.skuChanged(),
-            "oldSku",     result.oldSku()  != null ? result.oldSku()  : "",
-            "newSku",     result.newSku()  != null ? result.newSku()  : "",
-            "message",    result.message()
-        ));
+        var body = new java.util.LinkedHashMap<String, Object>();
+        body.put("product",    ProductDto.from(updated));
+        body.put("skuChanged", result.skuChanged());
+        body.put("shopifySku", result.shopifySku() != null ? result.shopifySku() : "");
+        body.put("oldSku",     result.oldSku()     != null ? result.oldSku()     : "");
+        body.put("newSku",     result.newSku()     != null ? result.newSku()     : "");
+        body.put("message",    result.message());
+        return ResponseEntity.ok(body);
     }
 
     /**
@@ -302,6 +306,36 @@ public class ProductController {
         );
 
         return ResponseEntity.ok(ProductDto.from(updated));
+    }
+
+    /**
+     * Bulk-reconciles all product SKUs against the current Shopify catalog.
+     *
+     * Solves the "swapped SKU" problem that per-product resync cannot: when SKUs
+     * are swapped between products, individual resyncs fail with collision errors.
+     * This endpoint resolves all collisions atomically by temporarily moving
+     * conflicting SKUs to RESYNC-TEMP-{uuid} values before applying the correct ones.
+     *
+     * This does NOT create or modify marketplace listings — only product fields.
+     *
+     * Returns a summary: how many products were compared, how many needed updates,
+     * how many were successfully updated, and any errors.
+     */
+    @PostMapping("/bulk-resync-skus-from-shopify")
+    @Operation(summary = "Reconcile all SKUs against Shopify in one atomic operation")
+    public ResponseEntity<ShopifyResyncService.BulkResyncResult> bulkResyncSkus(
+        @AuthenticationPrincipal User currentUser
+    ) {
+        ShopifyResyncService.BulkResyncResult result = shopifyResyncService.bulkResyncSkus();
+
+        if (result.updated() > 0) {
+            auditService.record(AuditEventType.PRODUCT_UPDATED,
+                currentUser.getId(), "Product", "bulk", true, null,
+                Map.of("source", "bulk-shopify-sku-resync", "updated", String.valueOf(result.updated())));
+        }
+
+        int status = result.success() ? 200 : (result.updated() > 0 ? 207 : 500);
+        return ResponseEntity.status(status).body(result);
     }
 
     /**

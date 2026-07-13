@@ -16,6 +16,19 @@
           class="input w-56 py-1.5 text-xs"
         />
         <button
+          @click="bulkResync"
+          :disabled="bulkResyncing"
+          class="btn-secondary flex items-center gap-1.5 py-1.5 px-3 text-xs"
+          :class="bulkResyncing ? 'opacity-60' : 'text-sky-400 hover:text-sky-300'"
+          title="Fetch all SKUs from Shopify and correct mismatches — handles swapped SKUs automatically"
+        >
+          <svg class="h-3.5 w-3.5" :class="bulkResyncing ? 'animate-spin' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+          </svg>
+          {{ bulkResyncing ? 'Resyncing…' : 'Resync all SKUs from Shopify' }}
+        </button>
+        <button
           @click="exportCsv"
           :disabled="exporting"
           class="btn-secondary flex items-center gap-1.5 py-1.5 px-3 text-xs"
@@ -56,13 +69,41 @@
       </div>
 
       <template v-else>
-        <!-- Resync error banner (shown when a sync-from-shopify fails) -->
-        <div v-if="resyncError"
-             class="mb-4 rounded-lg border border-red-800 bg-red-900/20 px-4 py-3 text-xs"
+        <!-- Bulk resync result banner -->
+        <div v-if="bulkResyncResult" class="mb-4 rounded-lg border px-4 py-3 text-xs"
+             :class="bulkResyncResult.success
+               ? 'border-green-700 bg-green-900/20 text-green-300'
+               : 'border-amber-700 bg-amber-900/20 text-amber-300'">
+          <div class="flex items-start justify-between gap-3">
+            <div>
+              <p class="font-medium">{{ bulkResyncResult.message }}</p>
+              <p v-if="bulkResyncResult.updated > 0" class="mt-1 text-gray-400">
+                Compared {{ bulkResyncResult.totalCompared }} products —
+                {{ bulkResyncResult.updated }} SKU{{ bulkResyncResult.updated !== 1 ? 's' : '' }} corrected.
+              </p>
+              <p v-if="bulkResyncResult.errors?.length" class="mt-1 text-red-400">
+                {{ bulkResyncResult.errors.length }} error{{ bulkResyncResult.errors.length !== 1 ? 's' : '' }}:
+                {{ bulkResyncResult.errors.join('; ') }}
+              </p>
+            </div>
+            <button @click="bulkResyncResult = null" class="flex-shrink-0 text-gray-500 hover:text-gray-300">✕</button>
+          </div>
+        </div>
+
+        <!-- Per-row resync error/info banner -->
+        <div v-if="resyncError" class="mb-4 rounded-lg border px-4 py-3 text-xs"
              :class="resyncError.conflict ? 'border-amber-700 bg-amber-900/20 text-amber-300' : 'border-red-800 bg-red-900/20 text-red-400'"
         >
           <div class="flex items-start justify-between gap-3">
-            <span>{{ resyncError.message }}</span>
+            <div>
+              <p>{{ resyncError.message }}</p>
+              <p v-if="resyncError.shopifySku" class="mt-1 text-gray-400">
+                Shopify has: <span class="font-mono text-white">{{ resyncError.shopifySku }}</span>
+              </p>
+              <p v-if="resyncError.conflict" class="mt-2 text-amber-200">
+                Click <strong>Resync all SKUs from Shopify</strong> (top-right) to fix all swapped SKUs in one go.
+              </p>
+            </div>
             <button @click="resyncError = null" class="flex-shrink-0 text-gray-500 hover:text-gray-300">✕</button>
           </div>
         </div>
@@ -170,8 +211,8 @@
                       <button
                         v-if="syncing[p.id] === 'ok'"
                         class="text-xs text-green-400 cursor-default"
-                        title="Synced successfully"
-                      >✓ Synced</button>
+                        :title="syncMessages[p.id] || 'Synced successfully'"
+                      >✓ {{ syncMessages[p.id] ? syncMessages[p.id].startsWith('Already') ? 'In sync' : 'Updated' : 'Synced' }}</button>
                       <button
                         v-else
                         @click="syncFromShopify(p)"
@@ -247,8 +288,13 @@ const skuInput = ref(null)
 // Sync-from-Shopify state
 // syncing[productId] = 'loading' | 'ok' | undefined
 const syncing = ref({})
+const syncMessages = ref({})     // productId → human-readable result (e.g. "Already in sync")
 const recentlyUpdated = ref(new Set())
-const resyncError = ref(null) // { message, conflict }
+const resyncError = ref(null)    // { message, conflict, shopifySku }
+
+// Bulk resync state
+const bulkResyncing = ref(false)
+const bulkResyncResult = ref(null)
 
 // Debounce search
 let searchTimeout = null
@@ -347,7 +393,7 @@ async function syncFromShopify(product) {
 
   try {
     const res = await api.post(`/products/${product.id}/resync-from-shopify`)
-    const { product: updated, skuChanged, oldSku, newSku, message } = res.data
+    const { product: updated, skuChanged, shopifySku, oldSku, newSku, message } = res.data
 
     // Update the row in-place
     const idx = products.value.findIndex(p => p.id === product.id)
@@ -355,9 +401,11 @@ async function syncFromShopify(product) {
       products.value[idx] = { ...products.value[idx], ...updated }
     }
 
+    // Store the human-readable result for the tooltip/badge
+    syncMessages.value = { ...syncMessages.value, [product.id]: message }
     syncing.value = { ...syncing.value, [product.id]: 'ok' }
 
-    // Flash green for 3 s then clear the success indicator
+    // Flash green for 4 s then clear
     const next = new Set(recentlyUpdated.value)
     next.add(product.id)
     recentlyUpdated.value = next
@@ -368,23 +416,54 @@ async function syncFromShopify(product) {
       const st = { ...syncing.value }
       delete st[product.id]
       syncing.value = st
-    }, 3000)
+    }, 4000)
 
+    // Re-sort if SKU changed
     if (skuChanged) {
-      // Re-sort the list since SKU changed (find the row and move it)
-      // Simplest: reload the current page to get correct sort order
-      setTimeout(() => loadProducts(), 3100)
+      setTimeout(() => loadProducts(), 4100)
     }
   } catch (e) {
     const status = e.response?.status
     const body = e.response?.data
     resyncError.value = {
       message: body?.error || 'Failed to sync from Shopify — please try again.',
-      conflict: body?.conflict === true || status === 409
+      conflict: body?.conflict === true || status === 409,
+      shopifySku: body?.shopifySku || null
     }
     const st = { ...syncing.value }
     delete st[product.id]
     syncing.value = st
+  }
+}
+
+async function bulkResync() {
+  if (!confirm(
+    'This will fetch all active products from Shopify and correct any mismatched SKUs in Gearline.\n\n' +
+    'Swapped SKUs (where product A has B\'s SKU and vice-versa) are handled automatically.\n\n' +
+    'Continue?'
+  )) return
+
+  bulkResyncResult.value = null
+  resyncError.value = null
+  bulkResyncing.value = true
+
+  try {
+    const res = await api.post('/products/bulk-resync-skus-from-shopify')
+    bulkResyncResult.value = res.data
+    // Reload the list to reflect any SKU changes
+    await loadProducts()
+  } catch (e) {
+    const body = e.response?.data
+    bulkResyncResult.value = {
+      success: false,
+      message: body?.message || 'Bulk resync failed — please try again.',
+      totalCompared: 0,
+      needsUpdate: 0,
+      updated: 0,
+      errors: []
+    }
+  } finally {
+    bulkResyncing.value = false
   }
 }
 

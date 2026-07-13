@@ -8,6 +8,7 @@ import com.gearline.domain.product.ProductCondition;
 import com.gearline.infrastructure.persistence.MarketplaceAccountRepository;
 import com.gearline.infrastructure.persistence.ProductRepository;
 import com.gearline.marketplace.common.connector.MarketplaceType;
+import com.gearline.marketplace.shopify.client.ShopifyProductsPage;
 import com.gearline.marketplace.shopify.client.ShopifyApiClient;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -17,7 +18,10 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
@@ -107,16 +111,19 @@ public class ShopifyResyncService {
         String shopifySku = shopifyProduct.path("variants").path(0).path("sku").asText();
 
         if (!shopifySku.isBlank() && !shopifySku.equals(oldSku)) {
-            if (productRepository.existsBySku(shopifySku)) {
-                // Find which product owns it so the user knows where the conflict is
-                String conflictId = productRepository.findBySku(shopifySku)
-                    .map(p -> "product " + p.getTitle() + " (ID " + p.getId() + ")")
-                    .orElse("another product");
+            // Check whether a DIFFERENT product already holds the Shopify SKU.
+            // This is the most common cause of silent webhook failures (unique constraint violation).
+            Optional<Product> collider = productRepository.findBySku(shopifySku)
+                .filter(p -> !p.getId().equals(productId));
+            if (collider.isPresent()) {
+                Product other = collider.get();
                 return ResyncResult.conflict(
-                    "Shopify has SKU \"" + shopifySku + "\" for this product, but that SKU is already " +
-                    "assigned to " + conflictId + " in Gearline. " +
-                    "Fix the duplicate manually first (e.g. edit the wrong product's SKU inline), " +
-                    "then re-sync again.");
+                    shopifySku,
+                    "Shopify has SKU \"" + shopifySku + "\" for \"" + product.getTitle() + "\", " +
+                    "but that SKU is already held by \"" + other.getTitle() + "\" in Gearline. " +
+                    "Use \"Resync all SKUs from Shopify\" to fix all swapped SKUs at once.",
+                    other.getId().toString(),
+                    other.getTitle());
             }
         }
 
@@ -140,8 +147,124 @@ public class ShopifyResyncService {
         log.info("Re-synced product {} ('{}') from Shopify — SKU: {} → {}",
             productId, product.getTitle(), oldSku, newSku);
 
-        return ResyncResult.ok(oldSku, newSku);
+        return ResyncResult.ok(shopifySku, oldSku, newSku);
     }
+
+    // ── Bulk SKU resync ────────────────────────────────────────────────────────
+
+    /**
+     * Fetches all active products from Shopify and reconciles SKUs in Gearline.
+     *
+     * Handles the "swapped SKU" problem that individual per-product resync cannot:
+     * when products A and B have each other's SKUs, both individual resyncs fail
+     * with a collision. This method resolves it atomically by:
+     *   1. Setting every product that needs a SKU change to a unique temp SKU
+     *      (format: "RESYNC-TEMP-{uuid}"), clearing all collisions.
+     *   2. Setting every product to its correct Shopify SKU.
+     *
+     * Runs in a single transaction so the temp-SKU state is never visible
+     * to other readers.
+     *
+     * @return a summary: total products compared, SKUs changed, errors encountered
+     */
+    @Transactional
+    public BulkResyncResult bulkResyncSkus() {
+        // Find the active Shopify account
+        Optional<MarketplaceAccount> maybeAccount = accountRepository
+            .findByMarketplaceTypeAndActiveTrue(MarketplaceType.SHOPIFY)
+            .stream().findFirst();
+        if (maybeAccount.isEmpty()) {
+            return new BulkResyncResult(false, "No active Shopify account is connected.", 0, 0, 0, List.of());
+        }
+        MarketplaceAccount account = maybeAccount.get();
+
+        // ── Step 1: Build shopifyProductId → correctSku map from Shopify ────────
+        Map<String, String> shopifySkuMap = new HashMap<>();
+        try {
+            String pageInfo = null;
+            do {
+                ShopifyProductsPage page = shopifyApiClient.fetchProducts(account, pageInfo);
+                for (JsonNode p : page.products()) {
+                    String shopifyId = p.path("id").asText();
+                    String sku = p.path("variants").path(0).path("sku").asText();
+                    if (!shopifyId.isBlank() && !sku.isBlank()) {
+                        shopifySkuMap.put(shopifyId, sku);
+                    }
+                }
+                pageInfo = page.nextPageInfo();
+            } while (pageInfo != null);
+        } catch (Exception e) {
+            log.error("Bulk SKU resync: failed to fetch products from Shopify", e);
+            return new BulkResyncResult(false, "Shopify API error: " + e.getMessage(), 0, 0, 0, List.of());
+        }
+
+        log.info("Bulk SKU resync: fetched {} products from Shopify", shopifySkuMap.size());
+
+        // ── Step 2: Find Gearline products that need a SKU update ───────────────
+        List<Product> allProducts = productRepository.findAll();
+        record PendingUpdate(Product product, String correctSku, String oldSku) {}
+        List<PendingUpdate> pending = new ArrayList<>();
+
+        for (Product product : allProducts) {
+            if (product.getShopifyProductId() == null || product.getShopifyProductId().isBlank()) continue;
+            String correctSku = shopifySkuMap.get(product.getShopifyProductId());
+            if (correctSku == null) continue; // not in active Shopify products list
+            if (!correctSku.equals(product.getSku())) {
+                pending.add(new PendingUpdate(product, correctSku, product.getSku()));
+            }
+        }
+
+        if (pending.isEmpty()) {
+            return new BulkResyncResult(true, "All SKUs already match Shopify — nothing to update.",
+                allProducts.size(), 0, 0, List.of());
+        }
+
+        log.info("Bulk SKU resync: {} products need SKU corrections", pending.size());
+
+        // ── Step 3: Break all collisions by setting temp SKUs first ─────────────
+        // This is critical when SKUs are swapped (A has B's SKU, B has A's SKU).
+        // Attempting direct updates would fail with unique constraint violations.
+        for (PendingUpdate u : pending) {
+            u.product().setSku("RESYNC-TEMP-" + UUID.randomUUID());
+            productRepository.save(u.product());
+        }
+        // Flush so the temp SKUs are written before we write the correct ones
+        productRepository.flush();
+
+        // ── Step 4: Apply the correct Shopify SKUs ───────────────────────────────
+        List<String> errors = new ArrayList<>();
+        int changed = 0;
+        for (PendingUpdate u : pending) {
+            try {
+                u.product().setSku(u.correctSku());
+                productRepository.save(u.product());
+                log.info("Bulk SKU resync: '{}' SKU {} → {}", u.product().getTitle(), u.oldSku(), u.correctSku());
+                changed++;
+            } catch (Exception e) {
+                log.error("Bulk SKU resync: failed to set SKU '{}' for product {}: {}",
+                    u.correctSku(), u.product().getId(), e.getMessage());
+                errors.add("\"" + u.product().getTitle() + "\": " + e.getMessage());
+                // Leave the product on its temp SKU — admin can fix manually
+            }
+        }
+
+        productRepository.flush();
+
+        String summary = changed + " SKU" + (changed != 1 ? "s" : "") + " updated from Shopify";
+        if (!errors.isEmpty()) summary += "; " + errors.size() + " error(s)";
+
+        return new BulkResyncResult(errors.isEmpty(), summary,
+            allProducts.size(), pending.size(), changed, errors);
+    }
+
+    public record BulkResyncResult(
+        boolean success,
+        String message,
+        int totalCompared,
+        int needsUpdate,
+        int updated,
+        List<String> errors
+    ) {}
 
     // ── Field application (mirrors ShopifyWebhookProcessor.applyProductFields) ─
 
@@ -263,27 +386,39 @@ public class ShopifyResyncService {
         boolean success,
         boolean isConflict,
         String message,
+        /** The SKU Shopify currently has for this product. */
+        String shopifySku,
+        /** The SKU Gearline had before the resync. */
         String oldSku,
-        String newSku
+        /** The SKU Gearline now has after the resync (same as shopifySku on success). */
+        String newSku,
+        /** When isConflict=true: the Gearline product ID that holds shopifySku. */
+        String conflictProductId,
+        /** When isConflict=true: the title of the conflicting product. */
+        String conflictProductTitle
     ) {
         public boolean skuChanged() {
             return success && !Objects.equals(oldSku, newSku);
         }
 
-        static ResyncResult ok(String oldSku, String newSku) {
+        static ResyncResult ok(String shopifySku, String oldSku, String newSku) {
             boolean changed = !Objects.equals(oldSku, newSku);
-            return new ResyncResult(true, false, oldSku, newSku,
+            return new ResyncResult(
+                true, false,
                 changed
                     ? "SKU updated: \"" + oldSku + "\" → \"" + newSku + "\""
-                    : "Fields refreshed — SKU unchanged");
+                    : "Already in sync — no SKU change needed",
+                shopifySku, oldSku, newSku, null, null);
         }
 
         static ResyncResult fail(String message) {
-            return new ResyncResult(false, false, message, null, null);
+            return new ResyncResult(false, false, message, null, null, null, null, null);
         }
 
-        static ResyncResult conflict(String message) {
-            return new ResyncResult(false, true, message, null, null);
+        static ResyncResult conflict(String shopifySku, String message,
+                                     String conflictProductId, String conflictProductTitle) {
+            return new ResyncResult(false, true, message, shopifySku, null, null,
+                conflictProductId, conflictProductTitle);
         }
     }
 }
