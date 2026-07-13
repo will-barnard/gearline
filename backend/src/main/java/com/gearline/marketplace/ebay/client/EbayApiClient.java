@@ -302,6 +302,51 @@ public class EbayApiClient {
     }
 
     /**
+     * Creates a new merchant location for the seller's account.
+     *
+     * POST /sell/inventory/v1/location/{merchantLocationKey}
+     * eBay returns 204 No Content on success.
+     *
+     * The merchantLocationKey is a seller-defined identifier (max 36 chars, alphanumeric + _ + -).
+     * You must send at minimum a name and a country in location.address.
+     */
+    public void createMerchantLocation(MarketplaceAccount account,
+                                       String merchantLocationKey,
+                                       String name,
+                                       String addressLine1,
+                                       String city,
+                                       String stateOrProvince,
+                                       String postalCode) {
+        Map<String, Object> address = new java.util.LinkedHashMap<>();
+        if (addressLine1 != null && !addressLine1.isBlank()) address.put("addressLine1", addressLine1.strip());
+        if (city != null && !city.isBlank()) address.put("city", city.strip());
+        if (stateOrProvince != null && !stateOrProvince.isBlank()) address.put("stateOrProvince", stateOrProvince.strip().toUpperCase());
+        if (postalCode != null && !postalCode.isBlank()) address.put("postalCode", postalCode.strip());
+        address.put("country", "US");
+
+        Map<String, Object> location = Map.of("address", address);
+        Map<String, Object> body = new java.util.LinkedHashMap<>();
+        body.put("location", location);
+        body.put("locationTypes", List.of("WAREHOUSE"));
+        body.put("name", name.strip());
+        body.put("merchantLocationStatus", "ENABLED");
+
+        try {
+            webClient.post()
+                .uri("/sell/inventory/v1/location/" + merchantLocationKey.strip())
+                .header(HttpHeaders.AUTHORIZATION, bearer(account))
+                .header(HttpHeaders.CONTENT_TYPE, "application/json")
+                .bodyValue(body)
+                .retrieve()
+                .toBodilessEntity()
+                .block();
+        } catch (WebClientResponseException e) {
+            throw new EbayApiException(
+                "Failed to create merchant location: " + e.getStatusCode() + " — " + e.getResponseBodyAsString(), e);
+        }
+    }
+
+    /**
      * Lists all fulfillment (shipping) policies for the seller's account.
      *
      * GET /sell/account/v1/fulfillment_policy?marketplace_id=EBAY_US

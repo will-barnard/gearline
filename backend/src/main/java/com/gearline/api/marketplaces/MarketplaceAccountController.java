@@ -241,6 +241,48 @@ public class MarketplaceAccountController {
         }
     }
 
+    /**
+     * Creates a new eBay merchant location for the seller's account.
+     * Location key is a seller-defined identifier (max 36 chars, alphanumeric + _ + -).
+     * eBay requires at least one location on every offer before it can be published.
+     */
+    @PostMapping("/{id}/ebay/location")
+    @Operation(summary = "Create a new eBay merchant location")
+    public ResponseEntity<Map<String, Object>> createEbayLocation(
+        @PathVariable UUID id,
+        @RequestBody CreateEbayLocationRequest req
+    ) {
+        MarketplaceAccount account = accountRepository.findById(id)
+            .orElseThrow(() -> new ResourceNotFoundException("MarketplaceAccount", id));
+        if (account.getMarketplaceType() != MarketplaceType.EBAY) {
+            return ResponseEntity.badRequest().build();
+        }
+
+        // Basic validation
+        if (req.key() == null || req.key().isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Location key is required"));
+        }
+        if (req.name() == null || req.name().isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Location name is required"));
+        }
+
+        try {
+            ebayApiClient.createMerchantLocation(
+                account,
+                req.key(), req.name(),
+                req.addressLine1(), req.city(), req.state(), req.postalCode()
+            );
+            return ResponseEntity.ok(Map.of(
+                "key",    req.key().strip(),
+                "name",   req.name().strip(),
+                "status", "ENABLED"
+            ));
+        } catch (EbayApiException e) {
+            log.warn("eBay create location failed for account {}: {}", id, e.getMessage());
+            return ResponseEntity.status(502).body(Map.of("error", e.getMessage()));
+        }
+    }
+
     @GetMapping("/{id}/reverb/shipping-profiles")
     @Operation(summary = "Fetch shipping profiles saved on the seller's Reverb account")
     public ResponseEntity<List<Map<String, Object>>> getReverbShippingProfiles(@PathVariable UUID id) {
@@ -341,5 +383,17 @@ public class MarketplaceAccountController {
         String ebayMerchantLocationKey,
         String ebayFulfillmentPolicyId,
         String ebayReturnPolicyId
+    ) {}
+
+    public record CreateEbayLocationRequest(
+        /** Seller-defined identifier, max 36 chars, alphanumeric + underscore + hyphen. E.g. "MAIN" */
+        @NotBlank String key,
+        /** Human-readable display name shown in eBay Seller Hub. */
+        @NotBlank String name,
+        String addressLine1,
+        String city,
+        /** Two-letter US state code, e.g. "IL" */
+        String state,
+        String postalCode
     ) {}
 }

@@ -454,20 +454,82 @@
         <div class="space-y-4">
           <!-- Merchant location -->
           <div>
-            <label class="text-xs font-medium text-gray-300 block mb-1">Shipping location</label>
+            <div class="flex items-center justify-between mb-1">
+              <label class="text-xs font-medium text-gray-300">Shipping location</label>
+              <button
+                v-if="!showCreateLocation"
+                @click="showCreateLocation = true"
+                class="text-xs text-brand-400 hover:text-brand-300 underline underline-offset-2"
+              >+ Create new location</button>
+            </div>
             <p class="text-xs text-gray-500 mb-1.5">
-              The location key set up in your eBay Seller Hub (Inventory → Locations).
-              Tells eBay where the item ships from.
+              Tells eBay where items ship from. Required before any listing can be published.
             </p>
             <select v-model="ebayDefaultsForm.merchantLocationKey" class="input w-full text-sm"
               @focus="loadEbayConfig">
               <option value="">
-                {{ ebayConfigLoading ? 'Loading…' : (ebayConfig?.locations?.length ? '— Select location —' : 'No locations found') }}
+                {{ ebayConfigLoading ? 'Loading…' : (ebayConfig?.locations?.length ? '— Select location —' : 'No locations found — create one below') }}
               </option>
               <option v-for="loc in ebayConfig?.locations || []" :key="loc.key" :value="loc.key">
                 {{ loc.name || loc.key }}{{ loc.status === 'DISABLED' ? ' (disabled)' : '' }}
               </option>
             </select>
+
+            <!-- Inline create-location form -->
+            <div v-if="showCreateLocation" class="mt-3 rounded-lg bg-gray-800/60 border border-gray-700 p-3 space-y-2">
+              <p class="text-xs font-medium text-gray-300">Create a new shipping location</p>
+              <div class="grid grid-cols-2 gap-2">
+                <div>
+                  <label class="text-xs text-gray-500 block mb-0.5">Location key <span class="text-gray-600">(e.g. MAIN)</span></label>
+                  <input
+                    v-model="createLocationForm.key"
+                    type="text"
+                    placeholder="MAIN"
+                    maxlength="36"
+                    class="input w-full text-sm font-mono"
+                  />
+                </div>
+                <div>
+                  <label class="text-xs text-gray-500 block mb-0.5">Display name</label>
+                  <input
+                    v-model="createLocationForm.name"
+                    type="text"
+                    placeholder="Main Warehouse"
+                    class="input w-full text-sm"
+                  />
+                </div>
+              </div>
+              <div>
+                <label class="text-xs text-gray-500 block mb-0.5">Street address</label>
+                <input
+                  v-model="createLocationForm.addressLine1"
+                  type="text"
+                  placeholder="123 Main St"
+                  class="input w-full text-sm"
+                />
+              </div>
+              <div class="grid grid-cols-3 gap-2">
+                <div class="col-span-1">
+                  <label class="text-xs text-gray-500 block mb-0.5">City</label>
+                  <input v-model="createLocationForm.city" type="text" placeholder="Chicago" class="input w-full text-sm" />
+                </div>
+                <div>
+                  <label class="text-xs text-gray-500 block mb-0.5">State</label>
+                  <input v-model="createLocationForm.state" type="text" placeholder="IL" maxlength="2" class="input w-full text-sm" />
+                </div>
+                <div>
+                  <label class="text-xs text-gray-500 block mb-0.5">ZIP</label>
+                  <input v-model="createLocationForm.postalCode" type="text" placeholder="60601" class="input w-full text-sm" />
+                </div>
+              </div>
+              <p v-if="createLocationError" class="text-xs text-red-400">{{ createLocationError }}</p>
+              <div class="flex gap-2 justify-end pt-1">
+                <button @click="showCreateLocation = false; createLocationError = ''" class="btn-secondary px-3 py-1 text-xs">Cancel</button>
+                <button @click="createEbayLocation" :disabled="creatingLocation" class="btn-primary px-3 py-1 text-xs">
+                  {{ creatingLocation ? 'Creating…' : 'Create location' }}
+                </button>
+              </div>
+            </div>
           </div>
 
           <!-- Fulfillment policy -->
@@ -818,10 +880,19 @@ const ebayConfigLoading = ref(false)
 const ebayConfigError = ref(null)   // string | null — shown in modal if config fetch fails
 const ebayDefaultsForm = ref({ merchantLocationKey: '', fulfillmentPolicyId: '', returnPolicyId: '' })
 
+// Create-location inline form
+const showCreateLocation = ref(false)
+const creatingLocation = ref(false)
+const createLocationError = ref('')
+const createLocationForm = ref({ key: '', name: '', addressLine1: '', city: '', state: '', postalCode: '' })
+
 function openEbayDefaults(account) {
   editingEbayDefaults.value = account
   ebayConfig.value = null
   ebayConfigError.value = null
+  showCreateLocation.value = false
+  createLocationError.value = ''
+  createLocationForm.value = { key: '', name: '', addressLine1: '', city: '', state: '', postalCode: '' }
   ebayDefaultsForm.value = {
     merchantLocationKey: account.ebayMerchantLocationKey || '',
     fulfillmentPolicyId: account.ebayFulfillmentPolicyId || '',
@@ -862,6 +933,53 @@ async function saveEbayDefaults() {
     load()
   } finally {
     savingEbayDefaults.value = false
+  }
+}
+
+async function createEbayLocation() {
+  createLocationError.value = ''
+  const { key, name } = createLocationForm.value
+  if (!key.trim()) { createLocationError.value = 'Location key is required (e.g. MAIN).'; return }
+  if (!name.trim()) { createLocationError.value = 'Display name is required.'; return }
+  // Validate key format: alphanumeric, underscore, hyphen only
+  if (!/^[A-Za-z0-9_-]{1,36}$/.test(key.trim())) {
+    createLocationError.value = 'Key must be 1–36 characters: letters, numbers, _ or - only.'
+    return
+  }
+
+  creatingLocation.value = true
+  try {
+    const res = await api.post(
+      `/marketplace/accounts/${editingEbayDefaults.value.id}/ebay/location`,
+      {
+        key: createLocationForm.value.key.trim().toUpperCase(),
+        name: createLocationForm.value.name.trim(),
+        addressLine1: createLocationForm.value.addressLine1.trim() || null,
+        city:         createLocationForm.value.city.trim() || null,
+        state:        createLocationForm.value.state.trim().toUpperCase() || null,
+        postalCode:   createLocationForm.value.postalCode.trim() || null,
+      }
+    )
+
+    if (res.data?.error) {
+      createLocationError.value = res.data.error
+      return
+    }
+
+    // Inject new location into cached config and select it automatically
+    const newLoc = { key: res.data.key, name: res.data.name, status: 'ENABLED' }
+    if (ebayConfig.value) {
+      ebayConfig.value.locations = [...(ebayConfig.value.locations || []), newLoc]
+    } else {
+      ebayConfig.value = { locations: [newLoc], fulfillmentPolicies: [], returnPolicies: [] }
+    }
+    ebayDefaultsForm.value.merchantLocationKey = newLoc.key
+    showCreateLocation.value = false
+    createLocationForm.value = { key: '', name: '', addressLine1: '', city: '', state: '', postalCode: '' }
+  } catch (e) {
+    createLocationError.value = e.response?.data?.error || e.message || 'Failed to create location.'
+  } finally {
+    creatingLocation.value = false
   }
 }
 
