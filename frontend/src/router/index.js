@@ -16,6 +16,7 @@ const routes = [
       { path: '', redirect: '/dashboard' },
       { path: 'dashboard', name: 'Dashboard', component: () => import('@/views/DashboardView.vue') },
       { path: 'products', name: 'Products', component: () => import('@/views/ProductsView.vue') },
+      { path: 'products/sku-audit', name: 'SkuAudit', component: () => import('@/views/SkuAuditView.vue') },
       { path: 'products/:id', name: 'ProductDetail', component: () => import('@/views/ProductDetailView.vue') },
       { path: 'listings', name: 'Listings', component: () => import('@/views/ListingsView.vue') },
       { path: 'orders', name: 'Orders', component: () => import('@/views/OrdersView.vue') },

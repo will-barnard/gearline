@@ -11,6 +11,7 @@ import com.gearline.domain.user.User;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.persistence.criteria.Predicate;
+import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.*;
@@ -19,11 +20,14 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 
+import java.io.IOException;
+import java.io.PrintWriter;
+import java.net.URI;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
-
-import java.net.URI;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 @RestController
@@ -36,19 +40,69 @@ public class ProductController {
     private final AuditService auditService;
     private final ProductExclusionService productExclusionService;
 
+    private static final Set<String> SORTABLE_FIELDS = Set.of(
+        "sku", "title", "brand", "price", "quantity", "status", "createdAt", "updatedAt"
+    );
+
     @GetMapping
-    @Operation(summary = "List all products with pagination and optional search/status/exclusion filter")
+    @Operation(summary = "List all products with pagination and optional search/status/exclusion/sort filter")
     public ResponseEntity<Page<ProductDto>> listProducts(
         @RequestParam(defaultValue = "0") int page,
         @RequestParam(defaultValue = "50") int size,
         @RequestParam(required = false) ProductStatus status,
         @RequestParam(required = false) String search,
-        @RequestParam(required = false) Boolean marketplaceExcluded
+        @RequestParam(required = false) Boolean marketplaceExcluded,
+        @RequestParam(defaultValue = "createdAt") String sortBy,
+        @RequestParam(defaultValue = "desc") String sortDir
     ) {
-        Pageable pageable = PageRequest.of(page, Math.min(size, 200), Sort.by(Sort.Direction.DESC, "createdAt"));
+        String field = SORTABLE_FIELDS.contains(sortBy) ? sortBy : "createdAt";
+        Sort.Direction dir = "asc".equalsIgnoreCase(sortDir) ? Sort.Direction.ASC : Sort.Direction.DESC;
+        Pageable pageable = PageRequest.of(page, Math.min(size, 500), Sort.by(dir, field));
         Specification<Product> spec = buildSpec(status, search, marketplaceExcluded);
         Page<Product> products = productRepository.findAll(spec, pageable);
         return ResponseEntity.ok(products.map(ProductDto::from));
+    }
+
+    /**
+     * Streams all products as a CSV file for offline audit (e.g. SKU / title reconciliation).
+     * Returns at most 10 000 rows to keep response times reasonable.
+     */
+    @GetMapping("/export.csv")
+    @Operation(summary = "Export all products as CSV for offline audit")
+    public void exportCsv(HttpServletResponse response) throws IOException {
+        response.setContentType("text/csv; charset=UTF-8");
+        response.setHeader("Content-Disposition",
+            "attachment; filename=\"gearline-products-" + LocalDate.now() + ".csv\"");
+
+        List<Product> all = productRepository.findAll(Sort.by(Sort.Direction.ASC, "sku"));
+
+        try (PrintWriter w = response.getWriter()) {
+            w.println("SKU,Title,Brand,Category,Model,Year,Condition,Price,Quantity,Status,MarketplaceExcluded,ShopifyProductId");
+            for (Product p : all) {
+                w.printf("%s,%s,%s,%s,%s,%s,%s,%s,%d,%s,%s,%s%n",
+                    csvField(p.getSku()),
+                    csvField(p.getTitle()),
+                    csvField(p.getBrand()),
+                    csvField(p.getCategory()),
+                    csvField(p.getModel()),
+                    csvField(p.getYearMade()),
+                    csvField(p.getCondition() != null ? p.getCondition().name() : ""),
+                    p.getPrice(),
+                    p.getQuantity(),
+                    p.getStatus().name(),
+                    p.isMarketplaceExcluded(),
+                    csvField(p.getShopifyProductId()));
+            }
+        }
+    }
+
+    /** Wraps a CSV field value in quotes if it contains commas, quotes, or newlines. */
+    private static String csvField(String s) {
+        if (s == null) return "";
+        if (s.contains(",") || s.contains("\"") || s.contains("\n") || s.contains("\r")) {
+            return "\"" + s.replace("\"", "\"\"") + "\"";
+        }
+        return s;
     }
 
     /**
@@ -131,6 +185,15 @@ public class ProductController {
         Product product = productRepository.findById(id)
             .orElseThrow(() -> new ResourceNotFoundException("Product", id));
 
+        if (request.sku() != null && !request.sku().isBlank() && !request.sku().equals(product.getSku())) {
+            if (productRepository.existsBySku(request.sku())) {
+                throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.CONFLICT,
+                    "SKU already in use: " + request.sku()
+                );
+            }
+            product.setSku(request.sku().strip());
+        }
         if (request.title() != null) product.setTitle(request.title());
         if (request.description() != null) product.setDescription(request.description());
         if (request.brand() != null) product.setBrand(request.brand());
