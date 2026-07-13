@@ -127,6 +127,10 @@ gearline:
     # RuName (Redirect URL Name) assigned by the eBay Developer Portal.
     # Register your callback URL there, then copy the RuName shown.
     ru-name: ${EBAY_RU_NAME:}
+    # Verification token for account-deletion notifications (GDPR/CCPA compliance).
+    # Choose any string (e.g. openssl rand -hex 32) and enter the same value in
+    # the Developer Portal under Application Keys → Notifications.
+    notification-verification-token: ${EBAY_NOTIFICATION_VERIFICATION_TOKEN:}
 
   sync:
     max-retry-attempts: 5

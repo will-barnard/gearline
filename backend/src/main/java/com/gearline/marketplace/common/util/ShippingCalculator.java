@@ -73,10 +73,11 @@ public class ShippingCalculator {
      *
      * Override keys consumed from the overrides map:
      * <pre>
-     *   reverb_shipping_profile_name  — Reverb seller shipping profile name
-     *   ebay_fulfillment_policy_id    — eBay fulfillment policy UUID
-     *   weight_oz_override            — explicit imperial weight (skips conversion)
+     *   reverb_shipping_profile_name  — Reverb seller shipping profile ID (numeric string)
+     *   weight_oz_override            — explicit imperial weight in oz (skips kg→oz conversion)
      * </pre>
+     * eBay-specific keys (ebay_fulfillment_policy_id, etc.) are NOT consumed here —
+     * they pass through to extraParams and are read directly by EbayConnector.
      *
      * @param product   canonical product (provides weight_kg, dimensions in cm, price)
      * @param overrides listing_overrides JSONB map; may be empty but never null
@@ -99,12 +100,9 @@ public class ShippingCalculator {
             heightIn = cmToIn(dims.getHeightCm());
         }
 
-        // Shipping profile — Reverb and eBay use different keys
+        // Reverb shipping profile ID — Reverb-only concept.
+        // eBay uses a fulfillment policy UUID sent separately via extraParams, not here.
         String shippingProfileName = getStringOverride(overrides, "reverb_shipping_profile_name");
-        if (shippingProfileName == null) {
-            // eBay fulfillment policy ID shares the same slot; each connector interprets it
-            shippingProfileName = getStringOverride(overrides, "ebay_fulfillment_policy_id");
-        }
 
         // Insurance value
         BigDecimal insuranceValue = calculateInsuranceValue(product.getPrice());

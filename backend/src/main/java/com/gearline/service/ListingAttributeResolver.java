@@ -65,9 +65,11 @@ public class ListingAttributeResolver {
 
     // Keys that are consumed by this resolver and promoted to typed fields.
     // Any remaining keys are passed through to connectors via extraParams.
+    // NOTE: eBay-specific keys (ebay_fulfillment_policy_id, ebay_return_policy_id, etc.)
+    // are intentionally NOT listed here — they must reach EbayConnector via extraParams.
     private static final List<String> RESOLVED_KEYS = List.of(
         "title", "description", "price", "category_id", "condition_mapping", "image_urls",
-        "weight_oz_override", "reverb_shipping_profile_name", "ebay_fulfillment_policy_id"
+        "weight_oz_override", "reverb_shipping_profile_name"
     );
 
     private final ShippingCalculator shippingCalculator;

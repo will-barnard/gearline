@@ -69,6 +69,10 @@ public class SecurityConfig {
                 .requestMatchers("/api/v1/marketplace/shopify/oauth/**").permitAll()
                 .requestMatchers("/api/v1/marketplace/ebay/oauth/**").permitAll()
 
+                // eBay Marketplace Account Deletion notifications (no auth — eBay POSTs without a session)
+                // GET: challenge verification; POST: account-deletion event
+                .requestMatchers("/api/v1/marketplace/ebay/notifications").permitAll()
+
                 // Admin-only operations
                 .requestMatchers(HttpMethod.DELETE, "/api/v1/**").hasRole("ADMIN")
                 .requestMatchers("/api/v1/admin/**").hasRole("ADMIN")

@@ -84,6 +84,23 @@ public class GearlineProperties {
          * Set via EBAY_RU_NAME environment variable.
          */
         private String ruName;
+
+        /**
+         * Verification token for eBay Marketplace Account Deletion notifications.
+         *
+         * eBay requires all developer apps to receive account deletion/closure events
+         * (GDPR/CCPA compliance). The portal will challenge your endpoint with:
+         *   GET /api/v1/marketplace/ebay/notifications?challenge_code=xxx
+         * The endpoint must respond with:
+         *   {"challengeResponse": SHA-256(challengeCode + verificationToken + endpointUrl)}
+         *
+         * Choose any non-empty string (e.g. openssl rand -hex 32) and enter the same
+         * value both here and in the Developer Portal under:
+         *   Application Keys → Notifications → Verification token
+         *
+         * Set via EBAY_NOTIFICATION_VERIFICATION_TOKEN environment variable.
+         */
+        private String notificationVerificationToken;
     }
 
     @Data
