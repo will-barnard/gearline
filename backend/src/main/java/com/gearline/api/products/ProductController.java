@@ -4,6 +4,7 @@ import com.gearline.api.ResourceNotFoundException;
 import com.gearline.domain.product.Product;
 import com.gearline.domain.product.ProductStatus;
 import com.gearline.infrastructure.persistence.ProductRepository;
+import com.gearline.marketplace.shopify.ShopifyResyncService;
 import com.gearline.service.AuditService;
 import com.gearline.service.ProductExclusionService;
 import com.gearline.domain.audit.AuditEventType;
@@ -39,6 +40,7 @@ public class ProductController {
     private final ProductRepository productRepository;
     private final AuditService auditService;
     private final ProductExclusionService productExclusionService;
+    private final ShopifyResyncService shopifyResyncService;
 
     private static final Set<String> SORTABLE_FIELDS = Set.of(
         "sku", "title", "brand", "price", "quantity", "status", "createdAt", "updatedAt"
@@ -228,6 +230,48 @@ public class ProductController {
             currentUser.getId(), "Product", id.toString(), true, null, Map.of());
 
         return ResponseEntity.noContent().build();
+    }
+
+    /**
+     * Re-syncs a single product's mutable fields (including SKU) from the Shopify
+     * Admin API, correcting drift that occurs when webhooks fail silently.
+     *
+     * Does NOT create or modify marketplace listings — it only updates the product
+     * record itself. Returns the updated product alongside a human-readable message
+     * describing what changed (or a clear error if a SKU collision is detected).
+     */
+    @PostMapping("/{id}/resync-from-shopify")
+    @Operation(summary = "Pull latest product fields from Shopify to correct drift or SKU mismatches")
+    public ResponseEntity<Map<String, Object>> resyncFromShopify(
+        @PathVariable UUID id,
+        @AuthenticationPrincipal User currentUser
+    ) {
+        ShopifyResyncService.ResyncResult result = shopifyResyncService.resync(id);
+
+        if (!result.success()) {
+            int status = result.isConflict() ? 409 : 400;
+            return ResponseEntity.status(status).body(Map.of(
+                "error", result.message(),
+                "conflict", result.isConflict()
+            ));
+        }
+
+        Product updated = productRepository.findById(id)
+            .orElseThrow(() -> new ResourceNotFoundException("Product", id));
+
+        auditService.record(AuditEventType.PRODUCT_UPDATED,
+            currentUser.getId(), "Product", id.toString(), true, null,
+            Map.of("source", "shopify-resync",
+                   "skuChanged", String.valueOf(result.skuChanged()),
+                   "oldSku", result.oldSku() != null ? result.oldSku() : ""));
+
+        return ResponseEntity.ok(Map.of(
+            "product",    ProductDto.from(updated),
+            "skuChanged", result.skuChanged(),
+            "oldSku",     result.oldSku()  != null ? result.oldSku()  : "",
+            "newSku",     result.newSku()  != null ? result.newSku()  : "",
+            "message",    result.message()
+        ));
     }
 
     /**

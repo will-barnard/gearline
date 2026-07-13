@@ -217,6 +217,46 @@ public class ShopifyApiClient {
     }
 
     /**
+     * Fetches a single product from the Shopify Admin REST API by its Shopify product ID.
+     *
+     * Endpoint: GET /admin/api/{version}/products/{productId}.json
+     *
+     * @param account          the connected Shopify account
+     * @param shopifyProductId the numeric Shopify product ID
+     * @return the "product" JsonNode from the response
+     * @throws ShopifyApiException if the request fails or the product is not found (404)
+     */
+    public JsonNode fetchProduct(MarketplaceAccount account, String shopifyProductId) {
+        String uri = "/admin/api/" + API_VERSION + "/products/" + shopifyProductId + ".json";
+        try {
+            String body = buildClient(account)
+                .get()
+                .uri(uri)
+                .header("X-Shopify-Access-Token", getAccessToken(account))
+                .retrieve()
+                .bodyToMono(String.class)
+                .block();
+
+            if (body == null) {
+                throw new ShopifyApiException("Empty response for Shopify product " + shopifyProductId, null);
+            }
+
+            JsonNode root = objectMapper.readTree(body);
+            return root.path("product");
+
+        } catch (WebClientResponseException e) {
+            throw new ShopifyApiException(
+                "Failed to fetch Shopify product " + shopifyProductId + ": HTTP " + e.getStatusCode()
+                    + " — " + e.getResponseBodyAsString(), e);
+        } catch (ShopifyApiException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new ShopifyApiException(
+                "Failed to parse Shopify product " + shopifyProductId + ": " + e.getMessage(), e);
+        }
+    }
+
+    /**
      * Fetches all metafields for a Shopify product.
      *
      * Endpoint: GET /admin/api/{version}/products/{productId}/metafields.json

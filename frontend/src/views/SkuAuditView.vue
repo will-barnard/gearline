@@ -56,6 +56,17 @@
       </div>
 
       <template v-else>
+        <!-- Resync error banner (shown when a sync-from-shopify fails) -->
+        <div v-if="resyncError"
+             class="mb-4 rounded-lg border border-red-800 bg-red-900/20 px-4 py-3 text-xs"
+             :class="resyncError.conflict ? 'border-amber-700 bg-amber-900/20 text-amber-300' : 'border-red-800 bg-red-900/20 text-red-400'"
+        >
+          <div class="flex items-start justify-between gap-3">
+            <span>{{ resyncError.message }}</span>
+            <button @click="resyncError = null" class="flex-shrink-0 text-gray-500 hover:text-gray-300">✕</button>
+          </div>
+        </div>
+
         <div class="overflow-hidden rounded-xl border border-gray-800">
           <table class="w-full text-sm">
             <thead>
@@ -69,7 +80,7 @@
                 <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 w-28">Model</th>
                 <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 w-20">Year</th>
                 <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 w-24">Status</th>
-                <th class="px-4 py-3 w-16"></th>
+                <th class="px-4 py-3 w-28 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -77,7 +88,10 @@
                 v-for="p in products"
                 :key="p.id"
                 class="border-b border-gray-800/60 hover:bg-gray-800/30 transition-colors"
-                :class="editingId === p.id ? 'bg-gray-800/40' : ''"
+                :class="[
+                  editingId === p.id ? 'bg-gray-800/40' : '',
+                  recentlyUpdated.has(p.id) ? 'bg-green-900/10' : ''
+                ]"
               >
                 <!-- SKU — inline editable -->
                 <td class="px-4 py-2.5 font-mono text-xs">
@@ -148,11 +162,38 @@
                   <span v-else :class="statusBadge(p.status)">{{ p.status }}</span>
                 </td>
 
-                <!-- View link -->
+                <!-- Actions: Sync from Shopify + View link -->
                 <td class="px-4 py-2.5 text-right">
-                  <router-link :to="`/products/${p.id}`" class="text-xs text-brand-400 hover:text-brand-300">
-                    View →
-                  </router-link>
+                  <div class="flex items-center justify-end gap-3">
+                    <!-- Sync from Shopify — only shown when product has a Shopify origin -->
+                    <template v-if="p.shopifyProductId">
+                      <button
+                        v-if="syncing[p.id] === 'ok'"
+                        class="text-xs text-green-400 cursor-default"
+                        title="Synced successfully"
+                      >✓ Synced</button>
+                      <button
+                        v-else
+                        @click="syncFromShopify(p)"
+                        :disabled="!!syncing[p.id]"
+                        class="text-xs text-sky-400 hover:text-sky-300 disabled:opacity-40 disabled:cursor-wait flex items-center gap-1"
+                        title="Pull current SKU and fields from Shopify"
+                      >
+                        <svg
+                          class="h-3 w-3"
+                          :class="syncing[p.id] === 'loading' ? 'animate-spin' : ''"
+                          fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                        >
+                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                        </svg>
+                        {{ syncing[p.id] === 'loading' ? 'Syncing…' : 'Sync' }}
+                      </button>
+                    </template>
+                    <router-link :to="`/products/${p.id}`" class="text-xs text-brand-400 hover:text-brand-300">
+                      View →
+                    </router-link>
+                  </div>
                 </td>
               </tr>
 
@@ -202,6 +243,12 @@ const editingSku = ref('')
 const skuError = ref(null)
 const saving = ref(false)
 const skuInput = ref(null)
+
+// Sync-from-Shopify state
+// syncing[productId] = 'loading' | 'ok' | undefined
+const syncing = ref({})
+const recentlyUpdated = ref(new Set())
+const resyncError = ref(null) // { message, conflict }
 
 // Debounce search
 let searchTimeout = null
@@ -289,6 +336,55 @@ async function saveSku(product) {
     }
   } finally {
     saving.value = false
+  }
+}
+
+// ── Sync from Shopify ─────────────────────────────────────────────────────────
+
+async function syncFromShopify(product) {
+  resyncError.value = null
+  syncing.value = { ...syncing.value, [product.id]: 'loading' }
+
+  try {
+    const res = await api.post(`/products/${product.id}/resync-from-shopify`)
+    const { product: updated, skuChanged, oldSku, newSku, message } = res.data
+
+    // Update the row in-place
+    const idx = products.value.findIndex(p => p.id === product.id)
+    if (idx !== -1) {
+      products.value[idx] = { ...products.value[idx], ...updated }
+    }
+
+    syncing.value = { ...syncing.value, [product.id]: 'ok' }
+
+    // Flash green for 3 s then clear the success indicator
+    const next = new Set(recentlyUpdated.value)
+    next.add(product.id)
+    recentlyUpdated.value = next
+    setTimeout(() => {
+      const s = new Set(recentlyUpdated.value)
+      s.delete(product.id)
+      recentlyUpdated.value = s
+      const st = { ...syncing.value }
+      delete st[product.id]
+      syncing.value = st
+    }, 3000)
+
+    if (skuChanged) {
+      // Re-sort the list since SKU changed (find the row and move it)
+      // Simplest: reload the current page to get correct sort order
+      setTimeout(() => loadProducts(), 3100)
+    }
+  } catch (e) {
+    const status = e.response?.status
+    const body = e.response?.data
+    resyncError.value = {
+      message: body?.error || 'Failed to sync from Shopify — please try again.',
+      conflict: body?.conflict === true || status === 409
+    }
+    const st = { ...syncing.value }
+    delete st[product.id]
+    syncing.value = st
   }
 }
 
