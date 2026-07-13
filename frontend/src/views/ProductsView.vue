@@ -1,7 +1,12 @@
 <template>
   <div class="flex flex-col h-full">
     <header class="flex h-16 flex-shrink-0 items-center justify-between border-b border-gray-800 px-6">
-      <h1 class="text-lg font-semibold text-white">Products</h1>
+      <div class="flex items-center gap-3">
+        <h1 class="text-lg font-semibold text-white">Products</h1>
+        <span v-if="!loading && totalElements > 0" class="text-xs text-gray-500">
+          {{ totalElements.toLocaleString() }} {{ activeFilter === 'excluded' ? 'excluded' : activeFilter === 'archived' ? 'archived' : activeFilter === 'active' ? 'active' : '' }} product{{ totalElements !== 1 ? 's' : '' }}
+        </span>
+      </div>
       <div class="flex items-center gap-3">
         <input
           v-model="searchQuery"
@@ -30,7 +35,7 @@
             @click="setFilter('excluded')"
             :class="activeFilter === 'excluded' ? 'bg-orange-600 text-white' : 'text-gray-400 hover:text-orange-300'"
             class="px-3 py-1.5 border-l border-gray-700 transition-colors"
-            title="Products excluded from eBay/Reverb"
+            title="Products excluded from eBay and Reverb (Shopify-only)"
           >Excluded</button>
         </div>
       </div>
@@ -43,10 +48,11 @@
     >
       <span class="text-sm text-orange-300 font-medium">{{ selected.size }} selected</span>
       <button
+        v-if="activeFilter !== 'excluded'"
         @click="bulkExclude(true)"
         :disabled="bulkWorking"
         class="btn-secondary px-3 py-1 text-xs text-orange-400 border-orange-700/50 hover:border-orange-500"
-        title="Hide from eBay & Reverb review queue — Shopify listing is unaffected"
+        title="Remove from eBay/Reverb review queue — Shopify listing is unaffected"
       >
         {{ bulkWorking ? 'Working…' : '✕ Exclude from marketplaces' }}
       </button>
@@ -58,7 +64,7 @@
       >
         {{ bulkWorking ? 'Working…' : '↩ Re-include on marketplaces' }}
       </button>
-      <button @click="selected.clear(); selected = new Set()" class="text-xs text-gray-500 hover:text-gray-300 ml-auto">
+      <button @click="clearSelection" class="text-xs text-gray-500 hover:text-gray-300 ml-auto">
         Clear selection
       </button>
     </div>
@@ -74,126 +80,131 @@
         {{ error }}
       </div>
 
-      <!-- Excluded explanation banner -->
-      <div v-if="activeFilter === 'excluded' && !loading && products.length > 0"
-           class="mb-4 rounded-lg bg-orange-950/40 border border-orange-800/50 px-4 py-3 text-xs text-orange-300">
-        These products are <strong class="text-orange-200">excluded from eBay and Reverb</strong>.
-        They still live in Shopify and Gearline as normal — they just won't appear in your marketplace review queue.
-        Select items and click "Re-include" to restore them.
-      </div>
+      <template v-else>
+        <!-- Excluded tab explanation -->
+        <div v-if="activeFilter === 'excluded' && products.length > 0"
+             class="mb-4 rounded-lg bg-orange-950/40 border border-orange-800/50 px-4 py-3 text-xs text-orange-300">
+          These products are <strong class="text-orange-200">excluded from eBay and Reverb</strong>.
+          They still live in Shopify and Gearline — they just won't appear in your marketplace review queue.
+          Select items and click "↩ Re-include" to restore them.
+        </div>
 
-      <!-- Table -->
-      <div v-else-if="!loading" class="overflow-hidden rounded-xl border border-gray-800">
-        <table class="w-full text-sm">
-          <thead>
-            <tr class="border-b border-gray-800 bg-gray-900">
-              <!-- Select-all checkbox -->
-              <th class="w-10 px-3 py-3">
-                <input
-                  type="checkbox"
-                  :checked="allSelected"
-                  :indeterminate="someSelected"
-                  @change="toggleSelectAll"
-                  class="rounded border-gray-600 bg-gray-800 text-brand-500 cursor-pointer"
-                  title="Select all on this page"
-                />
-              </th>
-              <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">SKU</th>
-              <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Title</th>
-              <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Brand</th>
-              <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Condition</th>
-              <th class="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Price</th>
-              <th class="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Qty</th>
-              <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Status</th>
-              <th class="px-4 py-3"></th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr
-              v-for="p in products"
-              :key="p.id"
-              class="table-row"
-              :class="selected.has(p.id) ? 'bg-gray-800/50' : ''"
-            >
-              <td class="w-10 px-3 py-3">
-                <input
-                  type="checkbox"
-                  :checked="selected.has(p.id)"
-                  @change="toggleSelect(p.id)"
-                  class="rounded border-gray-600 bg-gray-800 text-brand-500 cursor-pointer"
-                />
-              </td>
-              <td class="px-4 py-3 font-mono text-xs text-gray-400">{{ p.sku }}</td>
-              <td class="px-4 py-3">
-                <router-link :to="`/products/${p.id}`" class="font-medium text-gray-100 hover:text-brand-400 transition-colors">
-                  {{ p.title }}
-                </router-link>
-              </td>
-              <td class="px-4 py-3 text-gray-400">{{ p.brand || '—' }}</td>
-              <td class="px-4 py-3">
-                <span class="badge-gray">{{ p.condition }}</span>
-              </td>
-              <td class="px-4 py-3 text-right font-medium text-gray-200">${{ p.price }}</td>
-              <td class="px-4 py-3 text-right font-medium" :class="p.quantity === 0 ? 'text-red-400' : 'text-gray-200'">
-                {{ p.quantity }}
-              </td>
-              <td class="px-4 py-3">
-                <div class="flex items-center gap-1.5">
-                  <span :class="statusBadge(p.status)">{{ p.status }}</span>
-                  <span v-if="p.marketplaceExcluded"
-                        class="inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium bg-orange-900/50 text-orange-300 border border-orange-700/40"
-                        title="Not listed on eBay or Reverb">
+        <!-- Table -->
+        <div class="overflow-hidden rounded-xl border border-gray-800">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="border-b border-gray-800 bg-gray-900">
+                <th class="w-10 px-3 py-3">
+                  <input
+                    type="checkbox"
+                    :checked="allSelected"
+                    @change="toggleSelectAll"
+                    class="rounded border-gray-600 bg-gray-800 text-brand-500 cursor-pointer"
+                    title="Select all on this page"
+                  />
+                </th>
+                <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">SKU</th>
+                <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Title</th>
+                <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Brand</th>
+                <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Condition</th>
+                <th class="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Price</th>
+                <th class="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Qty</th>
+                <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Status</th>
+                <th class="px-4 py-3"></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="p in products"
+                :key="p.id"
+                class="table-row"
+                :class="selected.has(p.id) ? 'bg-gray-800/50' : ''"
+              >
+                <td class="w-10 px-3 py-3">
+                  <input
+                    type="checkbox"
+                    :checked="selected.has(p.id)"
+                    @change="toggleSelect(p.id)"
+                    class="rounded border-gray-600 bg-gray-800 text-brand-500 cursor-pointer"
+                  />
+                </td>
+                <td class="px-4 py-3 font-mono text-xs text-gray-400">{{ p.sku }}</td>
+                <td class="px-4 py-3">
+                  <router-link :to="`/products/${p.id}`" class="font-medium text-gray-100 hover:text-brand-400 transition-colors">
+                    {{ p.title }}
+                  </router-link>
+                </td>
+                <td class="px-4 py-3 text-gray-400">{{ p.brand || '—' }}</td>
+                <td class="px-4 py-3">
+                  <span class="badge-gray">{{ p.condition }}</span>
+                </td>
+                <td class="px-4 py-3 text-right font-medium text-gray-200">${{ p.price }}</td>
+                <td class="px-4 py-3 text-right font-medium" :class="p.quantity === 0 ? 'text-red-400' : 'text-gray-200'">
+                  {{ p.quantity }}
+                </td>
+                <td class="px-4 py-3">
+                  <!-- On the excluded tab we just show EXCLUDED prominently instead of status -->
+                  <span v-if="activeFilter === 'excluded'"
+                        class="inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium bg-orange-900/50 text-orange-300 border border-orange-700/40">
                     Excluded
                   </span>
-                </div>
-              </td>
-              <td class="px-4 py-3 text-right">
-                <div class="flex items-center justify-end gap-3">
-                  <router-link :to="`/products/${p.id}`" class="text-xs text-brand-400 hover:text-brand-300">
-                    View →
-                  </router-link>
-                  <button
-                    v-if="!p.marketplaceExcluded"
-                    @click="quickExclude(p)"
-                    class="text-xs text-orange-500 hover:text-orange-400"
-                    title="Exclude from eBay/Reverb (Shopify unaffected)"
-                  >Exclude</button>
-                  <button
-                    v-else
-                    @click="quickInclude(p)"
-                    class="text-xs text-green-500 hover:text-green-400"
-                    title="Re-include on eBay/Reverb"
-                  >Include</button>
-                  <button
-                    v-if="p.status !== 'ARCHIVED'"
-                    @click="archiveProduct(p)"
-                    class="text-xs text-red-500 hover:text-red-400"
-                    title="Archive product"
-                  >Archive</button>
-                </div>
-              </td>
-            </tr>
-            <tr v-if="products.length === 0">
-              <td colspan="9" class="px-4 py-12 text-center text-sm text-gray-500">
-                <template v-if="activeFilter === 'excluded'">
-                  No excluded products. Use "Exclude" on individual rows or select multiple products and use the bulk action.
-                </template>
-                <template v-else>No products found</template>
-              </td>
-            </tr>
-          </tbody>
-        </table>
+                  <span v-else :class="statusBadge(p.status)">{{ p.status }}</span>
+                </td>
+                <td class="px-4 py-3 text-right">
+                  <div class="flex items-center justify-end gap-3">
+                    <router-link :to="`/products/${p.id}`" class="text-xs text-brand-400 hover:text-brand-300">
+                      View →
+                    </router-link>
+                    <!-- Exclude / re-include inline actions -->
+                    <button
+                      v-if="activeFilter === 'excluded'"
+                      @click="quickInclude(p)"
+                      class="text-xs text-green-500 hover:text-green-400"
+                      title="Re-include on eBay/Reverb"
+                    >Re-include</button>
+                    <button
+                      v-else
+                      @click="quickExclude(p)"
+                      class="text-xs text-orange-500 hover:text-orange-400"
+                      title="Remove from eBay/Reverb — Shopify unaffected"
+                    >Exclude</button>
+                    <button
+                      v-if="p.status !== 'ARCHIVED' && activeFilter !== 'excluded'"
+                      @click="archiveProduct(p)"
+                      class="text-xs text-red-500 hover:text-red-400"
+                      title="Archive product"
+                    >Archive</button>
+                  </div>
+                </td>
+              </tr>
+              <tr v-if="products.length === 0">
+                <td colspan="9" class="px-4 py-16 text-center text-sm text-gray-500">
+                  <template v-if="activeFilter === 'excluded'">
+                    <p class="font-medium text-gray-400 mb-2">No excluded products yet</p>
+                    <p class="text-xs text-gray-600 max-w-xs mx-auto">
+                      Select deposit listings, restoration placeholders, or any Shopify-only items
+                      and click "Exclude from marketplaces" to keep them out of your eBay/Reverb review queue.
+                    </p>
+                  </template>
+                  <template v-else>No products found</template>
+                </td>
+              </tr>
+            </tbody>
+          </table>
 
-        <!-- Pagination -->
-        <div v-if="totalPages > 1" class="flex items-center justify-between border-t border-gray-800 px-4 py-3">
-          <span class="text-xs text-gray-500">{{ totalElements }} products</span>
-          <div class="flex gap-2">
-            <button @click="page--" :disabled="page === 0" class="btn-secondary px-3 py-1 text-xs">←</button>
-            <span class="px-3 py-1 text-xs text-gray-400">{{ page + 1 }} / {{ totalPages }}</span>
-            <button @click="page++" :disabled="page >= totalPages - 1" class="btn-secondary px-3 py-1 text-xs">→</button>
+          <!-- Pagination -->
+          <div class="flex items-center justify-between border-t border-gray-800 px-4 py-3">
+            <span class="text-xs text-gray-500">
+              {{ totalElements.toLocaleString() }} total — showing page {{ page + 1 }} of {{ totalPages }}
+            </span>
+            <div v-if="totalPages > 1" class="flex gap-2">
+              <button @click="page--" :disabled="page === 0" class="btn-secondary px-3 py-1 text-xs">←</button>
+              <span class="px-3 py-1 text-xs text-gray-400">{{ page + 1 }} / {{ totalPages }}</span>
+              <button @click="page++" :disabled="page >= totalPages - 1" class="btn-secondary px-3 py-1 text-xs">→</button>
+            </div>
           </div>
         </div>
-      </div>
+      </template>
     </div>
   </div>
 </template>
@@ -211,8 +222,8 @@ const totalElements = ref(0)
 const activeFilter = ref('all') // 'all' | 'active' | 'archived' | 'excluded'
 const searchQuery = ref('')
 
-// Bulk selection — use a Set for O(1) membership checks
-let selected = ref(new Set())
+// Bulk selection — plain ref wrapping a Set; reassign to trigger reactivity
+const selected = ref(new Set())
 const bulkWorking = ref(false)
 
 // Debounce search
@@ -232,7 +243,7 @@ const someSelected = computed(() =>
 function setFilter(f) {
   activeFilter.value = f
   page.value = 0
-  selected.value = new Set()
+  clearSelection()
   loadProducts()
 }
 
@@ -241,22 +252,32 @@ async function loadProducts() {
   try {
     const params = {
       page: page.value,
-      size: 50,
+      size: 100,
       search: searchQuery.value || undefined,
     }
-    if (activeFilter.value === 'active')   params.status = 'ACTIVE'
-    if (activeFilter.value === 'archived') params.status = 'ARCHIVED'
-    if (activeFilter.value === 'excluded') params.marketplaceExcluded = true
+
+    // ── Filter logic ──────────────────────────────────────────────────────────
+    // "All", "Active", and "Archived" always hide marketplace_excluded products
+    // so that deposit listings and restoration placeholders don't pollute the
+    // main product list. The "Excluded" tab is the only place they appear.
+    if (activeFilter.value === 'active')   { params.status = 'ACTIVE';   params.marketplaceExcluded = false }
+    if (activeFilter.value === 'archived') { params.status = 'ARCHIVED'; params.marketplaceExcluded = false }
+    if (activeFilter.value === 'excluded') { params.marketplaceExcluded = true }
+    if (activeFilter.value === 'all')      { params.marketplaceExcluded = false }
 
     const res = await api.get('/products', { params })
     products.value = res.data.content
     totalPages.value = res.data.totalPages
     totalElements.value = res.data.totalElements
-  } catch (e) { error.value = 'Failed to load products' }
-  finally { loading.value = false }
+  } catch (e) {
+    error.value = 'Failed to load products'
+    console.error(e)
+  } finally {
+    loading.value = false
+  }
 }
 
-// ── Selection ────────────────────────────────────────────────────────────────
+// ── Selection ─────────────────────────────────────────────────────────────────
 
 function toggleSelect(id) {
   const next = new Set(selected.value)
@@ -273,15 +294,24 @@ function toggleSelectAll() {
   }
 }
 
-// ── Exclusion actions ────────────────────────────────────────────────────────
+function clearSelection() {
+  selected.value = new Set()
+}
+
+// ── Exclusion ─────────────────────────────────────────────────────────────────
 
 async function quickExclude(product) {
-  if (!confirm(`Exclude "${product.title}" from eBay and Reverb?\n\nThe product stays in Shopify and Gearline. Only marketplace listing creation is suppressed.`)) return
+  if (!confirm(
+    `Exclude "${product.title}" from eBay and Reverb?\n\n` +
+    `The product stays in Shopify and Gearline exactly as-is. ` +
+    `Only marketplace listing creation is suppressed.`
+  )) return
   try {
-    const res = await api.patch(`/products/${product.id}/marketplace-excluded`, { excluded: true })
-    // Update row in-place so the table updates immediately
-    const idx = products.value.findIndex(p => p.id === product.id)
-    if (idx !== -1) products.value[idx] = res.data
+    await api.patch(`/products/${product.id}/marketplace-excluded`, { excluded: true })
+    // Remove from the current (non-excluded) view immediately
+    products.value = products.value.filter(p => p.id !== product.id)
+    totalElements.value = Math.max(0, totalElements.value - 1)
+    clearSelection()
   } catch (e) {
     alert('Failed to exclude product.')
   }
@@ -289,16 +319,11 @@ async function quickExclude(product) {
 
 async function quickInclude(product) {
   try {
-    const res = await api.patch(`/products/${product.id}/marketplace-excluded`, { excluded: false })
-    const idx = products.value.findIndex(p => p.id === product.id)
-    if (idx !== -1) {
-      if (activeFilter.value === 'excluded') {
-        // Remove from this filtered view
-        products.value.splice(idx, 1)
-      } else {
-        products.value[idx] = res.data
-      }
-    }
+    await api.patch(`/products/${product.id}/marketplace-excluded`, { excluded: false })
+    // Remove from the excluded view
+    products.value = products.value.filter(p => p.id !== product.id)
+    totalElements.value = Math.max(0, totalElements.value - 1)
+    clearSelection()
   } catch (e) {
     alert('Failed to re-include product.')
   }
@@ -306,38 +331,36 @@ async function quickInclude(product) {
 
 async function bulkExclude(excluded) {
   const ids = [...selected.value]
+  const noun = ids.length === 1 ? 'product' : 'products'
   const verb = excluded ? 'exclude from' : 're-include on'
-  if (!confirm(`${excluded ? 'Exclude' : 'Re-include'} ${ids.length} product(s) ${verb} eBay and Reverb?`)) return
+  if (!confirm(`${excluded ? 'Exclude' : 'Re-include'} ${ids.length} ${noun} ${verb} eBay and Reverb?`)) return
 
   bulkWorking.value = true
   try {
-    const res = await api.post('/products/bulk-marketplace-excluded', { productIds: ids, excluded })
-    const count = res.data.updated
-    selected.value = new Set()
-    // Reload to reflect changes
+    await api.post('/products/bulk-marketplace-excluded', { productIds: ids, excluded })
+    clearSelection()
     await loadProducts()
-    // Brief success feedback in console (could wire up a toast if you want)
-    console.info(`${count} products ${excluded ? 'excluded from' : 're-included on'} marketplaces.`)
   } catch (e) {
-    alert(`Failed to update ${ids.length} products.`)
+    alert(`Failed to update ${ids.length} ${noun}.`)
   } finally {
     bulkWorking.value = false
   }
 }
 
-// ── Archive ──────────────────────────────────────────────────────────────────
+// ── Archive ───────────────────────────────────────────────────────────────────
 
 async function archiveProduct(product) {
   if (!confirm(`Archive "${product.title}"? This will delist it from any active marketplaces.`)) return
   try {
     await api.delete(`/products/${product.id}`)
-    await loadProducts()
+    products.value = products.value.filter(p => p.id !== product.id)
+    totalElements.value = Math.max(0, totalElements.value - 1)
   } catch (e) {
     alert('Failed to archive product. You may need admin permissions.')
   }
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 function statusBadge(s) {
   return { ACTIVE: 'badge-green', INACTIVE: 'badge-yellow', ARCHIVED: 'badge-gray', DELETED: 'badge-red' }[s] || 'badge-gray'

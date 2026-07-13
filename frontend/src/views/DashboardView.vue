@@ -85,6 +85,16 @@
           </table>
         </div>
 
+        <!-- Truncation notice — shown when we have more listings than we loaded -->
+        <div v-else-if="reviewListings.length > 0 && reviewTotal > reviewListings.length"
+             class="mt-3 rounded-lg border border-amber-700/40 bg-amber-900/20 px-4 py-3 text-xs text-amber-300">
+          Showing {{ reviewListings.length }} of {{ reviewTotal }} listings.
+          <span class="text-amber-400 font-medium">{{ reviewTotal - reviewListings.length }} more not shown.</span>
+          If many of these are deposit listings or restoration placeholders, go to
+          <router-link to="/products" class="underline hover:text-white">Products → Excluded</router-link>
+          to bulk-exclude them and clear the queue.
+        </div>
+
         <div v-else class="py-4 text-center text-xs text-gray-500">
           No pending listings found — counts may be stale, try refreshing.
         </div>
@@ -164,6 +174,7 @@ const refreshedAt = ref('—')
 // Review queue state
 const reviewListings = ref([])
 const reviewLoading = ref(false)
+const reviewTotal = ref(0)   // total NEEDS_REVIEW count from stats
 const publishing = ref({})
 
 async function loadStats() {
@@ -172,8 +183,9 @@ async function loadStats() {
     const res = await api.get('/admin/dashboard/stats')
     stats.value = res.data
     refreshedAt.value = new Date().toLocaleTimeString()
-    // Load the review queue whenever stats say there's something pending
+      // Load the review queue whenever stats say there's something pending
     if (res.data.pendingReviewListings > 0) {
+      reviewTotal.value = res.data.pendingReviewListings
       loadReviewQueue()
     }
   } catch (e) {
@@ -186,7 +198,7 @@ async function loadStats() {
 async function loadReviewQueue() {
   reviewLoading.value = true
   try {
-    const res = await api.get('/listings', { params: { status: 'NEEDS_REVIEW', page: 0, size: 50 } })
+    const res = await api.get('/listings', { params: { status: 'NEEDS_REVIEW', page: 0, size: 200 } })
     reviewListings.value = res.data.content
   } catch (e) {
     console.error('Failed to load review queue', e)
