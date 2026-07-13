@@ -10,6 +10,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -267,6 +268,118 @@ public class EbayApiClient {
             throw new EbayApiException(
                 "Failed to mark eBay order " + orderId + " as shipped: "
                     + e.getStatusCode() + " — " + e.getResponseBodyAsString(), e);
+        }
+    }
+
+    // ── Account API — policies + location ─────────────────────────────────────
+
+    /**
+     * Lists all merchant locations registered for the seller's account.
+     *
+     * GET /sell/inventory/v1/location
+     * Returns { "locations": [...] }
+     *
+     * Each location object has at minimum:
+     *   { "merchantLocationKey": "MAIN", "name": "Main Warehouse",
+     *     "merchantLocationStatus": "ENABLED" }
+     */
+    @SuppressWarnings("unchecked")
+    public List<Map<String, Object>> getMerchantLocations(MarketplaceAccount account) {
+        try {
+            Map<String, Object> response = webClient.get()
+                .uri("/sell/inventory/v1/location")
+                .header(HttpHeaders.AUTHORIZATION, bearer(account))
+                .retrieve()
+                .bodyToMono(Map.class)
+                .block();
+            if (response == null) return List.of();
+            Object locations = response.get("locations");
+            return locations instanceof List<?> l ? (List<Map<String, Object>>) l : List.of();
+        } catch (WebClientResponseException e) {
+            throw new EbayApiException(
+                "Failed to fetch merchant locations: " + e.getStatusCode() + " — " + e.getResponseBodyAsString(), e);
+        }
+    }
+
+    /**
+     * Lists all fulfillment (shipping) policies for the seller's account.
+     *
+     * GET /sell/account/v1/fulfillment_policy?marketplace_id=EBAY_US
+     * Returns { "fulfillmentPolicies": [...] }
+     *
+     * Each policy has: { "fulfillmentPolicyId": "uuid", "name": "Standard Shipping" }
+     */
+    @SuppressWarnings("unchecked")
+    public List<Map<String, Object>> getFulfillmentPolicies(MarketplaceAccount account) {
+        try {
+            Map<String, Object> response = webClient.get()
+                .uri(uri -> uri.path("/sell/account/v1/fulfillment_policy")
+                    .queryParam("marketplace_id", "EBAY_US").build())
+                .header(HttpHeaders.AUTHORIZATION, bearer(account))
+                .retrieve()
+                .bodyToMono(Map.class)
+                .block();
+            if (response == null) return List.of();
+            Object policies = response.get("fulfillmentPolicies");
+            return policies instanceof List<?> l ? (List<Map<String, Object>>) l : List.of();
+        } catch (WebClientResponseException e) {
+            throw new EbayApiException(
+                "Failed to fetch fulfillment policies: " + e.getStatusCode() + " — " + e.getResponseBodyAsString(), e);
+        }
+    }
+
+    /**
+     * Lists all return policies for the seller's account.
+     *
+     * GET /sell/account/v1/return_policy?marketplace_id=EBAY_US
+     * Returns { "returnPolicies": [...] }
+     *
+     * Each policy has: { "returnPolicyId": "uuid", "name": "30-day returns" }
+     */
+    @SuppressWarnings("unchecked")
+    public List<Map<String, Object>> getReturnPolicies(MarketplaceAccount account) {
+        try {
+            Map<String, Object> response = webClient.get()
+                .uri(uri -> uri.path("/sell/account/v1/return_policy")
+                    .queryParam("marketplace_id", "EBAY_US").build())
+                .header(HttpHeaders.AUTHORIZATION, bearer(account))
+                .retrieve()
+                .bodyToMono(Map.class)
+                .block();
+            if (response == null) return List.of();
+            Object policies = response.get("returnPolicies");
+            return policies instanceof List<?> l ? (List<Map<String, Object>>) l : List.of();
+        } catch (WebClientResponseException e) {
+            throw new EbayApiException(
+                "Failed to fetch return policies: " + e.getStatusCode() + " — " + e.getResponseBodyAsString(), e);
+        }
+    }
+
+    /**
+     * Searches eBay's category tree for categories matching a text query.
+     *
+     * GET /commerce/taxonomy/v1/category_tree/0/get_category_suggestions?category_name={q}
+     * (Tree ID 0 = eBay US)
+     *
+     * Returns { "categorySuggestions": [{ "category": { "categoryId": "33034",
+     *   "categoryName": "Electric Guitars" }, "categoryTreeNodeLevel": 4 }] }
+     */
+    @SuppressWarnings("unchecked")
+    public List<Map<String, Object>> getCategorySuggestions(MarketplaceAccount account, String query) {
+        try {
+            Map<String, Object> response = webClient.get()
+                .uri(uri -> uri.path("/commerce/taxonomy/v1/category_tree/0/get_category_suggestions")
+                    .queryParam("category_name", query).build())
+                .header(HttpHeaders.AUTHORIZATION, bearer(account))
+                .retrieve()
+                .bodyToMono(Map.class)
+                .block();
+            if (response == null) return List.of();
+            Object suggestions = response.get("categorySuggestions");
+            return suggestions instanceof List<?> l ? (List<Map<String, Object>>) l : List.of();
+        } catch (WebClientResponseException e) {
+            throw new EbayApiException(
+                "Failed to fetch category suggestions: " + e.getStatusCode() + " — " + e.getResponseBodyAsString(), e);
         }
     }
 

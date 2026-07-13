@@ -32,9 +32,15 @@ public record MarketplaceAccountDto(
     /**
      * Free-text suffix appended to every listing description for this account,
      * separated by two newlines. Stored in syncSettings["description_suffix"].
-     * Useful for adding boilerplate like shipping notes to all listings.
      */
-    String descriptionSuffix
+    String descriptionSuffix,
+    /**
+     * eBay account-level defaults. Stored in syncSettings and applied automatically
+     * to every eBay listing that doesn't have a per-listing override for these fields.
+     */
+    String ebayMerchantLocationKey,
+    String ebayFulfillmentPolicyId,
+    String ebayReturnPolicyId
 ) {
     /** Use when PricingProfile entity is already available (avoids extra DB lookup). */
     public static MarketplaceAccountDto from(MarketplaceAccount a, PricingProfile profile) {
@@ -43,25 +49,33 @@ public record MarketplaceAccountDto(
         if (rawTags instanceof List<?> list) {
             excluded = list.stream().map(Object::toString).toList();
         }
-        String suffix = null;
-        Object rawSuffix = a.getSyncSettings() != null ? a.getSyncSettings().get("description_suffix") : null;
-        if (rawSuffix instanceof String s && !s.isBlank()) {
-            suffix = s;
-        }
+
+        String suffix = stringSetting(a, "description_suffix");
+        String locationKey = stringSetting(a, "ebay_merchant_location_key");
+        String fulfillmentId = stringSetting(a, "ebay_fulfillment_policy_id");
+        String returnId = stringSetting(a, "ebay_return_policy_id");
+
         return new MarketplaceAccountDto(
             a.getId(), a.getMarketplaceType(), a.getDisplayName(),
             a.getExternalAccountId(), a.getExternalShopUrl(), a.getActive(),
             a.getConnectionStatus(), a.getLastSyncAt(), a.getLastError(), a.getCreatedAt(),
             profile != null ? profile.getId() : null,
             profile != null ? profile.getName() : null,
-            // NOTE: encryptedCredentials deliberately omitted from DTO
             excluded,
-            suffix
+            suffix,
+            locationKey,
+            fulfillmentId,
+            returnId
         );
     }
 
     /** Convenience overload when no profile is loaded (profile fields will be null). */
     public static MarketplaceAccountDto from(MarketplaceAccount a) {
         return from(a, null);
+    }
+
+    private static String stringSetting(MarketplaceAccount a, String key) {
+        Object raw = a.getSyncSettings() != null ? a.getSyncSettings().get(key) : null;
+        return (raw instanceof String s && !s.isBlank()) ? s : null;
     }
 }

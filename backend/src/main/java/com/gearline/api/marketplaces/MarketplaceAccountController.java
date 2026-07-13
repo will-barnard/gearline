@@ -9,6 +9,7 @@ import com.gearline.infrastructure.persistence.PricingProfileRepository;
 import com.gearline.marketplace.common.connector.MarketplaceConnectorRegistry;
 import com.gearline.marketplace.common.connector.ConnectorHealthResult;
 import com.gearline.marketplace.common.connector.MarketplaceType;
+import com.gearline.marketplace.ebay.client.EbayApiClient;
 import com.gearline.marketplace.reverb.client.ReverbApiClient;
 import com.gearline.marketplace.shopify.sync.ShopifyInitialSyncService;
 import com.gearline.service.ListingBackfillService;
@@ -37,6 +38,7 @@ public class MarketplaceAccountController {
     private final PricingProfileRepository pricingProfileRepository;
     private final ShopifyInitialSyncService shopifyInitialSyncService;
     private final ReverbApiClient reverbApiClient;
+    private final EbayApiClient ebayApiClient;
     private final ListingBackfillService listingBackfillService;
 
     @GetMapping
@@ -151,6 +153,81 @@ public class MarketplaceAccountController {
         return ResponseEntity.ok(MarketplaceAccountDto.from(account, profile));
     }
 
+    // ── eBay account config endpoints ──────────────────────────────────────────
+
+    /**
+     * Returns the seller's merchant locations, fulfillment policies, and return policies
+     * from eBay in a single call. Used to populate dropdowns in the Marketplaces settings UI.
+     *
+     * Locations: set up once at GET /sell/inventory/v1/location — same for every listing.
+     * Fulfillment/Return policies: set up in eBay Seller Hub — referenced by UUID.
+     */
+    @GetMapping("/{id}/ebay/config")
+    @Operation(summary = "Fetch eBay account config: locations, fulfillment policies, return policies")
+    public ResponseEntity<Map<String, Object>> getEbayConfig(@PathVariable UUID id) {
+        MarketplaceAccount account = accountRepository.findById(id)
+            .orElseThrow(() -> new ResourceNotFoundException("MarketplaceAccount", id));
+        if (account.getMarketplaceType() != MarketplaceType.EBAY) {
+            return ResponseEntity.badRequest().build();
+        }
+
+        List<Map<String, Object>> locations = ebayApiClient.getMerchantLocations(account).stream()
+            .map(l -> Map.<String, Object>of(
+                "key",    l.getOrDefault("merchantLocationKey", ""),
+                "name",   l.getOrDefault("name", l.getOrDefault("merchantLocationKey", "")),
+                "status", l.getOrDefault("merchantLocationStatus", "")
+            )).toList();
+
+        List<Map<String, Object>> fulfillmentPolicies = ebayApiClient.getFulfillmentPolicies(account).stream()
+            .map(p -> Map.<String, Object>of(
+                "id",   p.getOrDefault("fulfillmentPolicyId", ""),
+                "name", p.getOrDefault("name", "")
+            )).toList();
+
+        List<Map<String, Object>> returnPolicies = ebayApiClient.getReturnPolicies(account).stream()
+            .map(p -> Map.<String, Object>of(
+                "id",   p.getOrDefault("returnPolicyId", ""),
+                "name", p.getOrDefault("name", "")
+            )).toList();
+
+        return ResponseEntity.ok(Map.of(
+            "locations",          locations,
+            "fulfillmentPolicies", fulfillmentPolicies,
+            "returnPolicies",     returnPolicies
+        ));
+    }
+
+    /**
+     * Searches eBay's category tree for categories matching a text query.
+     * Returns the top suggestions as { categoryId, categoryName, level }.
+     */
+    @GetMapping("/{id}/ebay/category-suggestions")
+    @Operation(summary = "Search eBay category tree by name (for category ID lookup)")
+    public ResponseEntity<List<Map<String, Object>>> getEbayCategorySuggestions(
+        @PathVariable UUID id,
+        @RequestParam String q
+    ) {
+        MarketplaceAccount account = accountRepository.findById(id)
+            .orElseThrow(() -> new ResourceNotFoundException("MarketplaceAccount", id));
+        if (account.getMarketplaceType() != MarketplaceType.EBAY) {
+            return ResponseEntity.badRequest().build();
+        }
+
+        List<Map<String, Object>> suggestions = ebayApiClient.getCategorySuggestions(account, q).stream()
+            .map(s -> {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> cat = (Map<String, Object>) s.get("category");
+                return Map.<String, Object>of(
+                    "categoryId",   cat != null ? cat.getOrDefault("categoryId", "") : "",
+                    "categoryName", cat != null ? cat.getOrDefault("categoryName", "") : "",
+                    "level",        s.getOrDefault("categoryTreeNodeLevel", 0)
+                );
+            })
+            .toList();
+
+        return ResponseEntity.ok(suggestions);
+    }
+
     @GetMapping("/{id}/reverb/shipping-profiles")
     @Operation(summary = "Fetch shipping profiles saved on the seller's Reverb account")
     public ResponseEntity<List<Map<String, Object>>> getReverbShippingProfiles(@PathVariable UUID id) {
@@ -213,8 +290,25 @@ public class MarketplaceAccountController {
             }
         }
 
+        // eBay account-level defaults — blank clears, non-blank stores.
+        // These apply automatically to every eBay listing that doesn't have a per-listing override.
+        storeStringDefault(account, req.ebayMerchantLocationKey(), "ebay_merchant_location_key");
+        storeStringDefault(account, req.ebayFulfillmentPolicyId(), "ebay_fulfillment_policy_id");
+        storeStringDefault(account, req.ebayReturnPolicyId(), "ebay_return_policy_id");
+
         account = accountRepository.save(account);
         return ResponseEntity.ok(MarketplaceAccountDto.from(account, resolveProfile(account)));
+    }
+
+    /** Stores or removes a string sync setting. Null = no-op; blank = remove; non-blank = store. */
+    private void storeStringDefault(MarketplaceAccount account, String value, String key) {
+        if (value == null) return;
+        String v = value.strip();
+        if (v.isBlank()) {
+            account.getSyncSettings().remove(key);
+        } else {
+            account.getSyncSettings().put(key, v);
+        }
     }
 
     // ── Inner request records ──────────────────────────────────────────────────
@@ -229,6 +323,10 @@ public class MarketplaceAccountController {
 
     public record UpdateAccountSettingsRequest(
         List<String> excludedTags,
-        String descriptionSuffix
+        String descriptionSuffix,
+        // eBay account-level defaults (apply to every listing that doesn't override them)
+        String ebayMerchantLocationKey,
+        String ebayFulfillmentPolicyId,
+        String ebayReturnPolicyId
     ) {}
 }

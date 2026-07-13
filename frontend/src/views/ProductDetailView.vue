@@ -243,25 +243,64 @@
                   <!-- eBay-specific -->
                   <template v-if="l.marketplaceType === 'EBAY'">
                     <p class="text-xs font-medium text-gray-400">eBay</p>
-                    <div class="grid grid-cols-2 gap-2">
-                      <FieldWithCounter
-                        label="Merchant location key"
-                        v-model="editOverrides[l.id].ebay_merchant_location_key"
-                        placeholder="Required to publish"
-                        :limit="LIMITS.EBAY.merchantLocationKey"
-                      />
-                      <div>
-                        <label class="text-xs text-gray-500">Category ID</label>
-                        <input v-model="editOverrides[l.id].ebay_category_id" placeholder="eBay leaf category ID" class="input w-full mt-1 py-1 text-xs" />
+
+                    <!-- Account-level defaults summary -->
+                    <div class="rounded-lg bg-gray-800/60 border border-gray-700/50 px-3 py-2 text-xs text-gray-400 space-y-1">
+                      <p class="font-medium text-gray-300">Account defaults (set on Marketplaces page)</p>
+                      <div class="grid grid-cols-3 gap-2 mt-1">
+                        <div>
+                          <span class="text-gray-600">Location: </span>
+                          <span>{{ ebayAccountDefault(l.marketplaceAccountId, 'location') }}</span>
+                        </div>
+                        <div>
+                          <span class="text-gray-600">Fulfillment: </span>
+                          <span>{{ ebayAccountDefault(l.marketplaceAccountId, 'fulfillment') }}</span>
+                        </div>
+                        <div>
+                          <span class="text-gray-600">Returns: </span>
+                          <span>{{ ebayAccountDefault(l.marketplaceAccountId, 'return') }}</span>
+                        </div>
                       </div>
-                      <div>
-                        <label class="text-xs text-gray-500">Fulfillment policy ID</label>
-                        <input v-model="editOverrides[l.id].ebay_fulfillment_policy_id" placeholder="UUID" class="input w-full mt-1 py-1 text-xs" />
+                      <p v-if="!hasEbayDefaults(l.marketplaceAccountId)" class="text-yellow-400 mt-1">
+                        ⚠ No account defaults set — go to Marketplaces → eBay → Edit to configure them.
+      </p>
+                    </div>
+
+                    <!-- Category search -->
+                    <div>
+                      <label class="text-xs text-gray-500">Category</label>
+                      <div class="flex gap-2 mt-1">
+                        <input
+                          v-model="ebayCategorySearch[l.id]"
+                          placeholder="Search e.g. 'electric guitar'"
+                          class="input flex-1 py-1 text-xs"
+                          @keydown.enter.prevent="searchEbayCategories(l)"
+                        />
+                        <button
+                          @click="searchEbayCategories(l)"
+                          :disabled="ebayCategorySearching[l.id]"
+                          class="btn-secondary px-3 py-1 text-xs shrink-0"
+                        >{{ ebayCategorySearching[l.id] ? '…' : 'Search' }}</button>
                       </div>
-                      <div>
-                        <label class="text-xs text-gray-500">Return policy ID</label>
-                        <input v-model="editOverrides[l.id].ebay_return_policy_id" placeholder="UUID" class="input w-full mt-1 py-1 text-xs" />
+                      <!-- Search results -->
+                      <div v-if="ebayCategoryResults[l.id]?.length" class="mt-1 rounded-lg border border-gray-700 overflow-hidden">
+                        <button
+                          v-for="cat in ebayCategoryResults[l.id]"
+                          :key="cat.categoryId"
+                          class="block w-full text-left px-3 py-1.5 text-xs hover:bg-gray-800 border-b border-gray-800 last:border-0"
+                          :class="editOverrides[l.id].ebay_category_id === cat.categoryId ? 'text-brand-400 bg-gray-800' : 'text-gray-300'"
+                          @click="selectEbayCategory(l.id, cat)"
+                        >
+                          {{ cat.categoryName }}
+                          <span class="text-gray-600 ml-1">#{{ cat.categoryId }}</span>
+                        </button>
                       </div>
+                      <div v-else-if="ebayCategoryResults[l.id]?.length === 0" class="mt-1 text-xs text-gray-600 px-1">No results.</div>
+                      <!-- Selected value -->
+                      <p v-if="editOverrides[l.id].ebay_category_id" class="mt-1 text-xs text-gray-500">
+                        Selected: <span class="text-gray-300 font-mono">{{ editOverrides[l.id].ebay_category_id }}</span>
+                        <button @click="editOverrides[l.id].ebay_category_id = ''; ebayCategoryResults[l.id] = null" class="ml-2 text-gray-600 hover:text-gray-400">✕</button>
+                      </p>
                     </div>
                     <!-- Description override — eBay product.description max 4000 chars -->
                     <div>
@@ -598,6 +637,11 @@ const overridesSavedId = ref(null)
 const reverbShippingProfiles = ref({}) // { [accountId]: [{id, name}, ...] }
 const reverbProfilesLoading = ref({})  // { [accountId]: boolean }
 
+// eBay category search — keyed by listing ID
+const ebayCategorySearch = ref({})    // { [listingId]: string }
+const ebayCategorySearching = ref({}) // { [listingId]: boolean }
+const ebayCategoryResults = ref({})   // { [listingId]: [{categoryId, categoryName, level}] | null }
+
 // Video URL editor state
 const editingVideo = ref(false)
 const videoUrlDraft = ref('')
@@ -851,6 +895,60 @@ async function loadReverbShippingProfiles(accountId) {
 
 function reverbProfilesFor(accountId) {
   return reverbShippingProfiles.value[accountId] || []
+}
+
+// ── eBay category search ──────────────────────────────────────────────────────
+
+/**
+ * Returns a human-readable label for an account-level eBay default.
+ * type: 'location' | 'fulfillment' | 'return'
+ */
+function ebayAccountDefault(accountId, type) {
+  const account = accounts.value.find(a => a.id === accountId)
+  if (!account) return '—'
+  if (type === 'location') return account.ebayMerchantLocationKey || '—'
+  if (type === 'fulfillment') return account.ebayFulfillmentPolicyId
+    ? account.ebayFulfillmentPolicyId.slice(0, 8) + '…'
+    : '—'
+  if (type === 'return') return account.ebayReturnPolicyId
+    ? account.ebayReturnPolicyId.slice(0, 8) + '…'
+    : '—'
+  return '—'
+}
+
+/** True if the eBay account has at least one default configured. */
+function hasEbayDefaults(accountId) {
+  const account = accounts.value.find(a => a.id === accountId)
+  if (!account) return false
+  return !!(account.ebayMerchantLocationKey || account.ebayFulfillmentPolicyId || account.ebayReturnPolicyId)
+}
+
+/** Hits the category-suggestions endpoint and stores results keyed by listing ID. */
+async function searchEbayCategories(listing) {
+  const q = (ebayCategorySearch.value[listing.id] || '').trim()
+  if (!q) return
+  ebayCategorySearching.value[listing.id] = true
+  ebayCategoryResults.value[listing.id] = null
+  try {
+    const res = await api.get(
+      `/marketplace/accounts/${listing.marketplaceAccountId}/ebay/category-suggestions`,
+      { params: { q } }
+    )
+    ebayCategoryResults.value[listing.id] = res.data?.slice(0, 8) ?? []
+  } catch (e) {
+    console.error('eBay category search failed', e)
+    ebayCategoryResults.value[listing.id] = []
+  } finally {
+    ebayCategorySearching.value[listing.id] = false
+  }
+}
+
+/** Selects a category from the search results and collapses the list. */
+function selectEbayCategory(listingId, cat) {
+  if (!editOverrides.value[listingId]) return
+  editOverrides.value[listingId].ebay_category_id = cat.categoryId
+  ebayCategoryResults.value[listingId] = null
+  ebayCategorySearch.value[listingId] = cat.categoryName
 }
 
 async function saveOverrides(listing) {

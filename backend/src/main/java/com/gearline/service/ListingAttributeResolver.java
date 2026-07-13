@@ -3,6 +3,7 @@ package com.gearline.service;
 import com.gearline.domain.listing.MarketplaceListing;
 import com.gearline.domain.marketplace.MarketplaceAccount;
 import com.gearline.domain.product.Product;
+import com.gearline.marketplace.common.connector.MarketplaceType;
 import com.gearline.marketplace.common.dto.PublishListingRequest;
 import com.gearline.marketplace.common.util.ShippingCalculator;
 import lombok.RequiredArgsConstructor;
@@ -105,7 +106,7 @@ public class ListingAttributeResolver {
             .categoryId(getString(overrides, "category_id"))
             .conditionMapping(getString(overrides, "condition_mapping"))
             .shippingDetails(shippingCalculator.resolveShipping(product, overrides))
-            .extraParams(passthrough(overrides))
+            .extraParams(passthrough(overrides, account, listing.getMarketplaceType()))
             .build();
     }
 
@@ -158,10 +159,45 @@ public class ListingAttributeResolver {
      * Builds the extraParams map containing all override keys that were NOT promoted
      * to typed fields. This lets connector mappers read Reverb/eBay-specific keys
      * (e.g. reverb_model, ebay_item_specifics) without this class needing to know them.
+     *
+     * For eBay listings, account-level defaults stored in syncSettings are merged in
+     * for any key that isn't already set in the per-listing overrides. This means the
+     * user only needs to configure merchant location, fulfillment policy, and return policy
+     * once on the Marketplaces page — they're applied automatically to every listing.
+     *
+     * Per-listing overrides always win over account defaults.
      */
-    private Map<String, Object> passthrough(Map<String, Object> overrides) {
+    private static final List<String> EBAY_ACCOUNT_DEFAULT_KEYS = List.of(
+        "ebay_merchant_location_key",
+        "ebay_fulfillment_policy_id",
+        "ebay_return_policy_id"
+    );
+
+    private Map<String, Object> passthrough(
+        Map<String, Object> overrides,
+        MarketplaceAccount account,
+        MarketplaceType marketplaceType
+    ) {
         Map<String, Object> extra = new HashMap<>(overrides);
         RESOLVED_KEYS.forEach(extra::remove);
+
+        // For eBay: merge account-level defaults for any key not already set per-listing
+        if (marketplaceType == MarketplaceType.EBAY && account != null && account.getSyncSettings() != null) {
+            Map<String, Object> settings = account.getSyncSettings();
+            for (String key : EBAY_ACCOUNT_DEFAULT_KEYS) {
+                boolean alreadySet = extra.containsKey(key)
+                    && extra.get(key) instanceof String s
+                    && !s.isBlank();
+                if (!alreadySet) {
+                    Object accountDefault = settings.get(key);
+                    if (accountDefault instanceof String s && !s.isBlank()) {
+                        extra.put(key, s);
+                        log.debug("eBay listing: applied account default {}={}", key, s);
+                    }
+                }
+            }
+        }
+
         return extra.isEmpty() ? Map.of() : extra;
     }
 

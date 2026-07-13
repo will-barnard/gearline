@@ -110,6 +110,39 @@
                     class="text-xs text-gray-500 hover:text-gray-300 underline underline-offset-2 shrink-0"
                   >Edit</button>
                 </div>
+
+                <!-- eBay account defaults -->
+                <template v-if="account.marketplaceType === 'EBAY'">
+                  <div class="mt-3 border-t border-gray-800 pt-3 space-y-2">
+                    <div class="flex items-center justify-between">
+                      <p class="text-xs font-medium text-gray-400">eBay account defaults</p>
+                      <button
+                        @click="openEbayDefaults(account)"
+                        class="text-xs text-gray-500 hover:text-gray-300 underline underline-offset-2"
+                      >Edit</button>
+                    </div>
+                    <div class="grid grid-cols-3 gap-x-4 gap-y-1">
+                      <div>
+                        <p class="text-xs text-gray-600">Location</p>
+                        <p class="text-xs text-gray-400 font-mono truncate" :title="account.ebayMerchantLocationKey">
+                          {{ account.ebayMerchantLocationKey || '—' }}
+                        </p>
+                      </div>
+                      <div>
+                        <p class="text-xs text-gray-600">Fulfillment policy</p>
+                        <p class="text-xs text-gray-400 truncate" :title="account.ebayFulfillmentPolicyId">
+                          {{ ebayPolicyName(account.id, 'fulfillment', account.ebayFulfillmentPolicyId) }}
+                        </p>
+                      </div>
+                      <div>
+                        <p class="text-xs text-gray-600">Return policy</p>
+                        <p class="text-xs text-gray-400 truncate" :title="account.ebayReturnPolicyId">
+                          {{ ebayPolicyName(account.id, 'return', account.ebayReturnPolicyId) }}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                </template>
               </div>
               <div class="flex items-center gap-2">
                 <button
@@ -380,6 +413,80 @@
           <button @click="editingSuffixAccount = null" class="btn-secondary px-4 py-2 text-sm">Cancel</button>
           <button @click="saveSuffix" :disabled="savingSuffix" class="btn-primary px-4 py-2 text-sm">
             {{ savingSuffix ? 'Saving…' : 'Save' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── eBay account defaults modal ──────────────────────────────────── -->
+    <div v-if="editingEbayDefaults" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+      <div class="card w-full max-w-lg p-6">
+        <h2 class="text-base font-semibold text-white mb-1">eBay Account Defaults</h2>
+        <p class="text-xs text-gray-500 mb-5">
+          These values apply automatically to every eBay listing. Set them once here instead of entering
+          them per-listing. Any listing can still override them individually.
+        </p>
+
+        <div class="space-y-4">
+          <!-- Merchant location -->
+          <div>
+            <label class="text-xs font-medium text-gray-300 block mb-1">Shipping location</label>
+            <p class="text-xs text-gray-500 mb-1.5">
+              The location key set up in your eBay Seller Hub (Inventory → Locations).
+              Tells eBay where the item ships from.
+            </p>
+            <select v-model="ebayDefaultsForm.merchantLocationKey" class="input w-full text-sm"
+              @focus="loadEbayConfig">
+              <option value="">
+                {{ ebayConfigLoading ? 'Loading…' : (ebayConfig?.locations?.length ? '— Select location —' : 'No locations found') }}
+              </option>
+              <option v-for="loc in ebayConfig?.locations || []" :key="loc.key" :value="loc.key">
+                {{ loc.name || loc.key }}{{ loc.status === 'DISABLED' ? ' (disabled)' : '' }}
+              </option>
+            </select>
+          </div>
+
+          <!-- Fulfillment policy -->
+          <div>
+            <label class="text-xs font-medium text-gray-300 block mb-1">Fulfillment (shipping) policy</label>
+            <p class="text-xs text-gray-500 mb-1.5">
+              A shipping policy from eBay Seller Hub (Account → Policies). Defines delivery
+              timeframes and carrier options.
+            </p>
+            <select v-model="ebayDefaultsForm.fulfillmentPolicyId" class="input w-full text-sm"
+              @focus="loadEbayConfig">
+              <option value="">
+                {{ ebayConfigLoading ? 'Loading…' : (ebayConfig?.fulfillmentPolicies?.length ? '— Select policy —' : 'No policies found') }}
+              </option>
+              <option v-for="p in ebayConfig?.fulfillmentPolicies || []" :key="p.id" :value="p.id">
+                {{ p.name }}
+              </option>
+            </select>
+          </div>
+
+          <!-- Return policy -->
+          <div>
+            <label class="text-xs font-medium text-gray-300 block mb-1">Return policy</label>
+            <p class="text-xs text-gray-500 mb-1.5">
+              A return policy from eBay Seller Hub (Account → Policies). Defines your return window
+              and who pays for return shipping.
+            </p>
+            <select v-model="ebayDefaultsForm.returnPolicyId" class="input w-full text-sm"
+              @focus="loadEbayConfig">
+              <option value="">
+                {{ ebayConfigLoading ? 'Loading…' : (ebayConfig?.returnPolicies?.length ? '— Select policy —' : 'No policies found') }}
+              </option>
+              <option v-for="p in ebayConfig?.returnPolicies || []" :key="p.id" :value="p.id">
+                {{ p.name }}
+              </option>
+            </select>
+          </div>
+        </div>
+
+        <div class="mt-6 flex gap-3 justify-end">
+          <button @click="editingEbayDefaults = null" class="btn-secondary px-4 py-2 text-sm">Cancel</button>
+          <button @click="saveEbayDefaults" :disabled="savingEbayDefaults" class="btn-primary px-4 py-2 text-sm">
+            {{ savingEbayDefaults ? 'Saving…' : 'Save' }}
           </button>
         </div>
       </div>
@@ -677,6 +784,61 @@ async function saveSuffix() {
   } finally {
     savingSuffix.value = false
   }
+}
+
+// ── eBay account defaults ─────────────────────────────────────────────────────
+const editingEbayDefaults = ref(null)
+const savingEbayDefaults = ref(false)
+const ebayConfig = ref(null)        // { locations, fulfillmentPolicies, returnPolicies }
+const ebayConfigLoading = ref(false)
+const ebayDefaultsForm = ref({ merchantLocationKey: '', fulfillmentPolicyId: '', returnPolicyId: '' })
+
+function openEbayDefaults(account) {
+  editingEbayDefaults.value = account
+  ebayConfig.value = null
+  ebayDefaultsForm.value = {
+    merchantLocationKey: account.ebayMerchantLocationKey || '',
+    fulfillmentPolicyId: account.ebayFulfillmentPolicyId || '',
+    returnPolicyId:      account.ebayReturnPolicyId || '',
+  }
+  loadEbayConfig()
+}
+
+async function loadEbayConfig() {
+  if (ebayConfig.value || ebayConfigLoading.value || !editingEbayDefaults.value) return
+  ebayConfigLoading.value = true
+  try {
+    const res = await api.get(`/marketplace/accounts/${editingEbayDefaults.value.id}/ebay/config`)
+    ebayConfig.value = res.data
+  } catch (e) {
+    console.error('Failed to load eBay config', e)
+  } finally {
+    ebayConfigLoading.value = false
+  }
+}
+
+async function saveEbayDefaults() {
+  savingEbayDefaults.value = true
+  try {
+    await api.patch(`/marketplace/accounts/${editingEbayDefaults.value.id}/settings`, {
+      ebayMerchantLocationKey: ebayDefaultsForm.value.merchantLocationKey,
+      ebayFulfillmentPolicyId: ebayDefaultsForm.value.fulfillmentPolicyId,
+      ebayReturnPolicyId:      ebayDefaultsForm.value.returnPolicyId,
+    })
+    editingEbayDefaults.value = null
+    load()
+  } finally {
+    savingEbayDefaults.value = false
+  }
+}
+
+// Returns a human-readable policy name from cached config, or falls back to a truncated UUID
+function ebayPolicyName(accountId, type, id) {
+  if (!id) return '—'
+  if (!ebayConfig.value) return id.substring(0, 8) + '…'
+  const list = type === 'fulfillment' ? ebayConfig.value.fulfillmentPolicies : ebayConfig.value.returnPolicies
+  const match = (list || []).find(p => p.id === id)
+  return match ? match.name : id.substring(0, 8) + '…'
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
