@@ -10,6 +10,7 @@ import com.gearline.marketplace.common.connector.MarketplaceConnectorRegistry;
 import com.gearline.marketplace.common.connector.ConnectorHealthResult;
 import com.gearline.marketplace.common.connector.MarketplaceType;
 import com.gearline.marketplace.ebay.client.EbayApiClient;
+import com.gearline.marketplace.ebay.client.EbayApiException;
 import com.gearline.marketplace.reverb.client.ReverbApiClient;
 import com.gearline.marketplace.shopify.sync.ShopifyInitialSyncService;
 import com.gearline.service.ListingBackfillService;
@@ -18,6 +19,7 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -30,6 +32,7 @@ import java.util.UUID;
 @RestController
 @RequestMapping("/api/v1/marketplace/accounts")
 @RequiredArgsConstructor
+@Slf4j
 @Tag(name = "Marketplace Accounts", description = "Connected marketplace account management")
 public class MarketplaceAccountController {
 
@@ -171,30 +174,36 @@ public class MarketplaceAccountController {
             return ResponseEntity.badRequest().build();
         }
 
-        List<Map<String, Object>> locations = ebayApiClient.getMerchantLocations(account).stream()
-            .map(l -> Map.<String, Object>of(
-                "key",    l.getOrDefault("merchantLocationKey", ""),
-                "name",   l.getOrDefault("name", l.getOrDefault("merchantLocationKey", "")),
-                "status", l.getOrDefault("merchantLocationStatus", "")
-            )).toList();
+        try {
+            List<Map<String, Object>> locations = ebayApiClient.getMerchantLocations(account).stream()
+                .map(l -> Map.<String, Object>of(
+                    "key",    l.getOrDefault("merchantLocationKey", ""),
+                    "name",   l.getOrDefault("name", l.getOrDefault("merchantLocationKey", "")),
+                    "status", l.getOrDefault("merchantLocationStatus", "")
+                )).toList();
 
-        List<Map<String, Object>> fulfillmentPolicies = ebayApiClient.getFulfillmentPolicies(account).stream()
-            .map(p -> Map.<String, Object>of(
-                "id",   p.getOrDefault("fulfillmentPolicyId", ""),
-                "name", p.getOrDefault("name", "")
-            )).toList();
+            List<Map<String, Object>> fulfillmentPolicies = ebayApiClient.getFulfillmentPolicies(account).stream()
+                .map(p -> Map.<String, Object>of(
+                    "id",   p.getOrDefault("fulfillmentPolicyId", ""),
+                    "name", p.getOrDefault("name", "")
+                )).toList();
 
-        List<Map<String, Object>> returnPolicies = ebayApiClient.getReturnPolicies(account).stream()
-            .map(p -> Map.<String, Object>of(
-                "id",   p.getOrDefault("returnPolicyId", ""),
-                "name", p.getOrDefault("name", "")
-            )).toList();
+            List<Map<String, Object>> returnPolicies = ebayApiClient.getReturnPolicies(account).stream()
+                .map(p -> Map.<String, Object>of(
+                    "id",   p.getOrDefault("returnPolicyId", ""),
+                    "name", p.getOrDefault("name", "")
+                )).toList();
 
-        return ResponseEntity.ok(Map.of(
-            "locations",          locations,
-            "fulfillmentPolicies", fulfillmentPolicies,
-            "returnPolicies",     returnPolicies
-        ));
+            return ResponseEntity.ok(Map.of(
+                "locations",           locations,
+                "fulfillmentPolicies", fulfillmentPolicies,
+                "returnPolicies",      returnPolicies
+            ));
+        } catch (EbayApiException e) {
+            log.warn("eBay config fetch failed for account {}: {}", id, e.getMessage());
+            return ResponseEntity.status(502)
+                .body(Map.of("error", e.getMessage()));
+        }
     }
 
     /**
@@ -213,19 +222,23 @@ public class MarketplaceAccountController {
             return ResponseEntity.badRequest().build();
         }
 
-        List<Map<String, Object>> suggestions = ebayApiClient.getCategorySuggestions(account, q).stream()
-            .map(s -> {
-                @SuppressWarnings("unchecked")
-                Map<String, Object> cat = (Map<String, Object>) s.get("category");
-                return Map.<String, Object>of(
-                    "categoryId",   cat != null ? cat.getOrDefault("categoryId", "") : "",
-                    "categoryName", cat != null ? cat.getOrDefault("categoryName", "") : "",
-                    "level",        s.getOrDefault("categoryTreeNodeLevel", 0)
-                );
-            })
-            .toList();
-
-        return ResponseEntity.ok(suggestions);
+        try {
+            List<Map<String, Object>> suggestions = ebayApiClient.getCategorySuggestions(account, q).stream()
+                .map(s -> {
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> cat = (Map<String, Object>) s.get("category");
+                    return Map.<String, Object>of(
+                        "categoryId",   cat != null ? cat.getOrDefault("categoryId", "") : "",
+                        "categoryName", cat != null ? cat.getOrDefault("categoryName", "") : "",
+                        "level",        s.getOrDefault("categoryTreeNodeLevel", 0)
+                    );
+                })
+                .toList();
+            return ResponseEntity.ok(suggestions);
+        } catch (EbayApiException e) {
+            log.warn("eBay category search failed for account {}: {}", id, e.getMessage());
+            return ResponseEntity.status(502).body(List.of());
+        }
     }
 
     @GetMapping("/{id}/reverb/shipping-profiles")

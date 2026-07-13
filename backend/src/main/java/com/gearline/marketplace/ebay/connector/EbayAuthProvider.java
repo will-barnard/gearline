@@ -39,11 +39,18 @@ import java.util.Map;
 @Slf4j
 public class EbayAuthProvider implements MarketplaceAuthProvider {
 
-    /** Scopes required for inventory management and order fulfilment. */
+    /**
+     * Scopes required for inventory management, order fulfilment, and account config
+     * (fulfillment/return policies via the Account API).
+     *
+     * sell.account.readonly — required for GET /sell/account/v1/fulfillment_policy
+     *                          and GET /sell/account/v1/return_policy
+     */
     static final String EBAY_SCOPES =
         "https://api.ebay.com/oauth/api_scope " +
         "https://api.ebay.com/oauth/api_scope/sell.inventory " +
-        "https://api.ebay.com/oauth/api_scope/sell.fulfillment";
+        "https://api.ebay.com/oauth/api_scope/sell.fulfillment " +
+        "https://api.ebay.com/oauth/api_scope/sell.account.readonly";
 
     /** Token endpoint — separate from the auth URL. */
     private static final String TOKEN_URL = "https://api.ebay.com/identity/v1/oauth2/token";

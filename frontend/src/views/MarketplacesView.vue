@@ -427,6 +427,18 @@
           them per-listing. Any listing can still override them individually.
         </p>
 
+        <!-- Error banner — shown when eBay API call fails (e.g. expired token / missing scope) -->
+        <div v-if="ebayConfigError" class="rounded-lg bg-red-900/30 border border-red-700/50 px-4 py-3 mb-4 text-xs text-red-300 space-y-2">
+          <p class="font-medium text-red-200">Could not load eBay account data</p>
+          <p class="break-all">{{ ebayConfigError }}</p>
+          <p class="text-red-400">
+            This usually means the eBay token is expired or was created before the
+            <code class="font-mono">sell.account.readonly</code> scope was added.
+            <strong>Re-connect your eBay account</strong> (disconnect then reconnect via OAuth) to get a
+            fresh token with all required scopes, then try again.
+          </p>
+        </div>
+
         <div class="space-y-4">
           <!-- Merchant location -->
           <div>
@@ -791,11 +803,13 @@ const editingEbayDefaults = ref(null)
 const savingEbayDefaults = ref(false)
 const ebayConfig = ref(null)        // { locations, fulfillmentPolicies, returnPolicies }
 const ebayConfigLoading = ref(false)
+const ebayConfigError = ref(null)   // string | null — shown in modal if config fetch fails
 const ebayDefaultsForm = ref({ merchantLocationKey: '', fulfillmentPolicyId: '', returnPolicyId: '' })
 
 function openEbayDefaults(account) {
   editingEbayDefaults.value = account
   ebayConfig.value = null
+  ebayConfigError.value = null
   ebayDefaultsForm.value = {
     merchantLocationKey: account.ebayMerchantLocationKey || '',
     fulfillmentPolicyId: account.ebayFulfillmentPolicyId || '',
@@ -807,10 +821,17 @@ function openEbayDefaults(account) {
 async function loadEbayConfig() {
   if (ebayConfig.value || ebayConfigLoading.value || !editingEbayDefaults.value) return
   ebayConfigLoading.value = true
+  ebayConfigError.value = null
   try {
     const res = await api.get(`/marketplace/accounts/${editingEbayDefaults.value.id}/ebay/config`)
-    ebayConfig.value = res.data
+    // Backend returns 502 with { error: "..." } when eBay rejects (e.g. missing scope / expired token)
+    if (res.data?.error) {
+      ebayConfigError.value = res.data.error
+    } else {
+      ebayConfig.value = res.data
+    }
   } catch (e) {
+    ebayConfigError.value = e.response?.data?.error || e.message || 'Failed to load eBay config'
     console.error('Failed to load eBay config', e)
   } finally {
     ebayConfigLoading.value = false
