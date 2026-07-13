@@ -11,6 +11,7 @@ import com.gearline.marketplace.common.connector.ConnectorHealthResult;
 import com.gearline.marketplace.common.connector.MarketplaceType;
 import com.gearline.marketplace.reverb.client.ReverbApiClient;
 import com.gearline.marketplace.shopify.sync.ShopifyInitialSyncService;
+import com.gearline.service.ListingBackfillService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -36,6 +37,7 @@ public class MarketplaceAccountController {
     private final PricingProfileRepository pricingProfileRepository;
     private final ShopifyInitialSyncService shopifyInitialSyncService;
     private final ReverbApiClient reverbApiClient;
+    private final ListingBackfillService listingBackfillService;
 
     @GetMapping
     @Operation(summary = "List all connected marketplace accounts")
@@ -65,6 +67,11 @@ public class MarketplaceAccountController {
             .connectionStatus(ConnectionStatus.CONNECTED)
             .build();
         account = accountRepository.save(account);
+        // Backfill NEEDS_REVIEW stubs for products that existed before this account was connected.
+        // Shopify is the product source, not a listing destination — skip it.
+        if (account.getMarketplaceType() != MarketplaceType.SHOPIFY) {
+            listingBackfillService.backfillListingsForNewAccount(account);
+        }
         return ResponseEntity.created(URI.create("/api/v1/marketplace/accounts/" + account.getId()))
             .body(MarketplaceAccountDto.from(account));
     }

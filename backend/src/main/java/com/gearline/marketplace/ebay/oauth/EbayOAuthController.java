@@ -6,6 +6,7 @@ import com.gearline.domain.marketplace.MarketplaceAccount;
 import com.gearline.infrastructure.persistence.MarketplaceAccountRepository;
 import com.gearline.marketplace.common.connector.MarketplaceType;
 import com.gearline.marketplace.ebay.connector.EbayAuthProvider;
+import com.gearline.service.ListingBackfillService;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -52,6 +53,7 @@ public class EbayOAuthController {
     private final EbayAuthProvider ebayAuthProvider;
     private final MarketplaceAccountRepository accountRepository;
     private final GearlineProperties properties;
+    private final ListingBackfillService listingBackfillService;
 
     /** Single-use nonce store: nonce → expiry. For multi-instance, move to Redis. */
     private final ConcurrentHashMap<String, Instant> pendingNonces = new ConcurrentHashMap<>();
@@ -154,7 +156,10 @@ public class EbayOAuthController {
 
         log.info("eBay account connected (id={})", account.getId());
 
-        // 4. Redirect the seller back to the frontend
+        // 4. Backfill NEEDS_REVIEW listing stubs for products that existed before eBay was connected
+        listingBackfillService.backfillListingsForNewAccount(account);
+
+        // 5. Redirect the seller back to the frontend
         redirectToFrontend(response, true, null);
     }
 

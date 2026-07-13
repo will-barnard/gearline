@@ -92,34 +92,71 @@
             </div>
 
             <div v-else class="space-y-2">
-              <div v-for="l in listings" :key="l.id" class="rounded-lg border border-gray-800 p-3">
-                <!-- Listing header -->
-                <div class="flex items-center justify-between">
-                  <span class="text-xs font-medium text-gray-300">{{ l.marketplaceType }}</span>
-                  <span :class="listingBadge(l.listingStatus)">{{ l.listingStatus }}</span>
-                </div>
-                <div v-if="l.syncedPrice" class="mt-1 text-xs text-gray-500">${{ l.syncedPrice }} · qty {{ l.syncedQuantity }}</div>
-                <div v-if="l.lastError" class="mt-1 text-xs text-red-400 truncate" :title="l.lastError">{{ l.lastError }}</div>
+              <div v-for="l in listings" :key="l.id" :class="listingCardClass(l)" class="rounded-lg border p-3">
 
-                <!-- Listing actions -->
-                <div class="mt-2 flex items-center gap-2">
+                <!-- Header: marketplace name + status pill -->
+                <div class="flex items-center justify-between">
+                  <div class="flex items-center gap-2">
+                    <span :class="listingDot(l.listingStatus)"></span>
+                    <span class="text-xs font-semibold text-gray-200">{{ marketplaceName(l.marketplaceType) }}</span>
+                  </div>
+                  <span :class="listingBadge(l.listingStatus)" class="text-xs">{{ listingStatusLabel(l.listingStatus) }}</span>
+                </div>
+
+                <!-- Live: show synced price + qty -->
+                <div v-if="l.listingStatus === 'ACTIVE' && l.syncedPrice" class="mt-1.5 text-xs text-gray-400">
+                  Listed at <span class="text-gray-200 font-medium">${{ l.syncedPrice }}</span> · qty {{ l.syncedQuantity }}
+                </div>
+
+                <!-- In-flight -->
+                <div v-else-if="l.listingStatus === 'PENDING' || l.listingStatus === 'PUBLISHING'" class="mt-1.5 text-xs text-gray-500">
+                  Being published to {{ marketplaceName(l.marketplaceType) }}…
+                </div>
+
+                <!-- Not yet published -->
+                <div v-else-if="l.listingStatus === 'NEEDS_REVIEW' && !l.lastError" class="mt-1.5 text-xs text-gray-500">
+                  Not yet published. Review and click Publish when ready.
+                </div>
+
+                <!-- Failed -->
+                <div v-if="l.lastError" class="mt-1.5 text-xs text-red-400 break-words" :title="l.lastError">{{ l.lastError }}</div>
+
+                <!-- Taken down -->
+                <div v-if="l.listingStatus === 'DELISTED' || l.listingStatus === 'INACTIVE'" class="mt-1.5 text-xs text-gray-500">
+                  Removed from {{ marketplaceName(l.marketplaceType) }}. Publish again to relist.
+                </div>
+                <div v-if="l.listingStatus === 'SOLD'" class="mt-1.5 text-xs text-gray-500">
+                  Sold on {{ marketplaceName(l.marketplaceType) }}.
+                </div>
+
+                <!-- Actions -->
+                <div class="mt-2.5 flex items-center gap-3">
+                  <!-- Publish / Republish -->
                   <button
-                    v-if="l.listingStatus !== 'ACTIVE'"
+                    v-if="l.listingStatus !== 'ACTIVE' && l.listingStatus !== 'PENDING' && l.listingStatus !== 'PUBLISHING' && l.listingStatus !== 'SOLD'"
                     @click="publishListing(l)"
                     :disabled="publishingId === l.id || hasOverrideErrors(l)"
-                    class="text-xs text-brand-400 hover:text-brand-300 disabled:opacity-50"
+                    class="text-xs font-medium text-brand-400 hover:text-brand-300 disabled:opacity-40"
                     :title="hasOverrideErrors(l) ? 'Fix field limit violations before publishing' : ''"
                   >
-                    {{ publishingId === l.id ? 'Publishing…' : 'Publish' }}
+                    {{ publishingId === l.id ? 'Publishing…' : (l.listingStatus === 'DELISTED' || l.listingStatus === 'INACTIVE' ? 'Relist' : 'Publish') }}
                   </button>
+
+                  <!-- In-flight spinner -->
+                  <span v-if="l.listingStatus === 'PENDING' || l.listingStatus === 'PUBLISHING'" class="text-xs text-gray-500">
+                    Publishing…
+                  </span>
+
+                  <!-- Delist (only when live) -->
                   <button
                     v-if="l.listingStatus === 'ACTIVE'"
                     @click="delistListing(l)"
                     :disabled="delistingId === l.id"
-                    class="text-xs text-gray-500 hover:text-gray-300 disabled:opacity-50"
+                    class="text-xs text-gray-500 hover:text-gray-300 disabled:opacity-40"
                   >
-                    {{ delistingId === l.id ? 'Delisting…' : 'Delist' }}
+                    {{ delistingId === l.id ? 'Removing…' : 'Delist' }}
                   </button>
+
                   <button
                     @click="toggleOverridesEditor(l.id)"
                     class="text-xs text-gray-500 hover:text-gray-300 ml-auto"
@@ -892,15 +929,62 @@ function flattenOverrides(listing) {
   }
 }
 
+function listingStatusLabel(s) {
+  return {
+    ACTIVE:       'Live',
+    FAILED:       'Failed',
+    PENDING:      'Queued',
+    PUBLISHING:   'Publishing',
+    NEEDS_REVIEW: 'Not published',
+    DELISTED:     'Delisted',
+    INACTIVE:     'Inactive',
+    SOLD:         'Sold',
+  }[s] || s
+}
+
 function listingBadge(s) {
   return {
-    ACTIVE: 'badge-green',
-    FAILED: 'badge-red',
-    PENDING: 'badge-yellow',
-    NEEDS_REVIEW: 'badge-yellow',
-    DELISTED: 'badge-gray',
-    SOLD: 'badge-blue',
+    ACTIVE:       'badge-green',
+    FAILED:       'badge-red',
+    PENDING:      'badge-yellow',
+    PUBLISHING:   'badge-yellow',
+    NEEDS_REVIEW: 'badge-gray',
+    DELISTED:     'badge-gray',
+    INACTIVE:     'badge-gray',
+    SOLD:         'badge-blue',
   }[s] || 'badge-gray'
+}
+
+function listingDot(s) {
+  const base = 'inline-block w-2 h-2 rounded-full flex-shrink-0'
+  const color = {
+    ACTIVE:       'bg-green-400',
+    FAILED:       'bg-red-400',
+    PENDING:      'bg-yellow-400',
+    PUBLISHING:   'bg-yellow-400',
+    NEEDS_REVIEW: 'bg-gray-600',
+    DELISTED:     'bg-gray-600',
+    INACTIVE:     'bg-gray-600',
+    SOLD:         'bg-blue-400',
+  }[s] || 'bg-gray-600'
+  return `${base} ${color}`
+}
+
+function listingCardClass(l) {
+  return {
+    ACTIVE:       'border-green-800/60 bg-green-950/20',
+    FAILED:       'border-red-800/60 bg-red-950/20',
+    PENDING:      'border-yellow-800/40',
+    PUBLISHING:   'border-yellow-800/40',
+    NEEDS_REVIEW: 'border-gray-800',
+    DELISTED:     'border-gray-800 opacity-75',
+    INACTIVE:     'border-gray-800 opacity-75',
+    SOLD:         'border-gray-800 opacity-75',
+  }[l.listingStatus] || 'border-gray-800'
+}
+
+function marketplaceName(type) {
+  return { REVERB: 'Reverb', EBAY: 'eBay', SHOPIFY: 'Shopify' }[type] || type
 }
 
 // ── Video URL helpers ─────────────────────────────────────────────────────────
