@@ -3,8 +3,10 @@
     <header class="flex h-16 flex-shrink-0 items-center justify-between border-b border-gray-800 px-6">
       <div class="flex items-center gap-3">
         <h1 class="text-lg font-semibold text-white">Products</h1>
-        <span v-if="!loading && totalElements > 0" class="text-xs text-gray-500">
-          {{ totalElements.toLocaleString() }} {{ activeFilter === 'excluded' ? 'excluded' : activeFilter === 'archived' ? 'archived' : activeFilter === 'active' ? 'active' : '' }} product{{ totalElements !== 1 ? 's' : '' }}
+        <span v-if="!loading && !error && totalElements > 0" class="text-xs text-gray-500">
+          {{ Number(totalElements || 0).toLocaleString() }}
+          {{ activeFilter === 'excluded' ? 'excluded' : activeFilter === 'archived' ? 'archived' : activeFilter === 'active' ? 'active' : '' }}
+          product{{ totalElements !== 1 ? 's' : '' }}
         </span>
       </div>
       <div class="flex items-center gap-3">
@@ -195,7 +197,8 @@
           <!-- Pagination -->
           <div class="flex items-center justify-between border-t border-gray-800 px-4 py-3">
             <span class="text-xs text-gray-500">
-              {{ totalElements.toLocaleString() }} total — showing page {{ page + 1 }} of {{ totalPages }}
+              {{ Number(totalElements || 0).toLocaleString() }} total
+              <template v-if="totalPages > 1"> — page {{ page + 1 }} of {{ totalPages }}</template>
             </span>
             <div v-if="totalPages > 1" class="flex gap-2">
               <button @click="page--" :disabled="page === 0" class="btn-secondary px-3 py-1 text-xs">←</button>
@@ -266,9 +269,9 @@ async function loadProducts() {
     if (activeFilter.value === 'all')      { params.marketplaceExcluded = false }
 
     const res = await api.get('/products', { params })
-    products.value = res.data.content
-    totalPages.value = res.data.totalPages
-    totalElements.value = res.data.totalElements
+    products.value = res.data.content || []
+    totalPages.value = res.data.totalPages || 1
+    totalElements.value = res.data.totalElements || 0
   } catch (e) {
     error.value = 'Failed to load products'
     console.error(e)
