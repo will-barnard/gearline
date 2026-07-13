@@ -23,36 +23,46 @@ import java.util.Map;
  * endpoint the developer keyset remains disabled.
  *
  * Reference:
- *   https://developer.ebay.com/marketplace-account-deletion
+ *   https://developer.ebay.com/develop/guides-v2/marketplace-user-account-deletion
  *
  * ──────────────────────────────────────────────────────────────────────────
  * Verification flow (one-time, triggered from the Developer Portal)
  * ──────────────────────────────────────────────────────────────────────────
- * 1. In the portal, enter this endpoint URL and a verification token.
- * 2. eBay sends:
+ * 1. In the portal (Alerts & Notifications), enter:
+ *      Notification Endpoint URL: https://yourdomain.com/api/v1/marketplace/ebay/notifications
+ *      Verification token:        <EBAY_NOTIFICATION_VERIFICATION_TOKEN value>
+ * 2. eBay immediately sends:
  *      GET /api/v1/marketplace/ebay/notifications?challenge_code=<random>
  * 3. This handler responds with:
  *      {"challengeResponse": "<sha256hex>"}
- *    where sha256hex = SHA-256( challengeCode + verificationToken + endpointUrl )
- *    — concatenated in that exact order, no delimiters.
- * 4. eBay validates the hash; on match the endpoint is marked as verified
- *    and the keyset is enabled.
+ *    where sha256hex = SHA-256( challengeCode bytes || verificationToken bytes || endpointUrl bytes )
+ *    per eBay's official Java sample (incremental digest updates, no delimiter).
+ * 4. eBay validates the hash; on match the endpoint is verified and the keyset is enabled.
  *
  * ──────────────────────────────────────────────────────────────────────────
- * Runtime notifications
+ * Verification token constraints (eBay enforced)
  * ──────────────────────────────────────────────────────────────────────────
- * After verification, eBay POSTs a JSON event body whenever a buyer
- * requests account deletion. Gearline logs the notification and returns 200.
- * No buyer order/listing data is stored by Gearline so no further scrubbing
- * is required, but you may extend the POST handler if you add PII storage.
+ *   - 32–80 characters
+ *   - Only alphanumeric characters, underscore (_), and hyphen (-) allowed
+ *   - Generate safely with: LC_ALL=C tr -dc 'a-zA-Z0-9_-' </dev/urandom | head -c 64
+ *     (avoid openssl rand -base64 — produces +, /, = which eBay rejects)
  *
  * ──────────────────────────────────────────────────────────────────────────
  * Configuration (env vars)
  * ──────────────────────────────────────────────────────────────────────────
- *   EBAY_NOTIFICATION_VERIFICATION_TOKEN — any string you choose; enter the
- *     same value in the portal under Application Keys → Notifications.
- *   APP_BASE_URL — used to reconstruct the full endpoint URL for the hash.
- *     Must match exactly what you register in the portal.
+ *   EBAY_NOTIFICATION_VERIFICATION_TOKEN — token chosen by you; paste the
+ *     exact same value in the portal Verification token field.
+ *   APP_BASE_URL — the public HTTPS base URL of your deployment (no trailing
+ *     slash). The endpoint URL used in the hash is APP_BASE_URL + ENDPOINT_PATH.
+ *     This must exactly match what you typed into the portal.
+ *
+ * ──────────────────────────────────────────────────────────────────────────
+ * Debug endpoint (no auth required)
+ * ──────────────────────────────────────────────────────────────────────────
+ * GET /api/v1/marketplace/ebay/notifications/debug
+ * Returns the endpoint URL the backend will use in hash computation and
+ * whether the verification token is configured. Use this to confirm the URL
+ * exactly matches what you entered in the Developer Portal.
  */
 @RestController
 @RequestMapping("/api/v1/marketplace/ebay/notifications")
@@ -60,7 +70,7 @@ import java.util.Map;
 @Slf4j
 public class EbayNotificationsController {
 
-    /** Path segment appended to APP_BASE_URL to form the full endpoint URL. */
+    /** Path appended to APP_BASE_URL to form the registered endpoint URL. */
     static final String ENDPOINT_PATH = "/api/v1/marketplace/ebay/notifications";
 
     private final GearlineProperties properties;
@@ -68,11 +78,16 @@ public class EbayNotificationsController {
     // ── Challenge verification (GET) ──────────────────────────────────────────
 
     /**
-     * Responds to eBay's one-time challenge used to verify endpoint ownership.
+     * Responds to eBay's one-time endpoint ownership challenge.
      *
-     * Called by the "Send Test Notification / Verify" button in the Developer Portal.
-     * Must return HTTP 200 with Content-Type application/json and body:
+     * eBay sends GET ?challenge_code=xxx immediately when you save the endpoint
+     * URL in the portal. Returns HTTP 200 + application/json:
      *   {"challengeResponse": "<sha256hex>"}
+     *
+     * Hash algorithm (from eBay's official Java sample):
+     *   digest.update(challengeCode bytes)
+     *   digest.update(verificationToken bytes)
+     *   digest.digest(endpointUrl bytes)
      */
     @GetMapping(produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<Map<String, String>> challenge(
@@ -86,17 +101,17 @@ public class EbayNotificationsController {
                 "EBAY_NOTIFICATION_VERIFICATION_TOKEN is not configured");
         }
 
-        // Reconstruct the endpoint URL exactly as registered in the portal
-        String baseUrl = properties.getApp().getBaseUrl();
-        if (baseUrl == null || baseUrl.isBlank()) {
-            baseUrl = "http://localhost:8080";
-        }
-        String endpointUrl = baseUrl.replaceAll("/$", "") + ENDPOINT_PATH;
+        String endpointUrl = computeEndpointUrl();
 
-        // SHA-256( challengeCode + verificationToken + endpointUrl ) — no delimiters
-        String hash = sha256Hex(challengeCode + verificationToken + endpointUrl);
+        // Incremental SHA-256 updates — matches eBay's official Java sample exactly:
+        //   digest.update(challengeCode.getBytes(UTF_8));
+        //   digest.update(verificationToken.getBytes(UTF_8));
+        //   byte[] bytes = digest.digest(endpoint.getBytes(UTF_8));
+        String hash = sha256Hex(challengeCode, verificationToken, endpointUrl);
 
-        log.info("eBay challenge verification — endpoint={} hash={}", endpointUrl, hash);
+        log.info("eBay challenge verification — endpointUrl='{}' challengeCode='{}' hash='{}'",
+            endpointUrl, challengeCode, hash);
+
         return ResponseEntity.ok(Map.of("challengeResponse", hash));
     }
 
@@ -104,25 +119,63 @@ public class EbayNotificationsController {
 
     /**
      * Receives eBay account-deletion events after the endpoint has been verified.
+     * Accepts any content type — eBay test notifications may omit Content-Type.
      *
-     * Gearline does not store buyer PII, so we simply acknowledge the notification.
-     * If buyer data is ever added (e.g. order history linked to buyer accounts),
-     * implement scrubbing logic here.
+     * Gearline does not store buyer PII, so we simply acknowledge.
+     * Extend this handler if buyer-identifying data is added to the data model.
      */
-    @PostMapping(consumes = MediaType.APPLICATION_JSON_VALUE)
-    public ResponseEntity<Void> receiveNotification(@RequestBody(required = false) String body) {
+    @PostMapping
+    public ResponseEntity<Void> receiveNotification(
+        @RequestBody(required = false) String body
+    ) {
         log.info("eBay account-deletion notification received: {}", body);
-        // Acknowledge with 200 — eBay will retry on any non-2xx response
         return ResponseEntity.ok().build();
+    }
+
+    // ── Debug endpoint ────────────────────────────────────────────────────────
+
+    /**
+     * Returns configuration status to help diagnose verification failures.
+     *
+     * Check that the "endpointUrl" value here exactly matches what you typed
+     * into the Developer Portal's Notification Endpoint field.
+     */
+    @GetMapping("/debug")
+    public ResponseEntity<Map<String, Object>> debug() {
+        String token = properties.getEbay().getNotificationVerificationToken();
+        String endpointUrl = computeEndpointUrl();
+        return ResponseEntity.ok(Map.of(
+            "endpointUrl", endpointUrl,
+            "tokenConfigured", (token != null && !token.isBlank()),
+            "tokenLength", (token != null ? token.length() : 0),
+            "appBaseUrl", String.valueOf(properties.getApp().getBaseUrl())
+        ));
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────
 
-    private static String sha256Hex(String input) {
+    private String computeEndpointUrl() {
+        String baseUrl = properties.getApp().getBaseUrl();
+        if (baseUrl == null || baseUrl.isBlank()) {
+            baseUrl = "http://localhost:8080";
+        }
+        return baseUrl.replaceAll("/$", "") + ENDPOINT_PATH;
+    }
+
+    /**
+     * Computes SHA-256 using incremental updates — exactly matching eBay's official
+     * Java code sample:
+     *   digest.update(challengeCode.getBytes(UTF_8));
+     *   digest.update(verificationToken.getBytes(UTF_8));
+     *   byte[] bytes = digest.digest(endpoint.getBytes(UTF_8));
+     */
+    private static String sha256Hex(String challengeCode, String verificationToken, String endpoint) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] hash = digest.digest(input.getBytes(StandardCharsets.UTF_8));
-            return HexFormat.of().formatHex(hash);
+            digest.update(challengeCode.getBytes(StandardCharsets.UTF_8));
+            digest.update(verificationToken.getBytes(StandardCharsets.UTF_8));
+            byte[] bytes = digest.digest(endpoint.getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(bytes);
         } catch (NoSuchAlgorithmException e) {
             throw new IllegalStateException("SHA-256 not available", e);
         }
