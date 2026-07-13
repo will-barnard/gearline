@@ -10,6 +10,27 @@
     </div>
 
     <div v-else-if="product" class="flex-1 overflow-auto p-6">
+
+      <!-- Marketplace exclusion banner -->
+      <div v-if="product.marketplaceExcluded"
+           class="mb-5 flex items-start gap-3 rounded-lg border border-orange-700/60 bg-orange-950/40 px-4 py-3">
+        <span class="text-orange-400 text-lg leading-none mt-0.5">⊘</span>
+        <div class="flex-1 min-w-0">
+          <p class="text-sm font-semibold text-orange-200">Excluded from all marketplaces</p>
+          <p class="mt-0.5 text-xs text-orange-400">
+            This product will not appear in the eBay or Reverb review queue and no listings will be created for it,
+            even if its status changes in Shopify. The Shopify listing is unaffected.
+          </p>
+        </div>
+        <button
+          @click="setExcluded(false)"
+          :disabled="togglingExclusion"
+          class="shrink-0 btn-secondary px-3 py-1.5 text-xs text-green-400 border-green-700/50 hover:border-green-500"
+        >
+          {{ togglingExclusion ? 'Updating…' : '↩ Re-include on marketplaces' }}
+        </button>
+      </div>
+
       <div class="grid grid-cols-1 gap-6 lg:grid-cols-3">
 
         <!-- Product info -->
@@ -112,14 +133,31 @@
 
         <!-- Listings sidebar -->
         <div class="space-y-4">
+
+          <!-- Exclude from marketplaces card -->
+          <div class="card" v-if="!product.marketplaceExcluded">
+            <h2 class="mb-2 text-sm font-semibold uppercase tracking-wider text-gray-500">Shopify-only product?</h2>
+            <p class="text-xs text-gray-500 mb-3">
+              Deposit listings, restoration placeholders, and in-store inventory should never appear
+              in the eBay or Reverb review queue. Excluding keeps Shopify untouched.
+            </p>
+            <button
+              @click="setExcluded(true)"
+              :disabled="togglingExclusion"
+              class="btn-secondary w-full py-2 text-xs text-orange-400 border-orange-700/50 hover:border-orange-500"
+            >
+              {{ togglingExclusion ? 'Updating…' : '✕ Exclude from all marketplaces' }}
+            </button>
+          </div>
+
           <div class="card">
             <div class="flex items-center justify-between mb-4">
               <h2 class="text-sm font-semibold uppercase tracking-wider text-gray-500">Marketplace Listings</h2>
               <button
                 @click="openPublishModal"
                 class="btn-primary px-3 py-1.5 text-xs"
-                :disabled="availableAccounts.length === 0"
-                :title="availableAccounts.length === 0 ? 'No marketplace accounts connected' : 'Publish to a marketplace'"
+                :disabled="availableAccounts.length === 0 || product.marketplaceExcluded"
+                :title="product.marketplaceExcluded ? 'Product is excluded from marketplaces' : availableAccounts.length === 0 ? 'No marketplace accounts connected' : 'Publish to a marketplace'"
               >
                 + New Listing
               </button>
@@ -657,6 +695,7 @@ const product = ref(null)
 const listings = ref([])
 const accounts = ref([])
 const loading = ref(true)
+const togglingExclusion = ref(false)
 const listingsLoading = ref(true)
 
 // Publish modal state
@@ -830,6 +869,25 @@ function overrideValidationErrors(listing) {
 /** Returns true if the current override state has any blocking errors */
 function hasOverrideErrors(listing) {
   return overrideValidationErrors(listing).length > 0
+}
+
+// ── Marketplace exclusion ─────────────────────────────────────────────────────
+
+async function setExcluded(excluded) {
+  togglingExclusion.value = true
+  try {
+    const res = await api.patch(`/products/${route.params.id}/marketplace-excluded`, { excluded })
+    product.value = res.data
+    // If we just excluded, reload listings too — stubs will have been deleted server-side
+    if (excluded) {
+      const l = await api.get(`/listings/product/${route.params.id}`)
+      listings.value = l.data
+    }
+  } catch (e) {
+    alert('Failed to update marketplace exclusion.')
+  } finally {
+    togglingExclusion.value = false
+  }
 }
 
 // ── Data loading ──────────────────────────────────────────────────────────────

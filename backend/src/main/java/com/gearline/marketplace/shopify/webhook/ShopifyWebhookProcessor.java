@@ -137,6 +137,15 @@ public class ShopifyWebhookProcessor {
         product = productRepository.save(product);
         final Product saved = product;
 
+        // ── marketplace_excluded flag ─────────────────────────────────────────
+        // If a Gearline user has permanently excluded this product from all marketplaces
+        // (e.g. it's a deposit listing or restoration placeholder), bail out immediately.
+        // This flag is authoritative and immune to Shopify webhook updates.
+        if (saved.isMarketplaceExcluded()) {
+            log.info("Product {} skipped for marketplace listing — marketplace_excluded=true", saved.getSku());
+            return;
+        }
+
         // ── Excluded-tag handling ─────────────────────────────────────────────
         // If the product carries a tag that is configured to suppress marketplace
         // listings, cancel any NEEDS_REVIEW listings that may already exist (e.g.
@@ -284,6 +293,14 @@ public class ShopifyWebhookProcessor {
             // Product was just restored. Any previous marketplace listings were deisted
             // and are no longer ACTIVE, so there's nothing to send LISTING_UPDATE to.
 
+            // marketplace_excluded flag takes priority — never restore listings for
+            // products that a user has permanently excluded from external channels.
+            if (product.isMarketplaceExcluded()) {
+                log.info("Restored product {} not queued for marketplace listing — marketplace_excluded=true",
+                    product.getSku());
+                return;
+            }
+
             // Respect excluded tags on restoration — if the product has been tagged to
             // stay off marketplaces, don't re-queue it even after it's re-activated.
             if (isExcludedByTags(payload, shopDomain)) {
@@ -334,6 +351,14 @@ public class ShopifyWebhookProcessor {
                         restoredProduct.getSku(), account.getMarketplaceType(), account.getId());
                 }
             }
+            return;
+        }
+
+        // Safety net: if the product is marketplace_excluded but somehow has ACTIVE listings
+        // (e.g. it was excluded after being published), skip update propagation.
+        // The LISTING_DELIST jobs will have been dispatched when exclusion was set.
+        if (product.isMarketplaceExcluded()) {
+            log.debug("Product {} is marketplace_excluded — skipping LISTING_UPDATE propagation", product.getSku());
             return;
         }
 

@@ -30,6 +30,11 @@ public record ProductDto(
     List<String> imageUrls,
     String videoUrl,
     ProductStatus status,
+    /**
+     * When true, this product is suppressed from all external marketplace channels.
+     * No listings will be created or restored for it regardless of Shopify status.
+     */
+    boolean marketplaceExcluded,
     String shopifyProductId,
     Instant createdAt,
     Instant updatedAt
@@ -44,7 +49,7 @@ public record ProductDto(
             d != null ? d.getWidthIn()  : null,
             d != null ? d.getHeightIn() : null,
             p.getSerialNumber(), p.getImageUrls(), p.getVideoUrl(),
-            p.getStatus(), p.getShopifyProductId(),
+            p.getStatus(), p.isMarketplaceExcluded(), p.getShopifyProductId(),
             p.getCreatedAt(), p.getUpdatedAt()
         );
     }

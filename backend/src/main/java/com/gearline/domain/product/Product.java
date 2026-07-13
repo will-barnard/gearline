@@ -133,6 +133,18 @@ public class Product extends AuditableEntity {
     private ProductStatus status = ProductStatus.ACTIVE;
 
     /**
+     * When true, this product is permanently suppressed from all external marketplace channels
+     * (eBay, Reverb, etc.). No NEEDS_REVIEW listing stubs will ever be created for it, and any
+     * existing marketplace listings will be delisted.
+     *
+     * This flag is set ONLY by Gearline users — Shopify webhooks must never clear it.
+     * Typical use: deposit listings, restoration placeholders, in-store-only items.
+     */
+    @Column(name = "marketplace_excluded", nullable = false)
+    @Builder.Default
+    private boolean marketplaceExcluded = false;
+
+    /**
      * Optimistic locking — prevents inventory oversell race conditions.
      */
     @Version

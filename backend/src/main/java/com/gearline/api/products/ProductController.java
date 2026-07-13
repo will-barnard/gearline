@@ -5,6 +5,7 @@ import com.gearline.domain.product.Product;
 import com.gearline.domain.product.ProductStatus;
 import com.gearline.infrastructure.persistence.ProductRepository;
 import com.gearline.service.AuditService;
+import com.gearline.service.ProductExclusionService;
 import com.gearline.domain.audit.AuditEventType;
 import com.gearline.domain.user.User;
 import io.swagger.v3.oas.annotations.Operation;
@@ -33,30 +34,35 @@ public class ProductController {
 
     private final ProductRepository productRepository;
     private final AuditService auditService;
+    private final ProductExclusionService productExclusionService;
 
     @GetMapping
-    @Operation(summary = "List all products with pagination and optional search/status filter")
+    @Operation(summary = "List all products with pagination and optional search/status/exclusion filter")
     public ResponseEntity<Page<ProductDto>> listProducts(
         @RequestParam(defaultValue = "0") int page,
         @RequestParam(defaultValue = "50") int size,
         @RequestParam(required = false) ProductStatus status,
-        @RequestParam(required = false) String search
+        @RequestParam(required = false) String search,
+        @RequestParam(required = false) Boolean marketplaceExcluded
     ) {
         Pageable pageable = PageRequest.of(page, Math.min(size, 200), Sort.by(Sort.Direction.DESC, "createdAt"));
-        Specification<Product> spec = buildSpec(status, search);
+        Specification<Product> spec = buildSpec(status, search, marketplaceExcluded);
         Page<Product> products = productRepository.findAll(spec, pageable);
         return ResponseEntity.ok(products.map(ProductDto::from));
     }
 
     /**
-     * Builds a JPA Specification combining optional status and full-text search.
-     * Search matches substring (case-insensitive) against title, SKU, and brand.
+     * Builds a JPA Specification combining optional status, full-text search,
+     * and marketplace exclusion filter.
      */
-    private Specification<Product> buildSpec(ProductStatus status, String search) {
+    private Specification<Product> buildSpec(ProductStatus status, String search, Boolean marketplaceExcluded) {
         return (root, query, cb) -> {
             List<Predicate> predicates = new ArrayList<>();
             if (status != null) {
                 predicates.add(cb.equal(root.get("status"), status));
+            }
+            if (marketplaceExcluded != null) {
+                predicates.add(cb.equal(root.get("marketplaceExcluded"), marketplaceExcluded));
             }
             if (search != null && !search.isBlank()) {
                 String pattern = "%" + search.toLowerCase() + "%";
@@ -160,4 +166,69 @@ public class ProductController {
 
         return ResponseEntity.noContent().build();
     }
+
+    /**
+     * Sets or clears the marketplace_excluded flag for a single product.
+     *
+     * When excluded=true:
+     *   - All NEEDS_REVIEW/PENDING/FAILED listing stubs are deleted immediately.
+     *   - Any ACTIVE marketplace listings get a LISTING_DELIST job queued.
+     *   - Future Shopify webhooks will not create new listing stubs.
+     *
+     * When excluded=false:
+     *   - The flag is cleared. The product will re-enter the review queue
+     *     on the next Shopify webhook or manual sync.
+     */
+    @PatchMapping("/{id}/marketplace-excluded")
+    @Operation(summary = "Exclude or include a product from all marketplace channels")
+    public ResponseEntity<ProductDto> setMarketplaceExcluded(
+        @PathVariable UUID id,
+        @RequestBody MarketplaceExcludedRequest req,
+        @AuthenticationPrincipal User currentUser
+    ) {
+        Product updated = productExclusionService.setExcluded(id, req.excluded());
+
+        auditService.record(
+            req.excluded() ? AuditEventType.PRODUCT_UPDATED : AuditEventType.PRODUCT_UPDATED,
+            currentUser.getId(), "Product", id.toString(), true, null,
+            Map.of("marketplaceExcluded", String.valueOf(req.excluded()))
+        );
+
+        return ResponseEntity.ok(ProductDto.from(updated));
+    }
+
+    /**
+     * Sets or clears the marketplace_excluded flag for multiple products at once.
+     * Returns the count of products updated.
+     *
+     * Typical use: bulk-exclude hundreds of deposit listings in one click.
+     */
+    @PostMapping("/bulk-marketplace-excluded")
+    @Operation(summary = "Bulk exclude or include products from all marketplace channels")
+    public ResponseEntity<Map<String, Object>> bulkSetMarketplaceExcluded(
+        @RequestBody BulkMarketplaceExcludedRequest req,
+        @AuthenticationPrincipal User currentUser
+    ) {
+        if (req.productIds() == null || req.productIds().isEmpty()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "productIds must not be empty"));
+        }
+        if (req.productIds().size() > 500) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Cannot update more than 500 products at once"));
+        }
+
+        int count = productExclusionService.bulkSetExcluded(req.productIds(), req.excluded());
+
+        auditService.record(AuditEventType.PRODUCT_UPDATED,
+            currentUser.getId(), "Product", "bulk", true, null,
+            Map.of("marketplaceExcluded", String.valueOf(req.excluded()), "count", String.valueOf(count))
+        );
+
+        return ResponseEntity.ok(Map.of("updated", count, "excluded", req.excluded()));
+    }
+
+    // ── Request records ────────────────────────────────────────────────────────
+
+    public record MarketplaceExcludedRequest(boolean excluded) {}
+
+    public record BulkMarketplaceExcludedRequest(List<UUID> productIds, boolean excluded) {}
 }
