@@ -22,6 +22,10 @@ public record ProductDto(
     BigDecimal price,
     Integer quantity,
     BigDecimal weightKg,
+    /** Package dimensions in inches. Null if not yet set (calculated shipping will be unavailable). */
+    BigDecimal dimLengthIn,
+    BigDecimal dimWidthIn,
+    BigDecimal dimHeightIn,
     String serialNumber,
     List<String> imageUrls,
     String videoUrl,
@@ -31,10 +35,14 @@ public record ProductDto(
     Instant updatedAt
 ) {
     public static ProductDto from(Product p) {
+        Dimensions d = p.getDimensions();
         return new ProductDto(
             p.getId(), p.getSku(), p.getTitle(), p.getDescription(),
             p.getBrand(), p.getCategory(), p.getModel(), p.getYearMade(), p.getFinish(),
             p.getCondition(), p.getConditionNotes(), p.getPrice(), p.getQuantity(), p.getWeightKg(),
+            d != null ? d.getLengthIn() : null,
+            d != null ? d.getWidthIn()  : null,
+            d != null ? d.getHeightIn() : null,
             p.getSerialNumber(), p.getImageUrls(), p.getVideoUrl(),
             p.getStatus(), p.getShopifyProductId(),
             p.getCreatedAt(), p.getUpdatedAt()

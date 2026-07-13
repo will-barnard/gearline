@@ -465,6 +465,23 @@ public class ShopifyWebhookProcessor {
                         case "reverb_year"      -> product.setYearMade(val);
                         case "reverb_finish"    -> product.setFinish(val);
                         case "condition_notes"  -> product.setConditionNotes(val);
+                        case "dim_length_in", "dim_width_in", "dim_height_in" -> {
+                            // Dimensions in inches — store directly, no conversion needed
+                            try {
+                                BigDecimal inches = new BigDecimal(val.strip());
+                                if (product.getDimensions() == null) {
+                                    product.setDimensions(new com.gearline.domain.product.Dimensions());
+                                }
+                                switch (key) {
+                                    case "dim_length_in" -> product.getDimensions().setLengthIn(inches);
+                                    case "dim_width_in"  -> product.getDimensions().setWidthIn(inches);
+                                    case "dim_height_in" -> product.getDimensions().setHeightIn(inches);
+                                }
+                            } catch (NumberFormatException e) {
+                                log.warn("Invalid dimension value for custom.{} on product {}: '{}'",
+                                    key, shopifyProductId, val);
+                            }
+                        }
                         case "condition"        -> {
                             ProductCondition parsed = parseCondition(val);
                             if (parsed != null) {
@@ -630,6 +647,17 @@ public class ShopifyWebhookProcessor {
             int qty = variant.path("inventory_quantity").asInt(Integer.MIN_VALUE);
             if (qty != Integer.MIN_VALUE) {
                 product.setQuantity(Math.max(0, qty));
+            }
+
+            // Weight — Shopify sends grams (integer) on the variant; convert to kg.
+            // This is the item weight; add packaging allowance via the weight_oz_override
+            // listing override if needed.
+            if (!variant.path("grams").isMissingNode() && !variant.path("grams").isNull()) {
+                int grams = variant.path("grams").asInt(0);
+                if (grams > 0) {
+                    product.setWeightKg(new BigDecimal(grams)
+                        .divide(new BigDecimal("1000"), 3, java.math.RoundingMode.HALF_UP));
+                }
             }
 
             // Keep variant/inventory IDs current in case Shopify ever reassigns them

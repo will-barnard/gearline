@@ -89,15 +89,15 @@ public class ShippingCalculator {
             weightOz = kgToOz(product.getWeightKg());
         }
 
-        // Dimensions: convert from cm if present
+        // Dimensions: stored in inches directly (entered by seller in Shopify as inches)
         BigDecimal lengthIn = null;
         BigDecimal widthIn  = null;
         BigDecimal heightIn = null;
         Dimensions dims = product.getDimensions();
         if (dims != null) {
-            lengthIn = cmToIn(dims.getLengthCm());
-            widthIn  = cmToIn(dims.getWidthCm());
-            heightIn = cmToIn(dims.getHeightCm());
+            lengthIn = dims.getLengthIn();
+            widthIn  = dims.getWidthIn();
+            heightIn = dims.getHeightIn();
         }
 
         // Reverb shipping profile ID — Reverb-only concept.

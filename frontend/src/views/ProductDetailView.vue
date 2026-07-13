@@ -28,6 +28,48 @@
             </dl>
           </div>
 
+          <!-- Shipping dimensions card -->
+          <div class="card">
+            <h2 class="mb-1 text-sm font-semibold uppercase tracking-wider text-gray-500">Shipping</h2>
+            <p class="text-xs text-gray-600 mb-4">Used for calculated shipping on eBay and Reverb. Weight syncs from Shopify automatically. Dimensions come from Shopify metafields — see below for setup instructions.</p>
+            <dl class="grid grid-cols-2 gap-4">
+              <div>
+                <dt class="text-xs text-gray-500">Weight</dt>
+                <dd class="mt-1 text-sm" :class="product.weightKg ? 'text-gray-200' : 'text-yellow-500'">
+                  <template v-if="product.weightKg">
+                    {{ kgToOz(product.weightKg) }} oz
+                    <span class="text-gray-500 text-xs ml-1">({{ product.weightKg }} kg)</span>
+                  </template>
+                  <template v-else>Not set — calculated shipping unavailable</template>
+                </dd>
+              </div>
+              <div>
+                <dt class="text-xs text-gray-500">Package dimensions</dt>
+                <dd class="mt-1 text-sm" :class="hasDimensions ? 'text-gray-200' : 'text-yellow-500'">
+                  <template v-if="hasDimensions">
+                    {{ product.dimLengthIn }}" × {{ product.dimWidthIn }}" × {{ product.dimHeightIn }}"
+                    <span class="text-gray-500 text-xs">(L × W × H)</span>
+                  </template>
+                  <template v-else>Not set</template>
+                </dd>
+              </div>
+            </dl>
+            <div v-if="!hasDimensions" class="mt-4 rounded-lg bg-gray-800/60 border border-gray-700/50 px-3 py-2.5 text-xs text-gray-400 space-y-1.5">
+              <p class="font-medium text-gray-300">How to add dimensions in Shopify</p>
+              <ol class="list-decimal list-inside space-y-1 text-gray-500">
+                <li>In Shopify admin, go to <strong class="text-gray-400">Settings → Custom data → Products</strong> and add three metafield definitions with these exact keys:
+                  <ul class="ml-4 mt-1 space-y-0.5 font-mono text-gray-500">
+                    <li><code>custom.dim_length_in</code> — type: Decimal number</li>
+                    <li><code>custom.dim_width_in</code> — type: Decimal number</li>
+                    <li><code>custom.dim_height_in</code> — type: Decimal number</li>
+                  </ul>
+                </li>
+                <li>Edit each product and fill in the dimensions in inches (longest side as length).</li>
+                <li>Save the product — Gearline will pick up the values on the next sync.</li>
+              </ol>
+            </div>
+          </div>
+
           <div v-if="product.description" class="card">
             <h2 class="mb-3 text-sm font-semibold uppercase tracking-wider text-gray-500">Description</h2>
             <p class="text-sm text-gray-300 leading-relaxed">{{ product.description }}</p>
@@ -646,7 +688,27 @@ const ebayCategoryResults = ref({})   // { [listingId]: [{categoryId, categoryNa
 const editingVideo = ref(false)
 const videoUrlDraft = ref('')
 
+// ── Shipping unit helpers ─────────────────────────────────────────────────────
+
+/** Convert kg to oz, rounded to 1 decimal place. */
+function kgToOz(kg) {
+  if (kg == null) return null
+  return (parseFloat(kg) * 35.27396).toFixed(1)
+}
+
+/** Convert cm to inches, rounded to 2 decimal places. */
+function cmToIn(cm) {
+  if (cm == null) return null
+  return (parseFloat(cm) * 0.393701).toFixed(2)
+}
+
 // ── Computed ──────────────────────────────────────────────────────────────────
+
+const hasDimensions = computed(() =>
+  product.value?.dimLengthIn != null &&
+  product.value?.dimWidthIn  != null &&
+  product.value?.dimHeightIn != null
+)
 
 const existingAccountIds = computed(() =>
   new Set(listings.value.map(l => l.marketplaceAccountId))

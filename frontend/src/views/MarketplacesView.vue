@@ -427,16 +427,28 @@
           them per-listing. Any listing can still override them individually.
         </p>
 
-        <!-- Error banner — shown when eBay API call fails (e.g. expired token / missing scope) -->
+        <!-- Error banner — shown when eBay API call fails -->
         <div v-if="ebayConfigError" class="rounded-lg bg-red-900/30 border border-red-700/50 px-4 py-3 mb-4 text-xs text-red-300 space-y-2">
           <p class="font-medium text-red-200">Could not load eBay account data</p>
-          <p class="break-all">{{ ebayConfigError }}</p>
-          <p class="text-red-400">
-            This usually means the eBay token is expired or was created before the
-            <code class="font-mono">sell.account.readonly</code> scope was added.
-            <strong>Re-connect your eBay account</strong> (disconnect then reconnect via OAuth) to get a
-            fresh token with all required scopes, then try again.
-          </p>
+          <p class="break-all font-mono">{{ ebayConfigError }}</p>
+          <template v-if="ebayConfigError.includes('not eligible for Business Policy') || ebayConfigError.includes('bizpolicies')">
+            <p class="text-yellow-300 font-medium">Business Policies are not enabled on this eBay account.</p>
+            <p>
+              eBay's Inventory API requires Business Policies to publish listings.
+              Enable them at
+              <a href="https://www.bizpolicies.ebay.com/pa/bizpolicies/PolicySelection"
+                 target="_blank" rel="noopener"
+                 class="underline text-yellow-200 hover:text-white">bizpolicies.ebay.com</a>,
+              create at least one shipping policy, one return policy, and one payment policy,
+              then come back here and set your defaults.
+            </p>
+          </template>
+          <template v-else>
+            <p>
+              If your token recently expired, try
+              <strong>disconnecting and reconnecting</strong> your eBay account via OAuth.
+            </p>
+          </template>
         </div>
 
         <div class="space-y-4">

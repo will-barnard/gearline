@@ -363,7 +363,14 @@ public class EbayConnector implements MarketplaceConnector {
                     "height", shipping.getHeightIn(),
                     "unit", "INCH"
                 ));
-                packageInfo.put("packageType", "MAILING_BOX");
+                // Choose package type based on weight — eBay uses this for display and
+                // carrier eligibility checks. VERY_LARGE_PACKAGE covers freight-sized items.
+                // MAILING_BOX is only appropriate for small parcel shipments.
+                BigDecimal weightOz = shipping.getWeightOz();
+                String packageType = (weightOz != null && weightOz.compareTo(new BigDecimal("320")) > 0)
+                    ? "VERY_LARGE_PACKAGE"  // >20 lbs — freight territory
+                    : "MAILING_BOX";
+                packageInfo.put("packageType", packageType);
             }
             if (!packageInfo.isEmpty()) {
                 body.put("packageWeightAndSize", packageInfo);

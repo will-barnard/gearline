@@ -49,7 +49,9 @@ class ShippingCalculatorTest {
         assertThat(calc.kgToOz(BigDecimal.ZERO)).isEqualByComparingTo("0.000");
     }
 
-    // ── cmToIn ─────────────────────────────────────────────────────────────────
+    // ── cmToIn (still present as a utility, kept for reference) ──────────────
+    // Dimensions are now stored in inches directly; cmToIn is no longer used in
+    // the main resolve path but remains on ShippingCalculator for completeness.
 
     @Test
     void cmToIn_convertsCorrectly() {
@@ -134,18 +136,19 @@ class ShippingCalculatorTest {
     }
 
     @Test
-    void resolveShipping_convertsDimensionsFromCm() {
+    void resolveShipping_passesThroughDimensionsInInches() {
+        // Dimensions are stored in inches directly — no conversion needed
         Dimensions dims = Dimensions.builder()
-            .lengthCm(new BigDecimal("120"))
-            .widthCm(new BigDecimal("40"))
-            .heightCm(new BigDecimal("20"))
+            .lengthIn(new BigDecimal("47.25"))
+            .widthIn(new BigDecimal("15.75"))
+            .heightIn(new BigDecimal("7.87"))
             .build();
         Product product = buildProduct("2.0", dims);
         ShippingDetails result = calc.resolveShipping(product, Map.of());
 
-        assertThat(result.getLengthIn()).isEqualByComparingTo("47.244");
-        assertThat(result.getWidthIn()).isEqualByComparingTo("15.748");
-        assertThat(result.getHeightIn()).isEqualByComparingTo("7.874");
+        assertThat(result.getLengthIn()).isEqualByComparingTo("47.25");
+        assertThat(result.getWidthIn()).isEqualByComparingTo("15.75");
+        assertThat(result.getHeightIn()).isEqualByComparingTo("7.87");
     }
 
     @Test
