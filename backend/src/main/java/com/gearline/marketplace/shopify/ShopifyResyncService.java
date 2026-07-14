@@ -19,11 +19,13 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -221,17 +223,43 @@ public class ShopifyResyncService {
 
         log.info("Bulk SKU resync: {} products need SKU corrections", pending.size());
 
-        // ── Step 3: Break all collisions by setting temp SKUs first ─────────────
-        // This is critical when SKUs are swapped (A has B's SKU, B has A's SKU).
-        // Attempting direct updates would fail with unique constraint violations.
+        // ── Step 3: Find "blockers" ──────────────────────────────────────────────
+        // A blocker is a product NOT in the pending list that currently holds a SKU
+        // that some pending product needs. This happens when a product is archived or
+        // draft in Shopify (so it wasn't in the active fetch) but still holds a SKU
+        // in Gearline. If we don't temp-ify it first, the final flush will hit a
+        // duplicate-key violation even though all the pending products are correct.
+        Set<String> targetSkus = new HashSet<>();
+        Set<UUID>   pendingIds = new HashSet<>();
+        for (PendingUpdate u : pending) {
+            targetSkus.add(u.correctSku());
+            pendingIds.add(u.product().getId());
+        }
+        List<Product> blockers = allProducts.stream()
+            .filter(p -> targetSkus.contains(p.getSku()) && !pendingIds.contains(p.getId()))
+            .toList();
+
+        if (!blockers.isEmpty()) {
+            log.warn("Bulk SKU resync: {} product(s) are blocking target SKUs — they will be moved to " +
+                     "temp SKUs and will need manual SKU correction afterwards", blockers.size());
+        }
+
+        // ── Step 4: Break all collisions by setting temp SKUs first ─────────────
+        // This covers both swapped-SKU cycles among pending products AND blockers.
         for (PendingUpdate u : pending) {
             u.product().setSku("RESYNC-TEMP-" + UUID.randomUUID());
             productRepository.save(u.product());
         }
-        // Flush so the temp SKUs are written before we write the correct ones
+        for (Product blocker : blockers) {
+            log.warn("Bulk SKU resync: blocker '{}' (SKU '{}') set to temp SKU",
+                blocker.getTitle(), blocker.getSku());
+            blocker.setSku("RESYNC-TEMP-" + UUID.randomUUID());
+            productRepository.save(blocker);
+        }
+        // Flush so all temp SKUs are written before we apply the correct ones
         productRepository.flush();
 
-        // ── Step 4: Apply the correct Shopify SKUs ───────────────────────────────
+        // ── Step 5: Apply the correct Shopify SKUs ───────────────────────────────
         List<String> errors = new ArrayList<>();
         int changed = 0;
         for (PendingUpdate u : pending) {
@@ -249,6 +277,12 @@ public class ShopifyResyncService {
         }
 
         productRepository.flush();
+
+        // Report any blocker products that were moved to temp SKUs and need manual attention
+        for (Product blocker : blockers) {
+            errors.add("\"" + blocker.getTitle() + "\" was moved to a temp SKU because it held a SKU " +
+                       "needed by an active Shopify product. Please set its SKU manually in the SKU Audit page.");
+        }
 
         String summary = changed + " SKU" + (changed != 1 ? "s" : "") + " updated from Shopify";
         if (!errors.isEmpty()) summary += "; " + errors.size() + " error(s)";

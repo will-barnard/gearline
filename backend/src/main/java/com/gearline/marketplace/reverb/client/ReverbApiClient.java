@@ -1,5 +1,6 @@
 package com.gearline.marketplace.reverb.client;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.gearline.config.GearlineProperties;
 import com.gearline.domain.marketplace.MarketplaceAccount;
 import com.gearline.marketplace.reverb.dto.ReverbListingDto;
@@ -14,6 +15,7 @@ import org.springframework.web.reactive.function.client.WebClientResponseExcepti
 
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
  * Low-level HTTP client for the Reverb API.
@@ -26,13 +28,16 @@ public class ReverbApiClient {
 
     private static final String REVERB_API_VERSION = "3.0";
     private final WebClient webClient;
+    private final ObjectMapper objectMapper;
 
-    public ReverbApiClient(GearlineProperties properties, WebClient.Builder webClientBuilder) {
+    public ReverbApiClient(GearlineProperties properties, WebClient.Builder webClientBuilder,
+                           ObjectMapper objectMapper) {
         this.webClient = webClientBuilder
             .baseUrl(properties.getReverb().getApiBaseUrl())
             .defaultHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
             .defaultHeader("Accept-Version", REVERB_API_VERSION)
             .build();
+        this.objectMapper = objectMapper;
     }
 
     /**
@@ -126,9 +131,15 @@ public class ReverbApiClient {
                 .block();
 
             // Reverb returns { "orders": [...], "total": N, "current_page": N, "total_pages": N }
+            // response.get("orders") is a List<LinkedHashMap>, not List<ReverbOrderDto>,
+            // because the ParameterizedTypeReference only captures the outer Map type.
+            // Use ObjectMapper.convertValue() to map each element to the DTO.
             @SuppressWarnings("unchecked")
-            List<ReverbOrderDto> orders = (List<ReverbOrderDto>) (response != null ? response.get("orders") : List.of());
-            return orders != null ? orders : List.of();
+            List<Object> rawOrders = (List<Object>) (response != null ? response.get("orders") : null);
+            if (rawOrders == null) return List.of();
+            return rawOrders.stream()
+                .map(item -> objectMapper.convertValue(item, ReverbOrderDto.class))
+                .collect(Collectors.toList());
         } catch (WebClientResponseException e) {
             throw new ReverbApiException("Failed to fetch orders: " + e.getResponseBodyAsString(), e);
         }
