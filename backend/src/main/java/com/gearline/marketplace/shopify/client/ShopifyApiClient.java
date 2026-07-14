@@ -132,7 +132,7 @@ public class ShopifyApiClient {
         String baseUrl = "https://" + shopDomain.replaceAll("/$", "");
         try {
             @SuppressWarnings("unchecked")
-            Map<String, Object> response = webClientBuilder.mutate().baseUrl(baseUrl).build()
+            Map<String, Object> response = webClientBuilder.baseUrl(baseUrl).build()
                 .post()
                 .uri("/admin/oauth/access_token")
                 .header(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
@@ -330,9 +330,7 @@ public class ShopifyApiClient {
         if (!baseUrl.startsWith("http")) {
             baseUrl = "https://" + baseUrl;
         }
-        // Use mutate() to create a copy of the shared builder so we never mutate
-        // the singleton in place (which would affect concurrent callers in the same bean).
-        return webClientBuilder.mutate().baseUrl(baseUrl).build();
+        return webClientBuilder.baseUrl(baseUrl).build();
     }
 
     private String getAccessToken(MarketplaceAccount account) {
