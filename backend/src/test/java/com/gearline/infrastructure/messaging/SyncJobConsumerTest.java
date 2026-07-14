@@ -115,14 +115,15 @@ class SyncJobConsumerTest {
     // ── Retry path ─────────────────────────────────────────────────────────────
 
     @Test
-    void consume_requeuesForRetry_whenDispatchFailsAndRetriesRemain() {
+    void consume_schedulesRetry_whenDispatchFailsAndRetriesRemain() {
         SyncJob job = queuedJob(2, 5);  // retryCount=2, maxRetries=5 — retries remain
         when(syncJobRepository.findById(job.getId())).thenReturn(Optional.of(job));
         doThrow(new RuntimeException("Network error")).when(syncDispatcherService).dispatch(any());
 
         consumer.consume(message(job));
 
-        verify(syncJobProducer).requeueForRetry(job);
+        // scheduleRetry() persists FAILED + nextRetryAt; SyncJobRetryScheduler re-enqueues later
+        verify(syncJobProducer).scheduleRetry(job);
         verify(syncJobRepository, never()).save(argThat(j ->
             j.getStatus() == SyncJobStatus.DEAD_LETTERED
         ));
@@ -181,7 +182,7 @@ class SyncJobConsumerTest {
         assertThatThrownBy(() -> consumer.consume(message(job)))
             .isInstanceOf(AmqpRejectAndDontRequeueException.class);
 
-        verify(syncJobProducer, never()).requeueForRetry(any());
+        verify(syncJobProducer, never()).scheduleRetry(any());
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────────
