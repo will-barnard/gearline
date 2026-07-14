@@ -106,12 +106,24 @@ public class ReverbOrderMapper {
         return null;
     }
 
+    /**
+     * Finding #28: return null when the date string is absent or unparseable.
+     *
+     * The previous implementation returned Instant.now() as a fallback, which
+     * silently set createdAt to the webhook-processing time rather than the actual
+     * order creation time. This polluted audit trails and order-date analytics.
+     *
+     * Returning null is the honest answer: callers must handle it explicitly
+     * (e.g. leaving the field unset or logging a warning) rather than silently
+     * receiving a wrong timestamp.
+     */
     private Instant parseDate(String dateStr) {
-        if (dateStr == null) return Instant.now();
+        if (dateStr == null) return null;
         try {
             return Instant.parse(dateStr);
         } catch (Exception e) {
-            return Instant.now();
+            log.warn("Could not parse Reverb date '{}': {}", dateStr, e.getMessage());
+            return null;
         }
     }
 }

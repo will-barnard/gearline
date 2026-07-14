@@ -23,6 +23,7 @@ import java.math.RoundingMode;
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 
 /**
@@ -143,7 +144,30 @@ public class SyncDispatcherService {
         connector.delistListing(account, listing);
         listing.setListingStatus(ListingStatus.DELISTED);
         listing.setLastSyncAt(Instant.now());
+        listing.setLastError(null);
         listingRepository.save(listing);
+    }
+
+    /**
+     * Called by {@link com.gearline.infrastructure.messaging.SyncJobConsumer} when a
+     * LISTING_DELIST job is dead-lettered (finding #22).
+     *
+     * When delisting exhausts all retries, the listing stays ACTIVE in the DB even
+     * though the connector call failed every time. The user sees the item as live but
+     * it may or may not be visible on the marketplace. Mark it FAILED so the operator
+     * knows manual intervention is needed.
+     */
+    public void markDelistFailed(SyncJob job) {
+        if (job.getListingId() == null) return;
+        listingRepository.findById(job.getListingId()).ifPresent(listing -> {
+            if (listing.getListingStatus() == ListingStatus.ACTIVE) {
+                listing.setListingStatus(ListingStatus.FAILED);
+                listing.setLastError("Delist failed after " + job.getRetryCount() + " attempts: " + job.getFailureReason());
+                listingRepository.save(listing);
+                log.warn("Listing {} marked FAILED after LISTING_DELIST job {} was dead-lettered",
+                    listing.getId(), job.getId());
+            }
+        });
     }
 
     private void syncInventory(SyncJob job) {
@@ -170,7 +194,17 @@ public class SyncDispatcherService {
         MarketplaceAccount account = requireAccount(job.getMarketplaceAccountId());
         MarketplaceConnector connector = connectorRegistry.getConnector(job.getMarketplaceType());
 
-        String externalOrderId = (String) job.getPayload().get("externalOrderId");
+        // Finding #19: use Objects.toString() instead of unchecked (String) cast.
+        // If the payload value is a non-String type (e.g. Long from JSON deserialization),
+        // a raw cast would throw ClassCastException at runtime.
+        String externalOrderId = Objects.toString(job.getPayload().get("externalOrderId"), null);
+
+        // Finding #27: validate that externalOrderId is present before calling the connector.
+        if (externalOrderId == null || externalOrderId.isBlank()) {
+            log.error("ORDER_IMPORT job {} has no externalOrderId in payload — skipping", job.getId());
+            return;
+        }
+
         ImportedOrder importedOrder = connector.importOrder(account, externalOrderId);
 
         if (importedOrder == null) {

@@ -14,6 +14,8 @@ import com.gearline.marketplace.common.connector.MarketplaceType;
 import com.gearline.marketplace.common.dto.ImportedOrder;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.retry.annotation.Backoff;
 import org.springframework.retry.annotation.Retryable;
@@ -29,6 +31,17 @@ import java.util.Map;
  * to all other active listings to prevent overselling.
  *
  * Uses optimistic locking on Product.version — concurrent updates are retried.
+ *
+ * ── Finding #5: @Retryable + same-bean call ──────────────────────────────────
+ *
+ * Spring AOP proxies only intercept calls made through the proxy (i.e. via an
+ * injected reference to the bean), not direct {@code this.method()} calls within
+ * the same class. {@link #handleOrderImported} previously called
+ * {@code propagateInventoryChange()} directly, bypassing the @Retryable proxy.
+ *
+ * Fix: inject a self-reference {@code self} with @Lazy to avoid circular-dependency
+ * issues at startup. Calls through {@code self} go through the full proxy chain, so
+ * both @Retryable and @Transactional are active.
  */
 @Service
 @RequiredArgsConstructor
@@ -41,18 +54,33 @@ public class InventoryConsistencyService {
     private final SyncJobProducer syncJobProducer;
 
     /**
+     * Self-reference injected via @Lazy to allow cross-cutting through the AOP proxy.
+     * Used by handleOrderImported() so that the @Retryable on propagateInventoryChange()
+     * is actually active (finding #5).
+     */
+    @Autowired
+    @Lazy
+    private InventoryConsistencyService self;
+
+    /**
      * Called when a product's quantity changes (Shopify webhook, manual update, etc.)
      * Propagates the new quantity to all active marketplace listings.
      *
      * ── Zero-quantity behaviour ─────────────────────────────────────────────
-     * When {@code newQuantity} reaches 0 the item has sold out.  Instead of
+     * When {@code newQuantity} reaches 0 the item has sold out. Instead of
      * sending a quantity-update (which leaves the listing visible at 0 stock),
      * we enqueue a {@code LISTING_DELIST} job so the item is completely removed
-     * from each marketplace.  This prevents "sold out" listings from confusing
-     * buyers and avoids marketplace penalties for unfulfillable orders.
+     * from each marketplace.
      *
      * Shopify listings are always skipped — inventory there is managed through
      * the webhook path and ShopifyConnector.syncInventory is intentionally a no-op.
+     *
+     * ── Finding #20: deterministic idempotency keys ──────────────────────────
+     * Previously used System.currentTimeMillis() making the same event generate
+     * different keys each time — defeating idempotency.  Now uses a key derived
+     * from productId, listingId, quantity, and product.version so the same
+     * inventory state always produces the same key, and changing state
+     * (version increments on each product save) produces a new unique key.
      */
     @Transactional
     @Retryable(
@@ -75,9 +103,12 @@ public class InventoryConsistencyService {
             log.debug("Enqueueing inventory sync for {} active listings", activeListings.size());
         }
 
+        // Use product version as part of the idempotency key so the same inventory event
+        // fired twice produces the same key (skipped as duplicate), but a subsequent
+        // inventory change (version incremented) produces a new unique key.
+        Long version = product.getVersion() != null ? product.getVersion() : 0L;
+
         for (MarketplaceListing listing : activeListings) {
-            // Shopify is the source-of-truth — its inventory is updated by ShopifyOrderPushService
-            // when marketplace orders are imported, not via the sync job queue.
             if (listing.getMarketplaceType() == MarketplaceType.SHOPIFY) {
                 log.debug("Skipping Shopify listing {} for inventory propagation (managed via webhook path)",
                     listing.getId());
@@ -85,7 +116,6 @@ public class InventoryConsistencyService {
             }
 
             if (newQuantity == 0) {
-                // Sold out — take the listing down on this marketplace
                 SyncJob job = SyncJob.builder()
                     .jobType(SyncJobType.LISTING_DELIST)
                     .marketplaceType(listing.getMarketplaceType())
@@ -93,13 +123,12 @@ public class InventoryConsistencyService {
                     .productId(product.getId())
                     .listingId(listing.getId())
                     .payload(Map.of())
-                    .idempotencyKey("delist-soldout-" + listing.getId() + "-" + System.currentTimeMillis())
+                    .idempotencyKey("delist-soldout-" + listing.getId() + "-v" + version)
                     .build();
                 syncJobProducer.enqueue(job);
                 log.info("Enqueued LISTING_DELIST for {} listing {} (product {} sold out)",
                     listing.getMarketplaceType(), listing.getId(), product.getSku());
             } else {
-                // Quantity update — push new stock level to marketplace
                 SyncJob job = SyncJob.builder()
                     .jobType(SyncJobType.INVENTORY_SYNC)
                     .marketplaceType(listing.getMarketplaceType())
@@ -107,7 +136,7 @@ public class InventoryConsistencyService {
                     .productId(product.getId())
                     .listingId(listing.getId())
                     .payload(Map.of("newQuantity", newQuantity))
-                    .idempotencyKey("inv-" + product.getId() + "-" + listing.getId() + "-" + System.currentTimeMillis())
+                    .idempotencyKey("inv-" + product.getId() + "-" + listing.getId() + "-v" + version)
                     .build();
                 syncJobProducer.enqueue(job);
             }
@@ -117,13 +146,14 @@ public class InventoryConsistencyService {
     /**
      * Called when an order is imported from a marketplace.
      * Deducts sold quantity and triggers cross-channel inventory propagation.
+     *
+     * Finding #5 fix: calls {@code self.propagateInventoryChange()} (through the
+     * AOP proxy) instead of {@code this.propagateInventoryChange()} so that
+     * @Retryable is active for optimistic-lock retries.
      */
     @Transactional
     public void handleOrderImported(ImportedOrder importedOrder, MarketplaceAccount sourceAccount) {
         for (OrderLineItem lineItem : importedOrder.getLineItems()) {
-            // Resolve the product: prefer the internal UUID, fall back to SKU lookup.
-            // Externally-imported orders (Reverb, eBay) populate sku but not productId
-            // because the ID is only known after matching against our product catalogue.
             Product product = null;
 
             if (lineItem.getProductId() != null) {
@@ -142,7 +172,9 @@ public class InventoryConsistencyService {
             int newQty = Math.max(0, product.getQuantity() - qty);
             log.info("Order imported: reducing product {} quantity {} → {} (order from {})",
                 product.getSku(), product.getQuantity(), newQty, sourceAccount.getMarketplaceType());
-            propagateInventoryChange(product, newQty);
+
+            // Use self reference so @Retryable proxy is active (finding #5)
+            self.propagateInventoryChange(product, newQty);
         }
     }
 }

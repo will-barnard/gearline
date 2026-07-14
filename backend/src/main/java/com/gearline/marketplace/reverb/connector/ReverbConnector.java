@@ -17,6 +17,7 @@ import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -146,32 +147,62 @@ public class ReverbConnector implements MarketplaceConnector {
 
     // ── OrderImporter ──────────────────────────────────────────────────────────
 
+    /**
+     * Imports all Reverb orders created after {@code since}, paginating through all
+     * pages (50 orders/page).
+     *
+     * Finding #2 fix: the previous implementation hardcoded page=1, silently dropping
+     * any orders beyond the first 50. Now we loop until getOrders() returns fewer than
+     * per_page results (indicating the last page).
+     */
     @Override
     public List<ImportedOrder> importOrders(MarketplaceAccount account, Instant since) {
         log.info("Importing Reverb orders since {}", since);
         ensureValidToken(account);
 
+        String sinceStr = since != null
+            ? since.toString()
+            : Instant.now().minusSeconds(86400).toString();
+
+        List<ReverbOrderDto> allDtos = new ArrayList<>();
+        int page = 1;
+        final int PER_PAGE = 50;
+
         try {
-            List<ReverbOrderDto> dtos = apiClient.getOrders(
-                account,
-                since != null ? since.toString() : Instant.now().minusSeconds(86400).toString(),
-                1
-            );
-
-            return dtos.stream()
-                .map(orderMapper::toImportedOrder)
-                .collect(Collectors.toList());
-
+            while (true) {
+                List<ReverbOrderDto> dtos = apiClient.getOrders(account, sinceStr, page);
+                if (dtos == null || dtos.isEmpty()) break;
+                allDtos.addAll(dtos);
+                // Reverb returns up to per_page results; fewer means we're on the last page
+                if (dtos.size() < PER_PAGE) break;
+                page++;
+            }
         } catch (ReverbApiException e) {
-            log.error("Failed to import Reverb orders: {}", e.getMessage());
+            log.error("Failed to import Reverb orders (page {}): {}", page, e.getMessage());
             throw e;
         }
+
+        log.info("Fetched {} Reverb orders across {} page(s)", allDtos.size(), page);
+        return allDtos.stream()
+            .map(orderMapper::toImportedOrder)
+            .collect(Collectors.toList());
     }
 
+    /**
+     * Imports a single Reverb order by ID.
+     *
+     * Finding #6 fix: added null check — getOrder() can return null when the order
+     * is not found or the API returns an empty body.
+     */
     @Override
     public ImportedOrder importOrder(MarketplaceAccount account, String externalOrderId) {
         ensureValidToken(account);
         ReverbOrderDto dto = apiClient.getOrder(account, externalOrderId);
+        if (dto == null) {
+            log.warn("Reverb getOrder returned null for orderId={} — order not found or empty response",
+                externalOrderId);
+            return null;
+        }
         return orderMapper.toImportedOrder(dto);
     }
 

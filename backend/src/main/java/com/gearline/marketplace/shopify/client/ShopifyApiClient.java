@@ -29,6 +29,20 @@ import java.util.regex.Pattern;
  * The token is stored in {@code MarketplaceAccount.encryptedCredentials["access_token"]}.
  *
  * API version: 2024-10 (Shopify's quarterly versioning; update as needed).
+ *
+ * ── Finding #13: thread-safe WebClient construction ──────────────────────────
+ *
+ * The previous implementation stored the {@link WebClient.Builder} prototype as a
+ * field and called {@code webClientBuilder.baseUrl(baseUrl).build()} on every
+ * request. {@code WebClient.Builder.baseUrl()} mutates the builder's state, so two
+ * concurrent requests for different stores would race and potentially use the wrong
+ * base URL.
+ *
+ * Fix: build a {@code baseClient} (no base URL) in the constructor using the
+ * injected builder, then call {@code baseClient.mutate().baseUrl(baseUrl).build()}
+ * in {@link #buildClient}. {@code WebClient.mutate()} always creates a fresh
+ * {@link WebClient.Builder} instance inheriting all settings (codecs, defaults, etc.)
+ * from the existing client, so each call produces an independent, immutable WebClient.
  */
 @Component
 @Slf4j
@@ -39,28 +53,21 @@ public class ShopifyApiClient {
     private static final Pattern NEXT_PAGE_INFO_PATTERN =
         Pattern.compile("<[^>]*[?&]page_info=([^&>]+)[^>]*>;\\s*rel=\"next\"");
 
-    private final WebClient.Builder webClientBuilder;
+    /** Immutable base client with codec config applied — used as template for per-store clients. */
+    private final WebClient baseClient;
     private final ObjectMapper objectMapper;
 
     public ShopifyApiClient(WebClient.Builder webClientBuilder, ObjectMapper objectMapper) {
-        this.webClientBuilder = webClientBuilder;
         this.objectMapper = objectMapper;
-        // Shopify product catalogues can be several MB; the default WebFlux codec
-        // buffer is only 256 KB which causes "Exceeded limit on max bytes to buffer".
-        // 16 MB covers the largest realistic Shopify store (250 products × ~64 KB each).
-        webClientBuilder.codecs(c -> c.defaultCodecs().maxInMemorySize(16 * 1024 * 1024));
+        // Build the base client with codec settings applied. We do NOT set a baseUrl here;
+        // each per-store client is derived via baseClient.mutate().baseUrl(...).build().
+        this.baseClient = webClientBuilder
+            .codecs(c -> c.defaultCodecs().maxInMemorySize(16 * 1024 * 1024))
+            .build();
     }
 
     /**
      * Creates an order in Shopify via the Admin API.
-     *
-     * Endpoint: POST /admin/api/{version}/orders.json
-     * Docs: https://shopify.dev/docs/api/admin-rest/2024-10/resources/order#post-orders
-     *
-     * @param account   the connected Shopify marketplace account
-     * @param orderBody the request body — use {@link ShopifyOrderMapper} to build it
-     * @return the created Shopify order response, keyed under "order"
-     * @throws ShopifyApiException on any 4xx/5xx from Shopify
      */
     public Map<String, Object> createOrder(MarketplaceAccount account, Map<String, Object> orderBody) {
         try {
@@ -84,14 +91,6 @@ public class ShopifyApiClient {
 
     /**
      * Registers a webhook subscription on the connected Shopify store.
-     *
-     * Endpoint: POST /admin/api/{version}/webhooks.json
-     * Docs: https://shopify.dev/docs/api/admin-rest/2024-10/resources/webhook#post-webhooks
-     *
-     * @param account  the connected Shopify account
-     * @param topic    Shopify webhook topic (e.g. "products/create")
-     * @param endpoint the full HTTPS URL Shopify should call (e.g. https://myapp.com/webhooks/shopify/products/create)
-     * @return the created webhook response map
      */
     public Map<String, Object> registerWebhook(MarketplaceAccount account, String topic, String endpoint) {
         try {
@@ -121,14 +120,6 @@ public class ShopifyApiClient {
     /**
      * Exchanges an OAuth authorisation code for a permanent access token.
      * Called from the OAuth callback handler.
-     *
-     * Endpoint: POST https://{shop}/admin/oauth/access_token
-     *
-     * @param shopDomain the Shopify store domain (e.g. "mystore.myshopify.com")
-     * @param clientId   app client ID
-     * @param clientSecret app client secret
-     * @param code       the temporary authorisation code from the OAuth redirect
-     * @return the response map containing "access_token" and "scope"
      */
     public Map<String, Object> exchangeCodeForToken(
         String shopDomain, String clientId, String clientSecret, String code
@@ -136,7 +127,7 @@ public class ShopifyApiClient {
         String baseUrl = "https://" + shopDomain.replaceAll("/$", "");
         try {
             @SuppressWarnings("unchecked")
-            Map<String, Object> response = webClientBuilder.baseUrl(baseUrl).build()
+            Map<String, Object> response = baseClient.mutate().baseUrl(baseUrl).build()
                 .post()
                 .uri("/admin/oauth/access_token")
                 .header(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
@@ -163,24 +154,14 @@ public class ShopifyApiClient {
      * Shopify uses cursor-based pagination: the first call omits {@code pageInfo};
      * subsequent calls pass the {@code nextPageInfo} value from the previous page's
      * {@link ShopifyProductsPage} response until {@code hasNextPage()} returns false.
-     *
-     * Endpoint: GET /admin/api/{version}/products.json?limit=250&status=active[&page_info=...]
-     *
-     * @param account  the connected Shopify account
-     * @param pageInfo cursor for the next page, or {@code null} for the first page
-     * @return the page of products and the next page cursor (null if last page)
      */
     public ShopifyProductsPage fetchProducts(MarketplaceAccount account, String pageInfo) {
         String uri = "/admin/api/" + API_VERSION + "/products.json?limit=250&status=active";
         if (pageInfo != null && !pageInfo.isBlank()) {
-            // When page_info is supplied, Shopify ignores all other filters — just cursor + limit
             uri = "/admin/api/" + API_VERSION + "/products.json?limit=250&page_info=" + pageInfo;
         }
 
         try {
-            // Use exchangeToMono instead of retrieve() so we control response handling for
-            // all status codes. retrieve() can throw WebClientResponseException even on 200
-            // when there's a codec/content-type mismatch, swallowing the real error.
             ResponseEntity<String> entity = buildClient(account)
                 .get()
                 .uri(uri)
@@ -193,7 +174,6 @@ public class ShopifyApiClient {
                 return new ShopifyProductsPage(List.of(), null);
             }
 
-            // Treat any non-2xx as a hard error, with the actual body logged for diagnosis
             if (!entity.getStatusCode().is2xxSuccessful()) {
                 String errBody = entity.getBody() != null ? entity.getBody() : "";
                 log.warn("fetchProducts: Shopify returned HTTP {} — {}", entity.getStatusCode(), errBody);
@@ -204,12 +184,10 @@ public class ShopifyApiClient {
 
             String body = entity.getBody();
             if (body == null || body.isBlank()) {
-                // 200 with empty body — nothing to parse; return empty page
                 log.warn("fetchProducts: Shopify returned HTTP {} with empty body", entity.getStatusCode());
                 return new ShopifyProductsPage(List.of(), null);
             }
 
-            // Parse products array from {"products": [...]}
             JsonNode root = objectMapper.readTree(body);
             JsonNode productsNode = root.path("products");
             List<JsonNode> products = new ArrayList<>();
@@ -217,7 +195,6 @@ public class ShopifyApiClient {
                 productsNode.forEach(products::add);
             }
 
-            // Extract next page cursor from Link header
             String nextPageInfo = null;
             String linkHeader = entity.getHeaders().getFirst(HttpHeaders.LINK);
             if (linkHeader != null) {
@@ -241,35 +218,39 @@ public class ShopifyApiClient {
     /**
      * Fetches a single product from the Shopify Admin REST API by its Shopify product ID.
      *
-     * Endpoint: GET /admin/api/{version}/products/{productId}.json
-     *
-     * @param account          the connected Shopify account
-     * @param shopifyProductId the numeric Shopify product ID
-     * @return the "product" JsonNode from the response
-     * @throws ShopifyApiException if the request fails or the product is not found (404)
+     * Finding #25 fix: switched from {@code .retrieve().bodyToMono()} to
+     * {@code .exchangeToMono()} so that all HTTP status codes are handled uniformly
+     * and codec/content-type mismatches don't surface as misleading errors.
      */
     public JsonNode fetchProduct(MarketplaceAccount account, String shopifyProductId) {
         String uri = "/admin/api/" + API_VERSION + "/products/" + shopifyProductId + ".json";
         try {
-            String body = buildClient(account)
+            ResponseEntity<String> entity = buildClient(account)
                 .get()
                 .uri(uri)
                 .header("X-Shopify-Access-Token", getAccessToken(account))
-                .retrieve()
-                .bodyToMono(String.class)
+                .exchangeToMono(response -> response.toEntity(String.class))
                 .block();
 
-            if (body == null) {
+            if (entity == null) {
+                throw new ShopifyApiException("Null response fetching Shopify product " + shopifyProductId, null);
+            }
+
+            if (!entity.getStatusCode().is2xxSuccessful()) {
+                String errBody = entity.getBody() != null ? entity.getBody() : "";
+                throw new ShopifyApiException(
+                    "Failed to fetch Shopify product " + shopifyProductId
+                        + ": HTTP " + entity.getStatusCode() + " — " + errBody, null);
+            }
+
+            String body = entity.getBody();
+            if (body == null || body.isBlank()) {
                 throw new ShopifyApiException("Empty response for Shopify product " + shopifyProductId, null);
             }
 
             JsonNode root = objectMapper.readTree(body);
             return root.path("product");
 
-        } catch (WebClientResponseException e) {
-            throw new ShopifyApiException(
-                "Failed to fetch Shopify product " + shopifyProductId + ": HTTP " + e.getStatusCode()
-                    + " — " + e.getResponseBodyAsString(), e);
         } catch (ShopifyApiException e) {
             throw e;
         } catch (Exception e) {
@@ -280,16 +261,7 @@ public class ShopifyApiClient {
 
     /**
      * Fetches all metafields for a Shopify product.
-     *
-     * Endpoint: GET /admin/api/{version}/products/{productId}/metafields.json
-     *
-     * Returns a list of metafield nodes. Each node has "namespace", "key", "value", and "type".
-     * Returns an empty list on any error — metafields are best-effort; a failure here
-     * should never block normal product processing.
-     *
-     * @param account          the connected Shopify account
-     * @param shopifyProductId the numeric Shopify product ID
-     * @return list of metafield JsonNodes (may be empty, never null)
+     * Returns an empty list on any error — metafields are best-effort.
      */
     public List<JsonNode> fetchProductMetafields(MarketplaceAccount account, String shopifyProductId) {
         try {
@@ -324,17 +296,24 @@ public class ShopifyApiClient {
 
     // ── Helpers ────────────────────────────────────────────────────────────────
 
+    /**
+     * Builds a per-store WebClient using {@code baseClient.mutate()}.
+     *
+     * Finding #13: {@code WebClient.mutate()} creates a fresh builder that inherits
+     * all settings (codec limits, default headers) from {@code baseClient} and then
+     * applies the store-specific base URL. Each call produces an independent, immutable
+     * WebClient — no shared mutable state and no concurrency hazards.
+     */
     private WebClient buildClient(MarketplaceAccount account) {
         String shopUrl = account.getExternalShopUrl();
         if (shopUrl == null || shopUrl.isBlank()) {
             throw new ShopifyApiException("No shop URL configured for account " + account.getId(), null);
         }
-        // Normalise: strip trailing slash and scheme if provided; add https://
         String baseUrl = shopUrl.replaceAll("/$", "");
         if (!baseUrl.startsWith("http")) {
             baseUrl = "https://" + baseUrl;
         }
-        return webClientBuilder.baseUrl(baseUrl).build();
+        return baseClient.mutate().baseUrl(baseUrl).build();
     }
 
     private String getAccessToken(MarketplaceAccount account) {

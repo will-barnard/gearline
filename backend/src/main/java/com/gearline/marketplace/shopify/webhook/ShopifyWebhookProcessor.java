@@ -21,11 +21,15 @@ import com.gearline.service.FulfillmentNotificationService;
 import com.gearline.service.InventoryConsistencyService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -70,15 +74,34 @@ public class ShopifyWebhookProcessor {
     private final FulfillmentNotificationService fulfillmentNotificationService;
     private final ShopifyApiClient shopifyApiClient;
 
+    /**
+     * Self-reference injected @Lazy to route calls through the Spring AOP proxy.
+     *
+     * Finding #23: processAsync() calls processProductCreate() and other @Transactional
+     * methods directly (same-bean, via {@code this}), which bypasses the @Transactional
+     * proxy — making those annotations inactive. By calling through {@code self} instead,
+     * each handler method runs in its own proxied transaction.
+     */
+    @Autowired
+    @Lazy
+    private ShopifyWebhookProcessor self;
+
+    /**
+     * Dispatches a Shopify webhook payload to the appropriate handler asynchronously.
+     *
+     * Finding #23 fix: calls are routed through {@code self} (the Spring AOP proxy)
+     * rather than {@code this}, so @Transactional annotations on each handler are
+     * active. Direct {@code this.method()} calls within the same bean bypass the proxy.
+     */
     @Async
     public void processAsync(String topic, String shopDomain, byte[] rawBody) {
         try {
             switch (topic) {
-                case "inventory_levels/update" -> processInventoryLevelUpdate(shopDomain, rawBody);
-                case "products/update"         -> processProductUpdate(shopDomain, rawBody);
-                case "products/create"         -> processProductCreate(shopDomain, rawBody);
-                case "orders/create"           -> processOrderCreate(shopDomain, rawBody);
-                case "fulfillments/create"     -> processFulfillmentCreate(shopDomain, rawBody);
+                case "inventory_levels/update" -> self.processInventoryLevelUpdate(shopDomain, rawBody);
+                case "products/update"         -> self.processProductUpdate(shopDomain, rawBody);
+                case "products/create"         -> self.processProductCreate(shopDomain, rawBody);
+                case "orders/create"           -> self.processOrderCreate(shopDomain, rawBody);
+                case "fulfillments/create"     -> self.processFulfillmentCreate(shopDomain, rawBody);
                 default -> log.debug("Unhandled Shopify webhook topic: {}", topic);
             }
         } catch (Exception e) {
@@ -88,8 +111,19 @@ public class ShopifyWebhookProcessor {
 
     // ── inventory_levels/update — auto-propagate immediately ──────────────────
 
+    /**
+     * Handles Shopify inventory level updates.
+     *
+     * Finding #10 fix: the previous idempotency check queried {@code syncJobRepository}
+     * but never saved a SyncJob for this event — inventory updates are processed inline,
+     * not via the job queue. So {@code existsByIdempotencyKey} always returned false.
+     *
+     * Fix: save a minimal COMPLETED SyncJob solely to record the idempotency key.
+     * Shopify sends duplicate webhooks under at-least-once delivery; this guards
+     * against processing the same inventory event twice.
+     */
     @Transactional
-    protected void processInventoryLevelUpdate(String shopDomain, byte[] rawBody) throws Exception {
+    public void processInventoryLevelUpdate(String shopDomain, byte[] rawBody) throws Exception {
         JsonNode payload = objectMapper.readTree(rawBody);
         String inventoryItemId = payload.path("inventory_item_id").asText();
         int available = payload.path("available").asInt(0);
@@ -101,6 +135,16 @@ public class ShopifyWebhookProcessor {
             log.debug("Skipping duplicate inventory webhook for item {}", inventoryItemId);
             return;
         }
+
+        // Record the idempotency key so duplicate webhooks are skipped
+        SyncJob marker = SyncJob.builder()
+            .jobType(com.gearline.domain.sync.SyncJobType.INVENTORY_SYNC)
+            .marketplaceType(com.gearline.marketplace.common.connector.MarketplaceType.SHOPIFY)
+            .payload(Map.of("inventoryItemId", inventoryItemId))
+            .idempotencyKey(idempotencyKey)
+            .build();
+        marker.setStatus(com.gearline.domain.sync.SyncJobStatus.COMPLETED);
+        syncJobRepository.save(marker);
 
         productRepository.findByShopifyInventoryItemId(inventoryItemId).ifPresent(product ->
             inventoryConsistencyService.propagateInventoryChange(product, Math.max(0, available))
@@ -196,15 +240,24 @@ public class ShopifyWebhookProcessor {
                         wasArchived ? " (was archived)" : "");
                 }
             } else {
-                MarketplaceListing listing = MarketplaceListing.builder()
-                    .productId(saved.getId())
-                    .marketplaceAccountId(account.getId())
-                    .marketplaceType(account.getMarketplaceType())
-                    .listingStatus(ListingStatus.NEEDS_REVIEW)
-                    .build();
-                listingRepository.save(listing);
-                log.info("Created NEEDS_REVIEW listing for product {} on {} account {}",
-                    saved.getSku(), account.getMarketplaceType(), account.getId());
+                // Finding #12: guard against concurrent webhook delivery creating duplicate listings.
+                // If two products/create webhooks arrive simultaneously, both threads may find
+                // no existing listing and both try to INSERT. The unique DB constraint will reject
+                // the second insert with DataIntegrityViolationException — treat that as a no-op.
+                try {
+                    MarketplaceListing listing = MarketplaceListing.builder()
+                        .productId(saved.getId())
+                        .marketplaceAccountId(account.getId())
+                        .marketplaceType(account.getMarketplaceType())
+                        .listingStatus(ListingStatus.NEEDS_REVIEW)
+                        .build();
+                    listingRepository.save(listing);
+                    log.info("Created NEEDS_REVIEW listing for product {} on {} account {}",
+                        saved.getSku(), account.getMarketplaceType(), account.getId());
+                } catch (DataIntegrityViolationException e) {
+                    log.debug("Listing for product {} on account {} already exists (duplicate webhook) — skipping",
+                        saved.getId(), account.getId());
+                }
             }
         }
     }
@@ -232,7 +285,8 @@ public class ShopifyWebhookProcessor {
             if ("active".equals(shopifyStatus)) {
                 log.info("Product {} not in Gearline yet but now active — importing via create path",
                     shopifyProductId);
-                processProductCreate(shopDomain, rawBody);
+                // Route through self proxy so @Transactional on processProductCreate is active
+                self.processProductCreate(shopDomain, rawBody);
             }
             // Draft/archived products that were never imported can stay that way.
             return;
@@ -340,15 +394,20 @@ public class ShopifyWebhookProcessor {
                             listing.getId(), restoredProduct.getSku(), account.getMarketplaceType());
                     }
                 } else {
-                    MarketplaceListing listing = MarketplaceListing.builder()
-                        .productId(restoredProduct.getId())
-                        .marketplaceAccountId(account.getId())
-                        .marketplaceType(account.getMarketplaceType())
-                        .listingStatus(ListingStatus.NEEDS_REVIEW)
-                        .build();
-                    listingRepository.save(listing);
-                    log.info("Created NEEDS_REVIEW listing for restored product {} on {} account {}",
-                        restoredProduct.getSku(), account.getMarketplaceType(), account.getId());
+                    try {
+                        MarketplaceListing listing = MarketplaceListing.builder()
+                            .productId(restoredProduct.getId())
+                            .marketplaceAccountId(account.getId())
+                            .marketplaceType(account.getMarketplaceType())
+                            .listingStatus(ListingStatus.NEEDS_REVIEW)
+                            .build();
+                        listingRepository.save(listing);
+                        log.info("Created NEEDS_REVIEW listing for restored product {} on {} account {}",
+                            restoredProduct.getSku(), account.getMarketplaceType(), account.getId());
+                    } catch (DataIntegrityViolationException e) {
+                        log.debug("Listing for restored product {} on account {} already exists — skipping",
+                            restoredProduct.getId(), account.getId());
+                    }
                 }
             }
             return;
@@ -449,12 +508,25 @@ public class ShopifyWebhookProcessor {
             trackingUrl = payload.path("tracking_url").asText(null);
         }
 
-        log.info("Shopify fulfillments/create: orderId={} carrier={} tracking={} shop={}",
-            shopifyOrderId, trackingCarrier, trackingNumber, shopDomain);
+        // Finding #29: extract the actual fulfilment date from the webhook payload.
+        // Shopify sends "created_at" on the fulfillment object as the ship date.
+        // Fall back to null and let FulfillmentNotificationService use Instant.now().
+        Instant fulfilledAt = null;
+        String createdAtStr = payload.path("created_at").asText(null);
+        if (createdAtStr != null && !createdAtStr.isBlank()) {
+            try {
+                fulfilledAt = Instant.parse(createdAtStr);
+            } catch (Exception e) {
+                log.warn("Could not parse fulfillment created_at '{}': {}", createdAtStr, e.getMessage());
+            }
+        }
+
+        log.info("Shopify fulfillments/create: orderId={} carrier={} tracking={} fulfilledAt={} shop={}",
+            shopifyOrderId, trackingCarrier, trackingNumber, fulfilledAt, shopDomain);
 
         // Delegate to the notification service which handles marketplace routing
         fulfillmentNotificationService.notifyMarketplace(
-            shopifyOrderId, trackingNumber, trackingCarrier, trackingUrl);
+            shopifyOrderId, trackingNumber, trackingCarrier, trackingUrl, fulfilledAt);
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────────

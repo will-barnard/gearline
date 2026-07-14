@@ -80,7 +80,18 @@ public class ShopifyOrderPushService {
             return;
         }
 
-        // ── 3. Build request and call Admin API ───────────────────────────────
+        // ── 3. Guard: skip push when there are no line items ─────────────────
+        // Finding #30: the mapper no longer inserts a $0 placeholder for empty
+        // line-item lists. If the imported order genuinely has no line items we
+        // must not push — Shopify rejects orders with an empty line_items array,
+        // and a $0 placeholder would corrupt analytics anyway.
+        if (importedOrder.getLineItems() == null || importedOrder.getLineItems().isEmpty()) {
+            log.warn("Skipping Shopify push for {} order {} — no line items",
+                sourceType, importedOrder.getExternalOrderId());
+            return;
+        }
+
+        // ── 4. Build request and call Admin API ───────────────────────────────
         Map<String, Object> body = shopifyOrderMapper.toShopifyOrderBody(importedOrder, sourceType);
 
         try {

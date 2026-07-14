@@ -12,6 +12,8 @@ import com.gearline.marketplace.shopify.client.ShopifyProductsPage;
 import com.gearline.marketplace.shopify.client.ShopifyApiClient;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -43,12 +45,32 @@ import java.util.UUID;
  *     instead of silently failing.
  *   - Returns a structured result so the caller can show the user exactly
  *     what changed (especially the old → new SKU diff).
+ *
+ * ── Finding #17 fix: no class-level @Transactional ───────────────────────────
+ *
+ * The original code had @Transactional at the class level, which held the DB
+ * connection open for the entirety of resync() and bulkResyncSkus() — including
+ * all Shopify HTTP calls. Paginated HTTP fetches in bulkResyncSkus() can take
+ * several seconds and hold a DB connection the entire time, exhausting the pool
+ * under concurrent load.
+ *
+ * Fix: remove class-level @Transactional. Each method now starts a transaction
+ * only when it actually needs to write to the DB:
+ *   - resync(): individual repository methods are self-transactional; the final
+ *     productRepository.save() is @Transactional on the repo method itself.
+ *   - bulkResyncSkus(): HTTP fetch runs with no TX; the DB read+write phase is
+ *     delegated to applyBulkSkuReconciliation() through the AOP proxy via `self`,
+ *     so that method's @Transactional is honoured.
  */
 @Service
 @RequiredArgsConstructor
-@Transactional
 @Slf4j
 public class ShopifyResyncService {
+
+    // Self-reference through the Spring AOP proxy so that applyBulkSkuReconciliation()
+    // picks up its @Transactional annotation when called from bulkResyncSkus().
+    @Autowired @Lazy
+    private ShopifyResyncService self;
 
     private final ProductRepository productRepository;
     private final MarketplaceAccountRepository accountRepository;
@@ -164,14 +186,15 @@ public class ShopifyResyncService {
      *      (format: "RESYNC-TEMP-{uuid}"), clearing all collisions.
      *   2. Setting every product to its correct Shopify SKU.
      *
-     * Runs in a single transaction so the temp-SKU state is never visible
-     * to other readers.
+     * Finding #17: the paginated Shopify HTTP fetch runs OUTSIDE any database
+     * transaction. Only the subsequent DB read + write phase is transactional
+     * (delegated to applyBulkSkuReconciliation() through the AOP proxy).
      *
      * @return a summary: total products compared, SKUs changed, errors encountered
      */
-    @Transactional
+    // NOTE: intentionally NOT @Transactional — HTTP fetch must run outside any TX.
     public BulkResyncResult bulkResyncSkus() {
-        // Find the active Shopify account
+        // Account resolution — each repo call is self-transactional (short read)
         Optional<MarketplaceAccount> maybeAccount = accountRepository
             .findByMarketplaceTypeAndActiveTrue(MarketplaceType.SHOPIFY)
             .stream().findFirst();
@@ -180,7 +203,9 @@ public class ShopifyResyncService {
         }
         MarketplaceAccount account = maybeAccount.get();
 
-        // ── Step 1: Build shopifyProductId → correctSku map from Shopify ────────
+        // ── Step 1: Fetch shopifyProductId → SKU map from Shopify (NO TX) ───────
+        // Finding #17: paginated HTTP fetches happen here, outside any transaction,
+        // so no DB connection is held open while we wait for Shopify API responses.
         Map<String, String> shopifySkuMap = new HashMap<>();
         try {
             String pageInfo = null;
@@ -202,9 +227,27 @@ public class ShopifyResyncService {
 
         log.info("Bulk SKU resync: fetched {} products from Shopify", shopifySkuMap.size());
 
-        // ── Step 2: Find Gearline products that need a SKU update ───────────────
-        List<Product> allProducts = productRepository.findAll();
+        // ── Step 2: Delegate the DB read + write phase to a @Transactional method ─
+        // Called through `self` (the AOP proxy) so the @Transactional annotation
+        // on applyBulkSkuReconciliation() is respected.
+        return self.applyBulkSkuReconciliation(shopifySkuMap);
+    }
+
+    /**
+     * DB phase of bulkResyncSkus(): reads all Gearline products, determines which
+     * need SKU updates, applies temp-SKU pass to break cycles, then applies correct
+     * SKUs. Runs in a single transaction so the temp-SKU state is never visible
+     * to concurrent readers.
+     *
+     * Called via `self` from {@link #bulkResyncSkus()} so this @Transactional
+     * annotation is honoured (direct this.x() call would bypass the AOP proxy).
+     */
+    @Transactional
+    public BulkResyncResult applyBulkSkuReconciliation(Map<String, String> shopifySkuMap) {
         record PendingUpdate(Product product, String correctSku, String oldSku) {}
+
+        // ── Read all Gearline products ───────────────────────────────────────────
+        List<Product> allProducts = productRepository.findAll();
         List<PendingUpdate> pending = new ArrayList<>();
 
         for (Product product : allProducts) {
@@ -223,7 +266,7 @@ public class ShopifyResyncService {
 
         log.info("Bulk SKU resync: {} products need SKU corrections", pending.size());
 
-        // ── Step 3: Find "blockers" ──────────────────────────────────────────────
+        // ── Find "blockers" ──────────────────────────────────────────────────────
         // A blocker is a product NOT in the pending list that currently holds a SKU
         // that some pending product needs. This happens when a product is archived or
         // draft in Shopify (so it wasn't in the active fetch) but still holds a SKU
@@ -244,7 +287,7 @@ public class ShopifyResyncService {
                      "temp SKUs and will need manual SKU correction afterwards", blockers.size());
         }
 
-        // ── Step 4: Break all collisions by setting temp SKUs first ─────────────
+        // ── Break all collisions by setting temp SKUs first ──────────────────────
         // This covers both swapped-SKU cycles among pending products AND blockers.
         for (PendingUpdate u : pending) {
             u.product().setSku("RESYNC-TEMP-" + UUID.randomUUID());
@@ -259,7 +302,7 @@ public class ShopifyResyncService {
         // Flush so all temp SKUs are written before we apply the correct ones
         productRepository.flush();
 
-        // ── Step 5: Apply the correct Shopify SKUs ───────────────────────────────
+        // ── Apply the correct Shopify SKUs ───────────────────────────────────────
         List<String> errors = new ArrayList<>();
         int changed = 0;
         for (PendingUpdate u : pending) {

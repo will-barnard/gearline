@@ -160,14 +160,13 @@ public class ShopifyOrderMapper {
             result.add(li);
         }
 
-        // Shopify requires at least one line item; add a placeholder if the order had none
+        // Finding #30: do NOT add a $0 placeholder when there are no line items.
+        // A $0 placeholder creates a fake line item with no SKU, no variant link, and
+        // zero revenue — this corrupts Shopify's analytics, inventory, and reporting.
+        // The caller (ShopifyOrderPushService) is responsible for skipping the push
+        // entirely when line items are empty, so returning an empty list here is safe.
         if (result.isEmpty()) {
-            log.warn("Order has no line items — adding placeholder for {} order", source);
-            result.add(Map.of(
-                "title",    "Order imported from " + source,
-                "quantity", 1,
-                "price",    "0.00"
-            ));
+            log.warn("Order has no mappable line items for {} — Shopify push will be skipped by caller", source);
         }
 
         return result;

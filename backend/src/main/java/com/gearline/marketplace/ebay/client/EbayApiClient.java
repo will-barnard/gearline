@@ -67,6 +67,37 @@ public class EbayApiClient {
     }
 
     /**
+     * Fetches the current inventory item for a SKU.
+     *
+     * GET /sell/inventory/v1/inventory_item/{sku}
+     *
+     * Used by syncInventory() to read the existing full body before merging the
+     * new quantity and sending the full PUT back. This prevents a quantity-only
+     * PUT from wiping the listing's title, description, condition, and images.
+     *
+     * Returns null if the item doesn't exist (404). Throws EbayApiException on
+     * any other error.
+     */
+    @SuppressWarnings("unchecked")
+    public Map<String, Object> getInventoryItem(MarketplaceAccount account, String sku) {
+        try {
+            return webClient.get()
+                .uri("/sell/inventory/v1/inventory_item/{sku}", sku)
+                .header(HttpHeaders.AUTHORIZATION, bearer(account))
+                .retrieve()
+                .bodyToMono(Map.class)
+                .block();
+        } catch (WebClientResponseException e) {
+            if (e.getStatusCode().value() == 404) {
+                return null; // item not yet created — caller must send a full body
+            }
+            throw new EbayApiException(
+                "Failed to get inventory item for SKU '" + sku + "': "
+                    + e.getStatusCode() + " — " + e.getResponseBodyAsString(), e);
+        }
+    }
+
+    /**
      * Creates a new offer for the given SKU.
      *
      * POST /sell/inventory/v1/offer

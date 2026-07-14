@@ -8,6 +8,7 @@ import com.gearline.marketplace.common.connector.MarketplaceAuthProvider;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.MediaType;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.stereotype.Component;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
@@ -20,6 +21,8 @@ import java.time.Instant;
 import java.util.Base64;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * eBay OAuth 2.0 provider.
@@ -58,6 +61,9 @@ public class EbayAuthProvider implements MarketplaceAuthProvider {
     private final GearlineProperties properties;
     private final MarketplaceAccountRepository accountRepository;
     private final WebClient.Builder webClientBuilder;
+
+    /** Per-account lock to prevent concurrent token refresh races (finding #24). */
+    private final ConcurrentHashMap<UUID, Object> refreshLocks = new ConcurrentHashMap<>();
 
     // ── MarketplaceAuthProvider ────────────────────────────────────────────────
 
@@ -132,65 +138,110 @@ public class EbayAuthProvider implements MarketplaceAuthProvider {
      * Auth:  Basic base64(clientId:clientSecret)
      * Body:  grant_type=refresh_token&refresh_token={token}&scope={scopes}
      */
+    /**
+     * Refreshes an expired access token using the stored refresh token.
+     *
+     * Finding #24 fix: synchronized on a per-account lock so that concurrent requests
+     * for the same account don't race to refresh — only one refresh runs at a time,
+     * and the second thread re-checks validity after acquiring the lock.
+     */
     @Override
     public void refreshAccessToken(MarketplaceAccount account) {
-        Map<String, String> creds = account.getEncryptedCredentials();
-        if (creds == null || !creds.containsKey("refresh_token")) {
-            log.warn("No refresh token for eBay account {} — marking TOKEN_EXPIRED", account.getId());
-            account.setConnectionStatus(ConnectionStatus.TOKEN_EXPIRED);
-            accountRepository.save(account);
-            return;
-        }
-
-        try {
-            MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
-            form.add("grant_type",     "refresh_token");
-            form.add("refresh_token",  creds.get("refresh_token"));
-            form.add("scope",          EBAY_SCOPES);
-
-            @SuppressWarnings("unchecked")
-            Map<String, Object> response = webClientBuilder.baseUrl(TOKEN_URL).build()
-                .post()
-                .uri("")
-                .header("Authorization", basicAuthHeader())
-                .contentType(MediaType.APPLICATION_FORM_URLENCODED)
-                .body(BodyInserters.fromFormData(form))
-                .retrieve()
-                .bodyToMono(Map.class)
-                .block();
-
-            if (response != null && response.containsKey("access_token")) {
-                Map<String, String> updated = new HashMap<>(creds);
-                updated.put("access_token", (String) response.get("access_token"));
-
-                // Refresh response may also contain a new refresh token
-                if (response.containsKey("refresh_token")) {
-                    updated.put("refresh_token", (String) response.get("refresh_token"));
-                }
-                if (response.containsKey("expires_in")) {
-                    long expiry = Instant.now()
-                        .plusSeconds(Long.parseLong(response.get("expires_in").toString()))
-                        .toEpochMilli();
-                    updated.put("expires_at", String.valueOf(expiry));
+        Object lock = refreshLocks.computeIfAbsent(account.getId(), id -> new Object());
+        synchronized (lock) {
+            try {
+                // Re-check: another thread may have just refreshed this token
+                if (areCredentialsValid(account)) {
+                    log.debug("eBay token for account {} already valid (refreshed by another thread)",
+                        account.getId());
+                    return;
                 }
 
-                account.setEncryptedCredentials(updated);
-                account.setConnectionStatus(ConnectionStatus.CONNECTED);
-                accountRepository.save(account);
-                log.info("Refreshed eBay access token for account {}", account.getId());
-            } else {
-                throw new RuntimeException("Empty or missing access_token in refresh response");
+                Map<String, String> creds = account.getEncryptedCredentials();
+                if (creds == null || !creds.containsKey("refresh_token")) {
+                    log.warn("No refresh token for eBay account {} — marking TOKEN_EXPIRED", account.getId());
+                    account.setConnectionStatus(ConnectionStatus.TOKEN_EXPIRED);
+                    saveAccount(account);
+                    return;
+                }
+
+                MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
+                form.add("grant_type",    "refresh_token");
+                form.add("refresh_token", creds.get("refresh_token"));
+                form.add("scope",         EBAY_SCOPES);
+
+                @SuppressWarnings("unchecked")
+                Map<String, Object> response = webClientBuilder.baseUrl(TOKEN_URL).build()
+                    .post()
+                    .uri("")
+                    .header("Authorization", basicAuthHeader())
+                    .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                    .body(BodyInserters.fromFormData(form))
+                    .retrieve()
+                    .bodyToMono(Map.class)
+                    .block();
+
+                if (response != null && response.containsKey("access_token")) {
+                    Map<String, String> updated = new HashMap<>(creds);
+                    updated.put("access_token", (String) response.get("access_token"));
+                    if (response.containsKey("refresh_token")) {
+                        updated.put("refresh_token", (String) response.get("refresh_token"));
+                    }
+                    if (response.containsKey("expires_in")) {
+                        long expiry = Instant.now()
+                            .plusSeconds(Long.parseLong(response.get("expires_in").toString()))
+                            .toEpochMilli();
+                        updated.put("expires_at", String.valueOf(expiry));
+                    }
+
+                    account.setEncryptedCredentials(updated);
+                    account.setConnectionStatus(ConnectionStatus.CONNECTED);
+                    saveAccount(account);
+                    log.info("Refreshed eBay access token for account {}", account.getId());
+                } else {
+                    throw new RuntimeException("Empty or missing access_token in refresh response: " + response);
+                }
+
+            } catch (WebClientResponseException e) {
+                log.error("eBay token refresh HTTP error for account {}: {} — {}",
+                    account.getId(), e.getStatusCode(), e.getResponseBodyAsString());
+                account.setConnectionStatus(ConnectionStatus.TOKEN_EXPIRED);
+                saveAccount(account);
+            } catch (Exception e) {
+                log.error("eBay token refresh failed for account {}: {}", account.getId(), e.getMessage());
+                account.setConnectionStatus(ConnectionStatus.TOKEN_EXPIRED);
+                saveAccount(account);
+            } finally {
+                refreshLocks.remove(account.getId());
             }
+        }
+    }
 
-        } catch (WebClientResponseException e) {
-            log.error("eBay token refresh HTTP error for account {}: {} — {}",
-                account.getId(), e.getStatusCode(), e.getResponseBodyAsString());
-            account.setConnectionStatus(ConnectionStatus.TOKEN_EXPIRED);
+    /**
+     * Finding #26: save the account entity, retrying once on optimistic lock failure.
+     *
+     * Per-account {@link #refreshLocks} prevents concurrent refresh within a single JVM,
+     * but in multi-node deployments two nodes may race. On
+     * {@link ObjectOptimisticLockingFailureException}, reload the fresh entity, re-apply
+     * the pending credential/status changes, and retry the save once.
+     */
+    private void saveAccount(MarketplaceAccount account) {
+        try {
             accountRepository.save(account);
-        } catch (Exception e) {
-            log.error("eBay token refresh failed for account {}: {}", account.getId(), e.getMessage());
-            account.setConnectionStatus(ConnectionStatus.TOKEN_EXPIRED);
-            accountRepository.save(account);
+        } catch (ObjectOptimisticLockingFailureException e) {
+            log.warn("Optimistic lock conflict saving eBay account {} — reloading and retrying",
+                account.getId());
+            accountRepository.findById(account.getId()).ifPresentOrElse(fresh -> {
+                fresh.setEncryptedCredentials(account.getEncryptedCredentials());
+                fresh.setConnectionStatus(account.getConnectionStatus());
+                try {
+                    accountRepository.save(fresh);
+                    log.info("eBay account {} saved successfully on retry", account.getId());
+                } catch (Exception retryEx) {
+                    log.error("Retry save for eBay account {} also failed: {}",
+                        account.getId(), retryEx.getMessage());
+                }
+            }, () -> log.error("eBay account {} not found during optimistic-lock retry", account.getId()));
         }
     }
 

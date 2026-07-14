@@ -131,16 +131,30 @@ public class OrderPollingScheduler {
             } else {
                 log.info("Found {} new {} order(s) for account {}", orders.size(), type, account.getId());
                 int imported = 0;
+                int failed = 0;
                 for (ImportedOrder order : orders) {
                     try {
                         var saved = orderImportService.importOrder(order, account);
                         if (saved != null) imported++;
                     } catch (Exception e) {
+                        failed++;
                         log.error("Failed to import {} order {}: {}",
                             type, order.getExternalOrderId(), e.getMessage(), e);
                     }
                 }
-                log.info("Imported {}/{} {} orders for account {}", imported, orders.size(), type, account.getId());
+                log.info("Imported {}/{} {} orders for account {} ({} failed)",
+                    imported, orders.size(), type, account.getId(), failed);
+
+                // Finding #18: only advance lastSyncAt when all orders imported successfully.
+                // If any failed, keeping lastSyncAt at its current value means the next poll
+                // will re-attempt the same window — no orders are permanently skipped due to
+                // a transient import failure. (Permanently bad orders will be retried every
+                // poll cycle until they succeed or are manually resolved.)
+                if (failed > 0) {
+                    log.warn("{} {} order(s) failed to import for account {} — not advancing lastSyncAt; "
+                        + "they will be retried on the next poll", failed, type, account.getId());
+                    return; // skip the lastSyncAt update below
+                }
             }
 
             // Update lastSyncAt to now so next poll only fetches newer orders

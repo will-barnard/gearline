@@ -77,9 +77,17 @@ public class EbayConnector implements MarketplaceConnector {
             log.info("eBay: inventory item created/updated for SKU {}", sku);
 
             // Step 2 — POST offer
+            // Finding #7: null-guard createOffer response — null means eBay returned an empty body
             Map<String, Object> offerBody = buildOfferBody(sku, product, request);
             Map<String, Object> offerResponse = ebayApiClient.createOffer(account, offerBody);
+            if (offerResponse == null) {
+                throw new EbayApiException("createOffer returned null response for SKU " + sku, null);
+            }
             String offerId = (String) offerResponse.get("offerId");
+            if (offerId == null || offerId.isBlank()) {
+                throw new EbayApiException("createOffer returned no offerId for SKU " + sku
+                    + " — response: " + offerResponse, null);
+            }
             log.info("eBay: offer created {} for SKU {}", offerId, sku);
 
             // Step 3 — POST publish
@@ -126,8 +134,15 @@ public class EbayConnector implements MarketplaceConnector {
                 ebayApiClient.updateOffer(account, offerId, offerBody);
                 log.info("eBay: offer {} updated for SKU {}", offerId, sku);
             } else {
+                // Finding #7: null-guard createOffer response
                 Map<String, Object> offerResponse = ebayApiClient.createOffer(account, offerBody);
+                if (offerResponse == null) {
+                    throw new EbayApiException("createOffer returned null response for SKU " + sku, null);
+                }
                 offerId = (String) offerResponse.get("offerId");
+                if (offerId == null || offerId.isBlank()) {
+                    throw new EbayApiException("createOffer returned no offerId for SKU " + sku, null);
+                }
                 log.info("eBay: offer {} created (was missing) for SKU {}", offerId, sku);
             }
 
@@ -171,36 +186,44 @@ public class EbayConnector implements MarketplaceConnector {
         }
     }
 
+    /**
+     * Syncs the quantity for an existing eBay inventory item.
+     *
+     * Finding #4 fix: the eBay Inventory API PUT is a full replace, not a PATCH.
+     * Sending only an availability block would wipe the listing's product title,
+     * description, images, and condition. We now GET the current inventory item
+     * first, update only the availability block, and PUT the full merged body back.
+     */
     @Override
+    @SuppressWarnings("unchecked")
     public InventorySyncResult syncInventory(
         MarketplaceAccount account,
         MarketplaceListing listing,
         int newQuantity
     ) {
-        // eBay does not have a PATCH endpoint for just the quantity;
-        // the PUT inventory_item endpoint is a full replace. We build a minimal
-        // body containing only the availability block and send it. The Inventory API
-        // spec treats omitted fields as unchanged for quantity-only updates.
         ensureValidToken(account);
         try {
-            // We need the SKU to build the URI — retrieve it from the listing's product
-            // via the external listing ID. The SKU is embedded in marketplace metadata
-            // when available; fall back to looking it up via the listing's productId.
             String sku = getSkuFromListing(listing);
             if (sku == null) {
                 return InventorySyncResult.failure(
                     "Cannot sync eBay inventory: no SKU available for listing " + listing.getId());
             }
 
-            Map<String, Object> body = Map.of(
-                "availability", Map.of(
-                    "shipToLocationAvailability", Map.of(
-                        "quantity", newQuantity
-                    )
-                )
-            );
+            // GET the current inventory item so we can preserve all existing fields.
+            Map<String, Object> existing = ebayApiClient.getInventoryItem(account, sku);
+            if (existing == null) {
+                // Item doesn't exist yet — eBay may have removed it; log and return failure.
+                log.warn("eBay inventory item for SKU {} not found — cannot sync quantity", sku);
+                return InventorySyncResult.failure(
+                    "eBay inventory item for SKU " + sku + " not found; please re-publish the listing");
+            }
 
-            ebayApiClient.createOrUpdateInventoryItem(account, sku, body);
+            // Merge the new quantity into the existing body (full replace preserves all other fields)
+            Map<String, Object> availability = new LinkedHashMap<>();
+            availability.put("shipToLocationAvailability", Map.of("quantity", newQuantity));
+            existing.put("availability", availability);
+
+            ebayApiClient.createOrUpdateInventoryItem(account, sku, existing);
             log.info("eBay: inventory synced for SKU {} → quantity {}", sku, newQuantity);
             return InventorySyncResult.success(newQuantity);
 
@@ -225,7 +248,9 @@ public class EbayConnector implements MarketplaceConnector {
 
         while (hasMore) {
             try {
+                // Finding #14: getOrders() can return null (empty body from eBay); guard it.
                 Map<String, Object> page = ebayApiClient.getOrders(account, sinceStr, offset);
+                if (page == null) break;
                 List<Map<String, Object>> orders = (List<Map<String, Object>>) page.get("orders");
 
                 if (orders == null || orders.isEmpty()) break;
