@@ -43,12 +43,14 @@ import java.util.concurrent.TimeUnit;
  * ── lastSyncAt window ────────────────────────────────────────────────────────
  *
  * We use the account's {@code lastSyncAt} as the "since" timestamp for the
- * orders query.  If this is null (first ever poll), we look back 24 hours to
- * catch orders placed while the app was being set up.  After a successful poll
- * we update {@code lastSyncAt} to the current time.
+ * orders query.  After a successful poll we update {@code lastSyncAt} to the
+ * current time so the next poll only fetches newer orders.
  *
- * The 24-hour lookback on first run means you won't miss orders placed between
- * connecting a marketplace and the first successful poll.
+ * First-run behaviour: if {@code lastSyncAt} is null (account was just connected
+ * or the DB was re-created), we do NOT look back — we set lastSyncAt to now and
+ * skip the poll entirely.  This prevents the app from flooding the system with
+ * historical orders on every fresh deployment.  Only orders that arrive AFTER
+ * the app is running will be imported.
  */
 @Service
 @RequiredArgsConstructor
@@ -69,15 +71,15 @@ public class OrderPollingScheduler {
     );
 
     /**
-     * Maximum lookback window for order polling.
+     * Maximum lookback cap for accounts that have been polled before.
      *
-     * If an account has never been polled (lastSyncAt is null) we only look
-     * back this far so we don't flood Gearline with the account's entire order
-     * history. The same cap applies if the poller was down for an extended
-     * period — we cap at 72 hours rather than importing months of old orders.
+     * If the poller was down for an extended period (e.g. the app was offline
+     * for several days) we cap how far back we look rather than importing weeks
+     * of orders. Orders older than this cap after a long outage are intentionally
+     * skipped — they can be imported manually if needed.
      *
-     * Orders older than this on first connect are intentionally ignored. They
-     * can be imported manually via the admin dashboard in future if needed.
+     * This cap does NOT apply on first poll: when lastSyncAt is null we set it
+     * to now and skip entirely (no historical import at all).
      */
     private static final long MAX_LOOKBACK_HOURS = 72;
 
@@ -113,12 +115,23 @@ public class OrderPollingScheduler {
         try {
             MarketplaceConnector connector = connectorRegistry.getConnector(type);
 
-            // Determine the lookback window.
-            // The earliest we will ever look back is MAX_LOOKBACK_HOURS ago — this
-            // prevents a first-time poll (null lastSyncAt) or a long poller outage
-            // from importing the account's entire order history.
+            // ── First-run guard ────────────────────────────────────────────────
+            // When lastSyncAt is null the account was just connected (or the DB
+            // was re-created). Instead of looking back MAX_LOOKBACK_HOURS and
+            // flooding the system with historical orders, we stamp lastSyncAt=now
+            // and return. The next scheduled poll will pick up any truly new orders.
+            if (account.getLastSyncAt() == null) {
+                log.info("First poll for {} account {} — initializing lastSyncAt to now, "
+                    + "skipping historical import", type, account.getId());
+                account.setLastSyncAt(Instant.now());
+                accountRepository.save(account);
+                return;
+            }
+
+            // Cap how far back we look to avoid importing weeks of orders after
+            // a long poller outage.
             Instant floor = Instant.now().minus(MAX_LOOKBACK_HOURS, ChronoUnit.HOURS);
-            Instant since = (account.getLastSyncAt() != null && account.getLastSyncAt().isAfter(floor))
+            Instant since = account.getLastSyncAt().isAfter(floor)
                 ? account.getLastSyncAt()
                 : floor;
 

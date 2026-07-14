@@ -8,6 +8,7 @@ import com.gearline.marketplace.common.dto.ImportedOrder;
 import com.gearline.marketplace.shopify.order.ShopifyOrderPushService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -44,6 +45,16 @@ public class OrderImportService {
      */
     @Transactional
     public Order importOrder(ImportedOrder importedOrder, MarketplaceAccount account) {
+        // ── 0. Null-ID guard ──────────────────────────────────────────────────
+        // The external_order_id column is NOT NULL. An order with a null/blank ID
+        // is malformed data from the connector (e.g. wrong DTO field mapping).
+        // Reject it here rather than letting the DB constraint fire.
+        if (importedOrder.getExternalOrderId() == null || importedOrder.getExternalOrderId().isBlank()) {
+            log.warn("Skipping {} order with null/blank externalOrderId — check connector DTO field mappings",
+                account.getMarketplaceType());
+            return null;
+        }
+
         // ── 1. Deduplication ──────────────────────────────────────────────────
         if (orderRepository.existsByMarketplaceTypeAndExternalOrderId(
                 account.getMarketplaceType(), importedOrder.getExternalOrderId())) {
@@ -70,7 +81,17 @@ public class OrderImportService {
             .importedAt(Instant.now())
             .build();
 
-        order = orderRepository.save(order);
+        try {
+            order = orderRepository.save(order);
+        } catch (DataIntegrityViolationException e) {
+            // Race condition: two threads both passed the existsBy check before either
+            // completed the insert. The unique constraint (marketplace_type, external_order_id)
+            // correctly rejected the duplicate. Treat this as a successful dedup.
+            log.debug("Order {} from {} already imported (concurrent insert race) — skipping",
+                importedOrder.getExternalOrderId(), account.getMarketplaceType());
+            return null;
+        }
+
         log.info("Imported {} order {} (gearline id={})",
             account.getMarketplaceType(), importedOrder.getExternalOrderId(), order.getId());
 

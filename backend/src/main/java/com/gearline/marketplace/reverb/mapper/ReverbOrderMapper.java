@@ -20,11 +20,40 @@ import java.util.List;
 @Slf4j
 public class ReverbOrderMapper {
 
+    /**
+     * Maps a Reverb order DTO to our internal ImportedOrder.
+     *
+     * Returns {@code null} if the order has no identifiable ID — callers
+     * (ReverbConnector.importOrders) must filter these out so they are never
+     * passed to OrderImportService.
+     */
     public ImportedOrder toImportedOrder(ReverbOrderDto dto) {
+        // Resolve the order ID: primary is dto.getId() (mapped from JSON "order_id").
+        // Fallback: extract the numeric ID from the order URL, which Reverb always
+        // includes in the _links.web.href even when the id field is missing.
+        // URL format: https://reverb.com/my/selling/orders/25262223
+        String orderId = dto.getId();
+        String orderUrl = extractOrderUrl(dto);
+
+        if (orderId == null || orderId.isBlank()) {
+            if (orderUrl != null) {
+                int lastSlash = orderUrl.lastIndexOf('/');
+                if (lastSlash >= 0 && lastSlash < orderUrl.length() - 1) {
+                    orderId = orderUrl.substring(lastSlash + 1);
+                    log.debug("Reverb order: extracted ID '{}' from URL (order_id field was null)", orderId);
+                }
+            }
+        }
+
+        if (orderId == null || orderId.isBlank()) {
+            log.warn("Reverb order has no identifiable ID (order_id field null, no URL) — skipping");
+            return null;
+        }
+
         return ImportedOrder.builder()
-            .externalOrderId(dto.getId())
-            .marketplaceOrderUrl(extractOrderUrl(dto))
-            .lineItems(mapLineItems(dto))
+            .externalOrderId(orderId)
+            .marketplaceOrderUrl(orderUrl)
+            .lineItems(mapLineItems(dto, orderId))
             .subtotal(parseMoney(dto.getAmountProduct()))
             .shippingTotal(parseMoney(dto.getAmountShipping()))
             .taxTotal(parseMoney(dto.getAmountTax()))
@@ -41,10 +70,10 @@ public class ReverbOrderMapper {
      * We build one OrderLineItem from it, using amount_product as the unit price.
      * The SKU is used downstream to look up the matching Product in our DB.
      */
-    private List<OrderLineItem> mapLineItems(ReverbOrderDto dto) {
+    private List<OrderLineItem> mapLineItems(ReverbOrderDto dto, String resolvedOrderId) {
         ReverbOrderDto.ReverbOrderListing listing = dto.getListing();
         if (listing == null) {
-            log.warn("Reverb order {} has no listing object — line items will be empty", dto.getId());
+            log.warn("Reverb order {} has no listing object — line items will be empty", resolvedOrderId);
             return List.of();
         }
 

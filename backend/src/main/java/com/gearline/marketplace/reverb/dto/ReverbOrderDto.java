@@ -10,7 +10,17 @@ import java.util.List;
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class ReverbOrderDto {
 
+    /**
+     * Reverb's numeric order identifier.
+     *
+     * Reverb's API returns this as an integer field named "order_id" (not "id").
+     * Jackson deserializes integer → String automatically when the annotation is present.
+     * Without @JsonProperty("order_id") this field was always null, causing the
+     * external_order_id NOT NULL constraint to fire on every import attempt.
+     */
+    @JsonProperty("order_id")
     private String id;
+
     private String status;
 
     @JsonProperty("buyer_name")

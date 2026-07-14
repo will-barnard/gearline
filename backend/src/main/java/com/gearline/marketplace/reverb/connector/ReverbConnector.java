@@ -183,9 +183,19 @@ public class ReverbConnector implements MarketplaceConnector {
         }
 
         log.info("Fetched {} Reverb orders across {} page(s)", allDtos.size(), page);
-        return allDtos.stream()
+
+        // toImportedOrder() returns null for orders with no identifiable ID.
+        // Filter these out so the polling scheduler never tries to import them.
+        List<ImportedOrder> mapped = allDtos.stream()
             .map(orderMapper::toImportedOrder)
+            .filter(java.util.Objects::nonNull)
             .collect(Collectors.toList());
+
+        int skipped = allDtos.size() - mapped.size();
+        if (skipped > 0) {
+            log.warn("Skipped {} Reverb order(s) with no identifiable ID", skipped);
+        }
+        return mapped;
     }
 
     /**
