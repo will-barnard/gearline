@@ -45,6 +45,10 @@ public class ShopifyApiClient {
     public ShopifyApiClient(WebClient.Builder webClientBuilder, ObjectMapper objectMapper) {
         this.webClientBuilder = webClientBuilder;
         this.objectMapper = objectMapper;
+        // Shopify product catalogues can be several MB; the default WebFlux codec
+        // buffer is only 256 KB which causes "Exceeded limit on max bytes to buffer".
+        // 16 MB covers the largest realistic Shopify store (250 products × ~64 KB each).
+        webClientBuilder.codecs(c -> c.defaultCodecs().maxInMemorySize(16 * 1024 * 1024));
     }
 
     /**
