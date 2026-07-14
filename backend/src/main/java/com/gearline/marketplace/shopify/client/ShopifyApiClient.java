@@ -132,7 +132,7 @@ public class ShopifyApiClient {
         String baseUrl = "https://" + shopDomain.replaceAll("/$", "");
         try {
             @SuppressWarnings("unchecked")
-            Map<String, Object> response = webClientBuilder.baseUrl(baseUrl).build()
+            Map<String, Object> response = webClientBuilder.mutate().baseUrl(baseUrl).build()
                 .post()
                 .uri("/admin/oauth/access_token")
                 .header(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
@@ -174,20 +174,39 @@ public class ShopifyApiClient {
         }
 
         try {
+            // Use exchangeToMono instead of retrieve() so we control response handling for
+            // all status codes. retrieve() can throw WebClientResponseException even on 200
+            // when there's a codec/content-type mismatch, swallowing the real error.
             ResponseEntity<String> entity = buildClient(account)
                 .get()
                 .uri(uri)
                 .header("X-Shopify-Access-Token", getAccessToken(account))
-                .retrieve()
-                .toEntity(String.class)
+                .exchangeToMono(response -> response.toEntity(String.class))
                 .block();
 
-            if (entity == null || entity.getBody() == null) {
+            if (entity == null) {
+                log.warn("fetchProducts: null ResponseEntity from Shopify");
+                return new ShopifyProductsPage(List.of(), null);
+            }
+
+            // Treat any non-2xx as a hard error, with the actual body logged for diagnosis
+            if (!entity.getStatusCode().is2xxSuccessful()) {
+                String errBody = entity.getBody() != null ? entity.getBody() : "";
+                log.warn("fetchProducts: Shopify returned HTTP {} — {}", entity.getStatusCode(), errBody);
+                throw new ShopifyApiException(
+                    "Failed to fetch Shopify products: HTTP " + entity.getStatusCode()
+                        + " — " + errBody, null);
+            }
+
+            String body = entity.getBody();
+            if (body == null || body.isBlank()) {
+                // 200 with empty body — nothing to parse; return empty page
+                log.warn("fetchProducts: Shopify returned HTTP {} with empty body", entity.getStatusCode());
                 return new ShopifyProductsPage(List.of(), null);
             }
 
             // Parse products array from {"products": [...]}
-            JsonNode root = objectMapper.readTree(entity.getBody());
+            JsonNode root = objectMapper.readTree(body);
             JsonNode productsNode = root.path("products");
             List<JsonNode> products = new ArrayList<>();
             if (productsNode.isArray()) {
@@ -207,12 +226,11 @@ public class ShopifyApiClient {
             log.debug("Fetched {} products from Shopify (nextPageInfo={})", products.size(), nextPageInfo);
             return new ShopifyProductsPage(products, nextPageInfo);
 
-        } catch (WebClientResponseException e) {
-            throw new ShopifyApiException(
-                "Failed to fetch Shopify products: HTTP " + e.getStatusCode()
-                    + " — " + e.getResponseBodyAsString(), e);
+        } catch (ShopifyApiException e) {
+            throw e;
         } catch (Exception e) {
-            throw new ShopifyApiException("Failed to parse Shopify products response: " + e.getMessage(), e);
+            log.error("fetchProducts: unexpected error — {}", e.getMessage(), e);
+            throw new ShopifyApiException("Failed to fetch Shopify products: " + e.getMessage(), e);
         }
     }
 
@@ -312,7 +330,9 @@ public class ShopifyApiClient {
         if (!baseUrl.startsWith("http")) {
             baseUrl = "https://" + baseUrl;
         }
-        return webClientBuilder.baseUrl(baseUrl).build();
+        // Use mutate() to create a copy of the shared builder so we never mutate
+        // the singleton in place (which would affect concurrent callers in the same bean).
+        return webClientBuilder.mutate().baseUrl(baseUrl).build();
     }
 
     private String getAccessToken(MarketplaceAccount account) {
