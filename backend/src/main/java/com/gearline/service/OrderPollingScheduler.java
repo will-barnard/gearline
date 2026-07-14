@@ -68,6 +68,19 @@ public class OrderPollingScheduler {
         MarketplaceType.EBAY
     );
 
+    /**
+     * Maximum lookback window for order polling.
+     *
+     * If an account has never been polled (lastSyncAt is null) we only look
+     * back this far so we don't flood Gearline with the account's entire order
+     * history. The same cap applies if the poller was down for an extended
+     * period — we cap at 72 hours rather than importing months of old orders.
+     *
+     * Orders older than this on first connect are intentionally ignored. They
+     * can be imported manually via the admin dashboard in future if needed.
+     */
+    private static final long MAX_LOOKBACK_HOURS = 72;
+
     @Scheduled(
         fixedDelayString  = "${gearline.order-polling.interval-ms:600000}",
         initialDelayString = "${gearline.order-polling.initial-delay-ms:60000}",
@@ -100,10 +113,14 @@ public class OrderPollingScheduler {
         try {
             MarketplaceConnector connector = connectorRegistry.getConnector(type);
 
-            // Determine the lookback window: last sync time, or 24 hours ago for first run
-            Instant since = account.getLastSyncAt() != null
+            // Determine the lookback window.
+            // The earliest we will ever look back is MAX_LOOKBACK_HOURS ago — this
+            // prevents a first-time poll (null lastSyncAt) or a long poller outage
+            // from importing the account's entire order history.
+            Instant floor = Instant.now().minus(MAX_LOOKBACK_HOURS, ChronoUnit.HOURS);
+            Instant since = (account.getLastSyncAt() != null && account.getLastSyncAt().isAfter(floor))
                 ? account.getLastSyncAt()
-                : Instant.now().minus(24, ChronoUnit.HOURS);
+                : floor;
 
             log.info("Polling {} orders for account {} since {}", type, account.getId(), since);
 

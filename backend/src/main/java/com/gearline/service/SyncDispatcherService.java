@@ -173,6 +173,12 @@ public class SyncDispatcherService {
         String externalOrderId = (String) job.getPayload().get("externalOrderId");
         ImportedOrder importedOrder = connector.importOrder(account, externalOrderId);
 
+        if (importedOrder == null) {
+            log.warn("Connector returned null for order {} on {} account {} — skipping import",
+                externalOrderId, job.getMarketplaceType(), account.getId());
+            return;
+        }
+
         // Full pipeline: save → inventory deduction → Shopify push
         orderImportService.importOrder(importedOrder, account);
     }
