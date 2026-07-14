@@ -18,6 +18,8 @@ import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 
+import org.springframework.transaction.annotation.Transactional;
+
 import java.util.Map;
 import java.util.UUID;
 
@@ -98,5 +100,23 @@ public class SyncJobController {
         job.setStatus(SyncJobStatus.CANCELLED);
         syncJobRepository.save(job);
         return ResponseEntity.noContent().build();
+    }
+
+    /**
+     * Bulk-cancels every QUEUED sync job in a single UPDATE query.
+     *
+     * Use this to drain the queue after a bad historical import batch
+     * (e.g. Reverb orders imported on first deploy due to a null lastSyncAt).
+     * Jobs already IN_PROGRESS are unaffected — only QUEUED ones are cancelled.
+     *
+     * @return JSON body {@code {"cancelled": N}} with the count of cancelled jobs
+     */
+    @PostMapping("/jobs/cancel-queued")
+    @Operation(summary = "Cancel all queued sync jobs in bulk")
+    @PreAuthorize("hasRole('ADMIN')")
+    @Transactional
+    public ResponseEntity<Map<String, Integer>> cancelAllQueuedJobs() {
+        int cancelled = syncJobRepository.cancelAllQueued();
+        return ResponseEntity.ok(Map.of("cancelled", cancelled));
     }
 }

@@ -6,6 +6,7 @@ import com.gearline.domain.sync.SyncJobType;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
@@ -32,4 +33,15 @@ public interface SyncJobRepository extends JpaRepository<SyncJob, UUID> {
 
     @Query("SELECT COUNT(j) FROM SyncJob j WHERE j.status = 'IN_PROGRESS'")
     long countInProgressJobs();
+
+    /**
+     * Bulk-cancel all QUEUED jobs in a single UPDATE statement.
+     * Used to drain the queue after a bad historical import batch without
+     * requiring hundreds of individual per-job cancel calls.
+     *
+     * @return the number of rows updated
+     */
+    @Modifying
+    @Query("UPDATE SyncJob j SET j.status = com.gearline.domain.sync.SyncJobStatus.CANCELLED WHERE j.status = com.gearline.domain.sync.SyncJobStatus.QUEUED")
+    int cancelAllQueued();
 }

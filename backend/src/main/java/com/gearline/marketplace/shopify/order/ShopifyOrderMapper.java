@@ -107,17 +107,45 @@ public class ShopifyOrderMapper {
             if (!shipAddr.isEmpty()) order.put("shipping_address", shipAddr);
         }
 
-        // ── Source / channel metadata ─────────────────────────────────────────
-        order.put("source_name",  source);
-        order.put("tags",         source);
-        order.put("note",         "Imported from " + source + " order #" + importedOrder.getExternalOrderId());
+        // ── Order number override ─────────────────────────────────────────────
+        // Set `name` so the order shows as "#26040673" (the marketplace order
+        // number) instead of Shopify's auto-incremented "#1001", "#1002", etc.
+        // Shopify accepts a custom `name` on creation via the Admin API.
+        // Reverb IDs are in the millions, eBay IDs are long numeric strings —
+        // neither collides with normal Shopify store order numbers.
+        order.put("name", "#" + importedOrder.getExternalOrderId());
 
+        // ── Source / channel metadata ─────────────────────────────────────────
+        // source_name    → "Channel" label in Shopify's "Channel Information" panel
+        // source_identifier → "Order ID" in the same panel
+        // source_url     → makes the Order ID a clickable link back to the marketplace
+        String sourceName = sourceType.name().charAt(0)
+            + sourceType.name().substring(1).toLowerCase(); // "Reverb" / "Ebay" → "Reverb" / "eBay"
+        // Normalise eBay capitalisation
+        if (sourceType.name().equalsIgnoreCase("EBAY")) sourceName = "eBay";
+
+        order.put("source_name",       source);          // used for analytics grouping
+        order.put("source_identifier", importedOrder.getExternalOrderId());
         if (importedOrder.getMarketplaceOrderUrl() != null) {
-            order.put("note_attributes", List.of(Map.of(
-                "name",  source + "_order_url",
-                "value", importedOrder.getMarketplaceOrderUrl()
-            )));
+            order.put("source_url", importedOrder.getMarketplaceOrderUrl());
         }
+
+        order.put("tags", source);
+        order.put("note", "Imported from " + sourceName + " order #" + importedOrder.getExternalOrderId());
+
+        // ── Note attributes ("Additional details" panel in Shopify admin) ─────
+        // These populate the key/value pairs shown under "Additional details"
+        // on the order detail page.
+        List<Map<String, String>> noteAttributes = new ArrayList<>();
+        noteAttributes.add(Map.of("name", "Channel",      "value", sourceName));
+        noteAttributes.add(Map.of("name", "Order Number", "value", importedOrder.getExternalOrderId()));
+        if (buyer != null && buyer.getUsername() != null && !buyer.getUsername().isBlank()) {
+            noteAttributes.add(Map.of("name", "Buyer Username", "value", buyer.getUsername()));
+        }
+        if (importedOrder.getMarketplaceOrderUrl() != null) {
+            noteAttributes.add(Map.of("name", sourceName + " Order URL", "value", importedOrder.getMarketplaceOrderUrl()));
+        }
+        order.put("note_attributes", noteAttributes);
 
         // ── Behaviour flags ───────────────────────────────────────────────────
         // inventory_behaviour=bypass: don't adjust Shopify stock — we handle cross-channel sync

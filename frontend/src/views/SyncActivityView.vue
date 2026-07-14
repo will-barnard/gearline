@@ -7,6 +7,14 @@
           <option value="">All statuses</option>
           <option v-for="s in statuses" :key="s" :value="s">{{ s }}</option>
         </select>
+        <button
+          v-if="hasQueuedJobs"
+          @click="cancelAllQueued"
+          :disabled="cancelling"
+          class="btn-secondary px-3 py-1.5 text-xs text-red-400 border-red-800 hover:border-red-600 disabled:opacity-50"
+        >
+          {{ cancelling ? 'Cancelling…' : 'Cancel all queued' }}
+        </button>
         <button @click="load" class="btn-secondary px-3 py-1.5 text-xs">Refresh</button>
       </div>
     </header>
@@ -83,16 +91,25 @@
 </template>
 
 <script setup>
-import { ref, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import api from '@/lib/api'
 
 const jobs = ref([])
 const loading = ref(true)
+const cancelling = ref(false)
 const page = ref(0)
 const totalPages = ref(1)
 const totalElements = ref(0)
 const statusFilter = ref('')
 const statuses = ['QUEUED','IN_PROGRESS','COMPLETED','FAILED','DEAD_LETTERED','CANCELLED']
+
+// True whenever the current page contains at least one QUEUED job — used to show
+// the "Cancel all queued" button. We check totalElements too to catch the case
+// where the user filtered to QUEUED status and there are multiple pages.
+const hasQueuedJobs = computed(() =>
+  jobs.value.some(j => j.status === 'QUEUED') ||
+  (statusFilter.value === 'QUEUED' && totalElements.value > 0)
+)
 
 async function load() {
   loading.value = true
@@ -112,6 +129,21 @@ async function replayJob(id) {
 async function cancelJob(id) {
   await api.post(`/sync/jobs/${id}/cancel`)
   load()
+}
+
+async function cancelAllQueued() {
+  if (!confirm('Cancel ALL queued sync jobs? This cannot be undone.')) return
+  cancelling.value = true
+  try {
+    const res = await api.post('/sync/jobs/cancel-queued')
+    const n = res.data?.cancelled ?? '?'
+    alert(`Cancelled ${n} queued job${n === 1 ? '' : 's'}.`)
+    load()
+  } catch (e) {
+    alert('Failed to cancel queued jobs. Check that you have ADMIN role.')
+  } finally {
+    cancelling.value = false
+  }
 }
 
 function statusBadge(s) {
