@@ -123,8 +123,7 @@ public class OrderPollingScheduler {
             if (account.getLastSyncAt() == null) {
                 log.info("First poll for {} account {} — initializing lastSyncAt to now, "
                     + "skipping historical import", type, account.getId());
-                account.setLastSyncAt(Instant.now());
-                accountRepository.save(account);
+                accountRepository.updateLastSyncAt(account.getId(), Instant.now());
                 return;
             }
 
@@ -170,9 +169,11 @@ public class OrderPollingScheduler {
                 }
             }
 
-            // Update lastSyncAt to now so next poll only fetches newer orders
-            account.setLastSyncAt(Instant.now());
-            accountRepository.save(account);
+            // Update lastSyncAt to now so next poll only fetches newer orders.
+            // Using a targeted UPDATE instead of save() to avoid ObjectOptimisticLockingFailureException:
+            // the auth provider may have refreshed credentials mid-poll (bumping @Version), so the
+            // account entity we hold here can be stale. updateLastSyncAt() bypasses the version check.
+            accountRepository.updateLastSyncAt(account.getId(), Instant.now());
 
         } catch (Exception e) {
             log.error("Order polling failed for {} account {}: {}", type, account.getId(), e.getMessage(), e);
