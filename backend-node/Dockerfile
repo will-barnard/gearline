@@ -32,6 +32,13 @@ COPY --from=builder --chown=node:node /app/node_modules ./node_modules
 COPY --from=builder --chown=node:node /app/dist ./dist
 COPY --from=builder --chown=node:node /app/package.json ./package.json
 
+# Schema migrations, applied at startup by src/db/migrate.ts.
+#
+# Baked into the image rather than bind-mounted, so the running container can
+# never disagree with the code about what the schema should be.
+# Path overridable via MIGRATIONS_DIR.
+COPY --chown=node:node migrations ./migrations
+
 EXPOSE 3001
 
 # No npm wrapper in the entrypoint: npm would sit between the init system and

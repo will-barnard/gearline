@@ -19,36 +19,22 @@ services:
       - internal
 
   # ───────────────────────────────────────────────────────────────────────────
-  # Schema migrations.
+  # NOTE: there is no separate migration service.
   #
-  # These are the SAME .sql files Flyway has always run — moved out of the Java
-  # resources tree to ./migrations/ when the Java service was retired. Flyway
-  # remains the schema owner; the history in flyway_schema_history carries over
-  # untouched, so existing databases continue from V17 rather than re-running.
+  # The backend runs migrations itself at startup, before it accepts traffic
+  # (src/db/migrate.ts). It reads the same ./migrations/*.sql files and the same
+  # flyway_schema_history table, using Flyway's own checksum algorithm — so the
+  # V1–V17 history written by the Java service is recognised and not re-run, and
+  # real Flyway would still validate this database cleanly.
   #
-  # Runs as a one-shot container: it migrates, exits 0, and the backend waits
-  # on service_completed_successfully. A failed migration therefore blocks the
-  # deploy rather than letting the app start against a half-migrated schema.
+  # The `flyway/flyway` image was the obvious choice but is ~1 GB: it bundles
+  # JDBC drivers for Databricks, Snowflake, Oracle, DB2 and more. On a 20 GB VM
+  # pulling it filled the disk. A few hundred lines in the container that
+  # already exists costs nothing.
   #
-  # NOT listed in stateful_services — it must run on every deploy.
+  # Concurrent boots (Beachhead's blue/green swap) are serialised with a
+  # Postgres advisory lock.
   # ───────────────────────────────────────────────────────────────────────────
-  flyway:
-    image: flyway/flyway:10-alpine
-    command: >
-      -url=jdbc:postgresql://postgres:5432/gearline
-      -user=gearline
-      -password=${DB_PASSWORD}
-      -connectRetries=10
-      -baselineOnMigrate=false
-      migrate
-    volumes:
-      - ./migrations:/flyway/sql:ro
-    depends_on:
-      postgres:
-        condition: service_healthy
-    networks:
-      - internal
-
   backend:
     build:
       context: ./backend-node
@@ -77,9 +63,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      # Never start against an un-migrated schema.
-      flyway:
-        condition: service_completed_successfully
     networks:
       - internal
 

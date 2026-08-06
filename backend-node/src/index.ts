@@ -3,6 +3,7 @@ import type { Server } from 'node:http';
 import { createApp } from './app.js';
 import { config } from './config.js';
 import { closeDatabase, verifyDatabase } from './db/index.js';
+import { runMigrations } from './db/migrate.js';
 import { logger } from './logger.js';
 import { startQueue, stopQueue } from './queue/boss.js';
 import { startRetryScheduler, stopRetryScheduler } from './queue/retry-scheduler.js';
@@ -19,6 +20,12 @@ import { ensureBootstrapAdmin } from './bootstrap/admin.js';
  * as a confusing error inside a request handler.
  */
 async function main(): Promise<void> {
+  // Migrations first — everything below assumes the schema is current.
+  const migration = await runMigrations();
+  if (migration.applied.length > 0) {
+    logger.info({ applied: migration.applied }, 'Schema migrated');
+  }
+
   await verifyDatabase();
   await ensureBootstrapAdmin();
 

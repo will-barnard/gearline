@@ -112,6 +112,71 @@ Developer Portal, because it is hashed into the challenge response.
 
 ---
 
+## Stage 3.5 — Reclaim disk space (15 min)
+
+A 20 GB VM running three apps should have plenty of room. If a deploy fails
+with **`no space left on device`**, it is almost always Docker accumulating
+images and build cache — Beachhead builds a fresh image every deploy, and the
+old ones are not automatically removed.
+
+### Diagnose
+
+```bash
+df -h /                          # confirm the root filesystem is the problem
+docker system df                 # totals, with a RECLAIMABLE column
+docker system df -v | head -60   # itemised
+
+# Biggest images
+docker images --format '{{.Size}}\t{{.Repository}}:{{.Tag}}' | sort -h -r | head -25
+
+# Untagged layers left by previous builds — usually the bulk of it
+docker images -f dangling=true | wc -l
+```
+
+### Reclaim
+
+```bash
+# 1. Safe: dangling images, stopped containers, unused networks, build cache.
+#    Does NOT touch named volumes, so your database is untouched.
+docker system prune -f
+
+# 2. Build cache is often the single biggest item
+docker builder prune -af
+
+# 3. Images not used by any RUNNING container.
+#    Only after a successful deploy — this removes rollback images too.
+docker image prune -a -f
+
+df -h /
+```
+
+**Never run `docker system prune --volumes`** or `docker volume prune`. Those
+delete named volumes, which is where `gearline-postgres` lives.
+
+### Keeping it from recurring
+
+```bash
+# Cap the journal, which quietly grows to a gigabyte or more
+sudo journalctl --vacuum-size=200M
+
+# Weekly cleanup
+(crontab -l 2>/dev/null; echo "0 4 * * 0 docker system prune -f && docker builder prune -af") | crontab -
+```
+
+### One cause was mine
+
+The original compose used `flyway/flyway` for migrations. That image bundles
+JDBC drivers for Databricks, Snowflake, Oracle, DB2 and more — roughly **1 GB**
+to run 17 Postgres files. The failed pull was literally on
+`flyway/drivers/databricks-jdbc-2.6.38.jar`.
+
+**That service is gone.** The backend now applies migrations itself at startup
+(`src/db/migrate.ts`), reading the same `.sql` files and the same
+`flyway_schema_history` table with Flyway's own CRC32 algorithm. No new image,
+one fewer container.
+
+---
+
 ## Stage 4 — First deploy (30 min)
 
 Everything is already wired. Commit and push; the GitHub webhook triggers
@@ -120,18 +185,26 @@ Beachhead.
 ```bash
 cd ~/workspace/gearline
 
+# Migrations moved into the backend, which now owns them. The sandbox could not
+# delete the old copy, so remove it yourself:
+git rm -r --cached migrations 2>/dev/null; rm -rf migrations
+
 git add -A
 git commit -m "Replace Java backend with Node/Express; retire Redis and RabbitMQ"
 git push
 ```
 
+Confirm before pushing that `backend-node/migrations/` has all 17 `.sql` files
+and the repo root no longer has a `migrations/` directory.
+
 Watch the deployment log in the Beachhead dashboard. It should pass through:
 `CLONING → ENV_INJECTION → BUILDING → STARTING_CONTAINERS → PROXY_SETUP →
 VERIFY_HEALTH → SUCCESS`.
 
-### Then check the backend log for these five lines
+### Then check the backend log for these lines
 
 ```
+Schema is up to date                    alreadyApplied: 17   latest: "17"
 Database connection verified            schemaVersion: "17"
 JWT signing configured                  algorithm: "HS512"   secretBytes: 64
 Credential encryption enabled (AES-256-GCM)
@@ -143,12 +216,56 @@ Gearline backend listening              port: 3001
 
 | Line | If it's wrong |
 |---|---|
-| `schemaVersion: "17"` | Flyway didn't run. Check the `flyway` container's log. |
-| `algorithm` | Must match Stage 3. If not, `JWT_SECRET` differs between dashboard and what you measured. |
-| `Credential encryption enabled` | If it says the key is not set, `CREDENTIAL_ENCRYPTION_KEY` isn't reaching the container — check it's a **global** var with no Target Service. |
+| `Schema is up to date … 17` | Should say **up to date**, applying nothing — your database is already at V17. If it says "Applying pending migrations", it did not recognise the existing history. **Stop and tell me.** |
+| `schemaVersion: "17"` | As above. |
+| `algorithm` | Must be `HS512` (confirmed in Stage 3). If not, `JWT_SECRET` differs between the dashboard and the container. |
+| `Credential encryption enabled` | If it warns the key is not set, `CREDENTIAL_ENCRYPTION_KEY` isn't reaching the container — check it's a **global** var with no Target Service. |
 | `Job queue started` | pg-boss couldn't create its schema. Check DB permissions. |
 
 **STOP if:** any line is missing or wrong.
+
+### About checksum warnings
+
+You may see lines like:
+
+```
+Checksum differs from the recorded value   version: "3"  appliedChecksum: ...  fileChecksum: ...
+```
+
+**This is a warning, not a failure, and it is safe.** Those migrations already
+ran and are skipped by version — nothing is re-executed. It only means my CRC32
+reimplementation disagrees with the Flyway build that wrote the row.
+
+To check whether they actually line up, compare against what I computed from
+your files:
+
+```sql
+SELECT version, script, checksum FROM flyway_schema_history ORDER BY installed_rank;
+```
+
+| V | Expected checksum |
+|---|---|
+| 1 | -198003662 |
+| 2 | 823920888 |
+| 3 | -674746911 |
+| 4 | -1645537891 |
+| 5 | -500458098 |
+| 6 | -1961855221 |
+| 7 | -96398385 |
+| 8 | 2056835521 |
+| 9 | -676571716 |
+| 10 | 2130581263 |
+| 11 | 1192513754 |
+| 12 | 1670038623 |
+| 13 | -1089067369 |
+| 14 | 655725807 |
+| 15 | 673245316 |
+| 16 | 1136298079 |
+| 17 | -836236373 |
+
+If they all match, set `MIGRATE_STRICT_CHECKSUM=true` in the dashboard to turn
+future mismatches into hard failures — at that point a mismatch really would
+mean someone edited an applied migration.
 
 ### Rollback for this stage
 
