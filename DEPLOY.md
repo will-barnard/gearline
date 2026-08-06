@@ -25,6 +25,22 @@ npm run check          # typecheck (src + test) then vitest
 
 **Expect:** typecheck exits 0, tests pass.
 
+### Also validate the nginx config
+
+```bash
+cd ~/workspace/gearline
+chmod +x frontend/test-nginx-config.sh
+./frontend/test-nginx-config.sh
+```
+
+**Expect:** `nginx: configuration file /etc/nginx/nginx.conf test is successful`
+
+Run this on **every** change to `nginx.conf` or `proxy-common.conf`. A config
+error there is not a degraded service — nginx refuses to start and the frontend
+container crash-loops, taking the whole app down. It takes two seconds to check
+and is invisible to code review: a duplicate `proxy_read_timeout` (set both in
+the shared include and in a location block overriding it) did exactly this.
+
 > If `npm test` complains about `@rollup/rollup-*` or `@esbuild/*`, delete
 > `node_modules` and `package-lock.json` and re-run `npm install`. That's the
 > known npm optional-dependency bug, not a code problem.
