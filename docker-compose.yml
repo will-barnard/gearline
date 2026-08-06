@@ -18,53 +18,52 @@ services:
     networks:
       - internal
 
-  redis:
-    image: redis:7-alpine
-    expose:
-      - "6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks:
-      - internal
-
-  rabbitmq:
-    image: rabbitmq:3.13-management-alpine
-    environment:
-      RABBITMQ_DEFAULT_USER: gearline
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
-    expose:
-      - "5672"
-      - "15672"
-    healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "ping"]
-      interval: 15s
-      timeout: 10s
-      retries: 5
+  # ───────────────────────────────────────────────────────────────────────────
+  # Schema migrations.
+  #
+  # These are the SAME .sql files Flyway has always run — moved out of the Java
+  # resources tree to ./migrations/ when the Java service was retired. Flyway
+  # remains the schema owner; the history in flyway_schema_history carries over
+  # untouched, so existing databases continue from V17 rather than re-running.
+  #
+  # Runs as a one-shot container: it migrates, exits 0, and the backend waits
+  # on service_completed_successfully. A failed migration therefore blocks the
+  # deploy rather than letting the app start against a half-migrated schema.
+  #
+  # NOT listed in stateful_services — it must run on every deploy.
+  # ───────────────────────────────────────────────────────────────────────────
+  flyway:
+    image: flyway/flyway:10-alpine
+    command: >
+      -url=jdbc:postgresql://postgres:5432/gearline
+      -user=gearline
+      -password=${DB_PASSWORD}
+      -connectRetries=10
+      -baselineOnMigrate=false
+      migrate
+    volumes:
+      - ./migrations:/flyway/sql:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
     networks:
       - internal
 
   backend:
     build:
-      context: ./backend
+      context: ./backend-node
       dockerfile: Dockerfile
     environment:
-      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/gearline
-      SPRING_DATASOURCE_USERNAME: gearline
-      SPRING_DATASOURCE_PASSWORD: ${DB_PASSWORD}
-      SPRING_REDIS_HOST: redis
-      SPRING_REDIS_PORT: 6379
-      SPRING_RABBITMQ_HOST: rabbitmq
-      SPRING_RABBITMQ_PORT: 5672
-      SPRING_RABBITMQ_USERNAME: gearline
-      SPRING_RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
+      NODE_ENV: production
+      PORT: 3001
+      DATABASE_URL: postgres://gearline:${DB_PASSWORD}@postgres:5432/gearline
       ADMIN_EMAIL: ${ADMIN_EMAIL}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD}
       JWT_SECRET: ${JWT_SECRET}
       SHOPIFY_CLIENT_ID: ${SHOPIFY_CLIENT_ID}
       SHOPIFY_CLIENT_SECRET: ${SHOPIFY_CLIENT_SECRET}
+      SHOPIFY_FLOW_SECRET: ${SHOPIFY_FLOW_SECRET}
+      SHOPIFY_FLOW_TOKEN_HEADER: ${SHOPIFY_FLOW_TOKEN_HEADER}
       REVERB_CLIENT_ID: ${REVERB_CLIENT_ID}
       REVERB_CLIENT_SECRET: ${REVERB_CLIENT_SECRET}
       EBAY_CLIENT_ID: ${EBAY_CLIENT_ID}
@@ -74,14 +73,13 @@ services:
       CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY}
       APP_BASE_URL: ${APP_BASE_URL}
     expose:
-      - "8080"
+      - "3001"
     depends_on:
       postgres:
         condition: service_healthy
-      redis:
-        condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
+      # Never start against an un-migrated schema.
+      flyway:
+        condition: service_completed_successfully
     networks:
       - internal
 
