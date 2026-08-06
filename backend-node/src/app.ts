@@ -41,6 +41,39 @@ export function createApp(): Express {
         if (res.statusCode >= 400) return 'warn';
         return 'info';
       },
+      /**
+       * ── Trimmed serialisers ────────────────────────────────────────────────
+       *
+       * pino-http's defaults serialise every request and response header. In
+       * production that is ~1.5 KB per line, and eBay alone broadcasts roughly
+       * 7,000 account-deletion notifications a day — about 14 MB/day, 5 GB/year,
+       * on a VM that has already run out of disk once.
+       *
+       * These keep what is actually useful for debugging (method, path, status,
+       * real client IP, user agent) and drop the rest. Full headers are still
+       * available at debug level via the raw request if ever needed.
+       *
+       * The client IP comes from x-forwarded-for because every request arrives
+       * through nginx; req.ip would otherwise be the container gateway.
+       */
+      serializers: {
+        req(req) {
+          const forwarded = req.headers['x-forwarded-for'];
+          const clientIp =
+            typeof forwarded === 'string' ? forwarded.split(',')[0]?.trim() : undefined;
+
+          return {
+            id: req.id,
+            method: req.method,
+            url: req.url,
+            ip: clientIp ?? req.remoteAddress,
+            ua: req.headers['user-agent'],
+          };
+        },
+        res(res) {
+          return { statusCode: res.statusCode };
+        },
+      },
     }),
   );
 

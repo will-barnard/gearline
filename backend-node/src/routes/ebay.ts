@@ -268,23 +268,98 @@ ebayNotificationsRouter.post(
         ? ((notification as Record<string, unknown>)['data'] as Record<string, unknown> | undefined)
         : undefined;
 
-    const username = data?.['username'];
-    const userId = data?.['userId'];
+    const username = data?.['username'] === undefined ? null : String(data['username']);
+    const userId = data?.['userId'] === undefined ? null : String(data['userId']);
 
-    log.info({ username, userId }, 'eBay account deletion notification received');
-
-    audit.recordMarketplaceEvent(
-      'WEBHOOK_RECEIVED',
-      'EBAY',
-      null,
-      'AccountDeletion',
-      String(userId ?? username ?? 'unknown'),
-      true,
-      null,
-      { username: String(username ?? ''), userId: String(userId ?? '') },
-    );
-
+    /**
+     * ── Acknowledge first, always ──────────────────────────────────────────
+     *
+     * eBay retries anything that is not 2xx, and repeated failures can get the
+     * endpoint marked unhealthy and the developer keyset DISABLED. Nothing
+     * below is allowed to change the status code.
+     */
     res.status(200).end();
+
+    /**
+     * ── Only record notifications that concern us ──────────────────────────
+     *
+     * eBay broadcasts account deletions to EVERY registered application, not
+     * just ones holding that user's data. Observed volume is roughly 7,000 a
+     * day; auditing all of them would add ~2.6 million rows a year to
+     * audit_events, essentially all for people who have never bought from this
+     * shop.
+     *
+     * Gearline holds marketplace buyer data only as denormalised JSON on
+     * imported orders, so "do we know this user" is a lookup on
+     * orders.buyer_info. Only matches are logged and audited.
+     *
+     * ── Match on USERNAME, not userId ──────────────────────────────────────
+     *
+     * The notification carries both a `username` and an opaque `userId` (e.g.
+     * "V1I8w7WiS92"). We only ever store the username: eBay's Fulfillment API
+     * exposes no stable numeric buyer id on an order, so ebay/order-mapper.ts
+     * writes the username into BOTH `username` and `externalBuyerId`.
+     *
+     * Matching on userId would therefore never hit. Both JSON fields are
+     * checked against the username because both hold it.
+     */
+    try {
+      if (!username) {
+        log.debug({ userId }, 'eBay deletion notification with no username — cannot match, ignoring');
+        return;
+      }
+
+      const match = await db
+        .selectFrom('orders')
+        .select(['id', 'external_order_id'])
+        .where('marketplace_type', '=', 'EBAY')
+        .where((eb) =>
+          eb.or([
+            eb(sql<string>`buyer_info->>'username'`, '=', username),
+            eb(sql<string>`buyer_info->>'externalBuyerId'`, '=', username),
+          ]),
+        )
+        .limit(1)
+        .executeTakeFirst();
+
+      if (!match) {
+        // The overwhelmingly common case — not our user.
+        log.debug({ username, userId }, 'eBay deletion notification for an unknown buyer — ignoring');
+        return;
+      }
+
+      /**
+       * We DO hold orders for this buyer. Logged at WARN and audited because it
+       * is a genuine GDPR/CCPA obligation: their personal data is in
+       * orders.buyer_info and orders.shipping_address, and someone has to decide
+       * what to erase. Deliberately NOT deleted automatically — the order itself
+       * is a financial record.
+       */
+      log.warn(
+        { username, userId, sampleOrderId: match.external_order_id },
+        'eBay account deletion for a buyer we hold order data for — review required',
+      );
+
+      audit.recordMarketplaceEvent(
+        'WEBHOOK_RECEIVED',
+        'EBAY',
+        null,
+        'AccountDeletion',
+        userId ?? username ?? 'unknown',
+        true,
+        null,
+        {
+          username: username ?? '',
+          userId: userId ?? '',
+          matchedOrder: match.external_order_id,
+          action: 'review-required',
+        },
+      );
+    } catch (err) {
+      // Never surface this — the response has already been sent, and eBay must
+      // not see a failure.
+      log.error({ err, username, userId }, 'Error handling eBay deletion notification');
+    }
   }),
 );
 

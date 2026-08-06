@@ -414,28 +414,74 @@ instead of `count: 321, pages: 7`.
 
 ---
 
-## Stage 6 — The Reverb inventory question (15 min)
+## Stage 6 — The Reverb inventory question — **RESOLVED**
 
-This is the open item I flagged. Your Java code contradicts itself: listing
-creation sends `inventory` as a flat integer, inventory sync sends it nested as
-`{ inventory: { total: n } }`. The mapper's own comment says flat is correct.
+The Java code contradicted itself: listing creation sent `inventory` as a flat
+integer, inventory sync sent it nested as `{ inventory: { total: n } }`, and the
+mapper's own comment said flat was correct.
 
-**Test it:**
+Rather than leave this needing a manual test, `updateInventory` now:
 
-1. Publish a product to Reverb (or pick one already live)
-2. Note its quantity on Reverb
-3. Change the quantity in Shopify (or trigger an inventory sync in Gearline)
-4. Check Reverb again
+1. Sends the **flat** form, matching create and the documented shape
+2. **Reads the listing back** and confirms the quantity actually changed
+3. **Throws** if it did not
 
-**If the quantity did NOT change**, the nested form is wrong and inventory sync
-has never worked. Fix:
+That last step is the point. Reverb accepts an unrecognised body shape with a
+200 and ignores it, so a wrong shape is indistinguishable from success — the
+only symptom is stock drifting out of sync over weeks. The read-back converts a
+silent failure into a failed sync job with a clear message.
 
-```ts
-// backend-node/src/marketplace/reverb/client.ts, in updateInventory()
-json: { has_inventory: true, inventory: quantity },   // was: { inventory: { total: quantity } }
+Note the asymmetry that made the original confusion plausible: Reverb reports
+quantity as `inventory.total` on **read** even though it is written **flat**.
+
+**Nothing to do here beyond watching for this in the log:**
+
+```
+Reverb inventory update did not take effect for listing NNN:
+  requested 3, listing still reports 5
 ```
 
-Tell me either way and I'll make the change properly with a test.
+If that appears, the body shape needs revisiting — but you will know
+immediately rather than in a month.
+
+---
+
+## Stage 6.5 — Log and audit volume
+
+Two things in the first production log would have caused problems on a 20 GB VM.
+
+### eBay notification volume
+
+eBay broadcasts account-deletion notices to **every** registered app, not just
+ones holding that user's data. Observed: ~10 in 2 minutes, so roughly
+**7,200/day**. Each was producing an INFO line, a full-headers request line, and
+an `audit_events` row:
+
+- ~14 MB/day of logs → **~5 GB/year**
+- 7,200 audit rows/day → **~2.6 million/year**
+
+Essentially all for people who have never bought from this shop.
+
+**Fixed.** The endpoint now looks up whether we actually hold orders for that
+buyer. Unknown users are acknowledged and logged at debug only. A match is
+logged at WARN and audited, because that one *is* a genuine GDPR/CCPA
+obligation — their name and address are in `orders.buyer_info` and
+`orders.shipping_address`, and someone has to decide what to erase.
+
+Deliberately **not** deleted automatically: the order is a financial record.
+
+One correction found while writing this: eBay's notification carries both a
+`username` and an opaque `userId`, but the Fulfillment API exposes no stable
+buyer id on an order, so the mapper stores the **username** in both buyer
+fields. Matching on `userId` would never have hit anything.
+
+### Request log size
+
+pino-http serialises every request and response header by default — ~1.5 KB per
+line. Now trimmed to method, path, status, real client IP (from
+`x-forwarded-for`, since everything arrives via nginx) and user agent.
+
+**Roughly 10x less log volume**, with nothing lost that helps debugging.
 
 ---
 

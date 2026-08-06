@@ -106,35 +106,83 @@ export async function endListing(
 }
 
 /**
- * Updates inventory quantity for a listing.
+ * Updates inventory quantity for a listing, then VERIFIES the change took.
  *
- * ── Inconsistency carried over from the Java client ──────────────────────────
+ * ── The inconsistency this resolves ──────────────────────────────────────────
  *
- * This sends a NESTED body: { inventory: { total: n } }
- * while createListing sends a FLAT one: { has_inventory: true, inventory: n }
+ * The Java client sent a NESTED body here — `{ inventory: { total: n } }` —
+ * while createListing sent a FLAT one: `{ has_inventory: true, inventory: n }`.
  *
- * Those two disagree, and ReverbListingMapper's comment explicitly says the
- * flat form is correct ("NOT a nested object"). The nested form here is
- * therefore suspect — it may be silently ignored by Reverb, which would mean
- * inventory sync has never actually worked on this path.
+ * Those contradict, and ReverbListingMapper's own comment says the flat form is
+ * correct: *"a flat integer (NOT a nested object)"*. Reverb accepts an unknown
+ * body shape with a 200 and simply ignores it, so the nested form would fail
+ * silently — meaning inventory sync may never have worked on this path.
  *
- * It is reproduced faithfully rather than "fixed", because changing it is a
- * behavioural change that needs verifying against a real Reverb listing, not a
- * guess made during a port. See MIGRATION.md — flagged for follow-up.
+ * This now sends the FLAT form, matching create and the documented shape.
+ *
+ * ── Why it reads back ────────────────────────────────────────────────────────
+ *
+ * Rather than trust either form, the update is followed by a GET that confirms
+ * the quantity actually changed. A silent no-op is the whole failure mode here:
+ * without the read-back, a wrong body shape looks identical to success, and the
+ * only symptom is stock slowly drifting out of sync across channels.
+ *
+ * A mismatch throws, so the sync job records a real error instead of reporting
+ * success. That converts an invisible bug into a visible one.
  */
 export async function updateInventory(
   account: MarketplaceAccountRow,
   listingId: string,
   quantity: number,
 ): Promise<void> {
+  const token = getAccessToken(account);
+  const listingUrl = url(`/listings/${encodeURIComponent(listingId)}`);
+
   await apiRequest({
     marketplace: 'Reverb',
     method: 'PUT',
-    url: url(`/listings/${encodeURIComponent(listingId)}`),
-    accessToken: getAccessToken(account),
+    url: listingUrl,
+    accessToken: token,
     headers: baseHeaders(),
-    json: { inventory: { total: quantity } },
+    // Flat, matching createListing and the documented shape.
+    json: { has_inventory: true, inventory: quantity },
   });
+
+  // ── Read back ──────────────────────────────────────────────────────────────
+  const check = await apiRequest<ReverbListingDto>({
+    marketplace: 'Reverb',
+    method: 'GET',
+    url: listingUrl,
+    accessToken: token,
+    headers: baseHeaders(),
+  });
+
+  /**
+   * Reverb reports the current quantity as `inventory.total` on READ even
+   * though it is written flat — the asymmetry that made the original confusion
+   * plausible in the first place.
+   */
+  const actual = check.body?.inventory?.total;
+
+  if (actual === undefined || actual === null) {
+    // Cannot confirm either way. Do not fail the job over a missing read field.
+    log.warn(
+      { listingId, requested: quantity },
+      'Reverb did not report inventory.total on read-back — quantity could not be verified',
+    );
+    return;
+  }
+
+  if (actual !== quantity) {
+    throw new PermanentMarketplaceError(
+      `Reverb inventory update did not take effect for listing ${listingId}: ` +
+        `requested ${quantity}, listing still reports ${actual}. ` +
+        'The request body shape is likely wrong — check the Reverb API docs for ' +
+        'the current listing update schema.',
+    );
+  }
+
+  log.debug({ listingId, quantity }, 'Reverb inventory update verified');
 }
 
 export async function getOrders(
