@@ -223,37 +223,95 @@ export const reverbConnector: MarketplaceConnector = {
   // ── Orders ─────────────────────────────────────────────────────────────────
 
   /**
-   * Imports orders created after `since`, paginating until exhausted.
+   * Imports orders created after `since`.
    *
-   * The pagination is load-bearing: an earlier version hardcoded page=1 and
-   * silently dropped every order past the first 50. The loop stops when a page
-   * comes back short, which is how Reverb signals the last page.
+   * ── Reverb ignores created_after ────────────────────────────────────────────
    *
-   * A hard page cap guards against a malformed response that always returns a
-   * full page — without it this loops forever holding a job slot.
+   * Observed in production: passing `created_after` still returns the COMPLETE
+   * order history. A poll with a 7-minute window came back with 321 orders
+   * across 7 pages, the oldest several years old. Every cycle. Deduplication
+   * caught them all, so no bad data — but it burned 7 API calls and ~26 seconds
+   * per poll, and would eventually trip Reverb's rate limits.
+   *
+   * Rather than guess at the correct parameter name or date format, this filters
+   * CLIENT-SIDE. That is correct whether or not Reverb ever honours the filter.
+   *
+   * Two mechanisms:
+   *
+   *   1. Stop paginating once an entire page is older than `since`. Reverb
+   *      returns newest-first, so everything beyond that point is older still.
+   *      Checking a whole page rather than a single order keeps this safe if
+   *      the ordering is ever less strict than it appears.
+   *
+   *   2. Filter the mapped results by createdAt as a backstop, in case ordering
+   *      assumptions do not hold.
+   *
+   * ── Line items ─────────────────────────────────────────────────────────────
+   *
+   * The list endpoint does NOT include the nested `listing` object — only the
+   * single-order GET does. An order mapped from the list therefore has no SKU,
+   * which means NO INVENTORY DEDUCTION when it is imported.
+   *
+   * So each order that survives the date filter is re-fetched individually to
+   * get its line items. That is normally 0–2 calls per poll, versus the 321
+   * orders the list returns.
    */
   async importOrders(
     account: MarketplaceAccountRow,
     since: Date | null,
   ): Promise<ImportedOrder[]> {
     // Default to the last 24 hours, matching the Java fallback.
-    const sinceStr = (since ?? new Date(Date.now() - 86_400_000)).toISOString();
+    const sinceDate = since ?? new Date(Date.now() - 86_400_000);
+    const sinceStr = sinceDate.toISOString();
+    const sinceMs = sinceDate.getTime();
 
     log.info({ since: sinceStr }, 'Importing Reverb orders');
 
     const current = await ensureValidToken(account);
-    const collected: ReturnType<typeof toImportedOrder>[] = [];
+
+    /** Newer than the watermark? Unparseable dates are kept, to fail safe. */
+    const isRecent = (order: ImportedOrder): boolean => {
+      if (!order.createdAt) return true;
+      const t = new Date(order.createdAt).getTime();
+      return Number.isNaN(t) || t >= sinceMs;
+    };
+
+    const recent: ImportedOrder[] = [];
 
     const MAX_PAGES = 100;
     let page = 1;
     let rawCount = 0;
+    let unidentified = 0;
+    let stoppedEarly = false;
 
     while (page <= MAX_PAGES) {
       const batch = await client.getOrders(current, sinceStr, page);
       if (batch.length === 0) break;
 
       rawCount += batch.length;
-      for (const dto of batch) collected.push(toImportedOrder(dto));
+
+      let pageHadRecent = false;
+
+      for (const dto of batch) {
+        const mapped = toImportedOrder(dto);
+
+        // toImportedOrder returns null when there is no identifiable ID.
+        if (!mapped) {
+          unidentified++;
+          continue;
+        }
+
+        if (isRecent(mapped)) {
+          pageHadRecent = true;
+          recent.push(mapped);
+        }
+      }
+
+      // Whole page older than the watermark — everything after it is older too.
+      if (!pageHadRecent) {
+        stoppedEarly = true;
+        break;
+      }
 
       if (batch.length < PER_PAGE) break;
       page++;
@@ -263,17 +321,49 @@ export const reverbConnector: MarketplaceConnector = {
       log.warn({ maxPages: MAX_PAGES }, 'Reverb order import hit the page cap — results truncated');
     }
 
-    // toImportedOrder returns null for orders with no identifiable ID. Filter
-    // them here so they never reach OrderImportService.
-    const mapped = collected.filter((o): o is ImportedOrder => o !== null);
-    const skipped = rawCount - mapped.length;
-
-    if (skipped > 0) {
-      log.warn({ skipped }, 'Skipped Reverb order(s) with no identifiable ID');
+    if (unidentified > 0) {
+      log.warn({ skipped: unidentified }, 'Skipped Reverb order(s) with no identifiable ID');
     }
 
-    log.info({ count: mapped.length, pages: page }, 'Fetched Reverb orders');
-    return mapped;
+    log.info(
+      { scanned: rawCount, recent: recent.length, pages: page, stoppedEarly },
+      'Fetched Reverb orders',
+    );
+
+    if (recent.length === 0) return [];
+
+    /**
+     * Re-fetch each recent order individually for its line items.
+     *
+     * A failure here drops that order from the batch rather than importing it
+     * without line items — an order with no SKU imports silently and never
+     * deducts inventory, which is worse than retrying next cycle. The polling
+     * scheduler does not advance lastSyncAt on failure, so it will be retried.
+     */
+    const detailed: ImportedOrder[] = [];
+
+    for (const summary of recent) {
+      try {
+        const full = await this.importOrder(current, summary.externalOrderId);
+
+        if (full && full.lineItems.length > 0) {
+          detailed.push(full);
+        } else if (full) {
+          log.warn(
+            { externalOrderId: summary.externalOrderId },
+            'Reverb order detail still has no line items — skipping so inventory is not silently missed',
+          );
+        }
+      } catch (err) {
+        log.error(
+          { err, externalOrderId: summary.externalOrderId },
+          'Failed to fetch Reverb order detail — will retry next poll',
+        );
+      }
+    }
+
+    log.info({ count: detailed.length }, 'Reverb orders ready for import');
+    return detailed;
   },
 
   async importOrder(

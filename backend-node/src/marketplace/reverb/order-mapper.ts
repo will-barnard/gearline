@@ -74,7 +74,21 @@ function mapLineItems(dto: ReverbOrderDto, resolvedOrderId: string): OrderLineIt
   const listing = dto.listing;
 
   if (!listing) {
-    log.warn({ orderId: resolvedOrderId }, 'Reverb order has no listing object — line items empty');
+    /**
+     * DEBUG, not WARN — this is the normal case, not an anomaly.
+     *
+     * Reverb's LIST endpoint (/my/orders/selling/all) omits the nested
+     * `listing` object entirely; only the single-order GET includes it. At WARN
+     * this fired 321 times per poll cycle, roughly 46k lines a day.
+     *
+     * The connector re-fetches each genuinely-new order individually to get its
+     * line items, and warns there if they are still missing — which WOULD be a
+     * real anomaly, since an order with no SKU never deducts inventory.
+     */
+    log.debug(
+      { orderId: resolvedOrderId },
+      'Reverb order has no listing object (expected from the list endpoint)',
+    );
     return [];
   }
 

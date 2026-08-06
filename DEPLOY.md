@@ -357,6 +357,63 @@ Then click **Send Test Notification** in the portal — it should verify.
 
 ---
 
+## Stage 5.5 — Two Reverb issues found in the first production log
+
+Both surfaced on the first real poll and are now fixed. Redeploy to pick them up.
+
+### 1. Reverb ignores `created_after`
+
+A poll with a 7-minute window returned **321 orders across 7 pages**, the oldest
+several years old — the complete order history, every 10 minutes. Deduplication
+caught them all (`imported: 0, failed: 0`), so no bad data, but it burned 7 API
+calls and ~26 seconds per cycle and would eventually hit Reverb's rate limits.
+
+Rather than guess at the right parameter name or date format, the connector now
+filters **client-side**, which is correct whether or not Reverb honours the
+filter:
+
+- Stops paginating once an entire page is older than the watermark (Reverb
+  returns newest-first; checking a whole page rather than one order keeps it
+  safe if ordering is ever less strict)
+- Filters mapped results by `createdAt` as a backstop
+- Unparseable or missing dates are **kept**, so a date-format change degrades to
+  the old behaviour rather than silently dropping orders
+
+**Effect: 1,008 list calls/day → 144.**
+
+### 2. Reverb list orders have no line items — inventory would not deduct
+
+Every one of the 321 orders logged *"no listing object — line items empty"*.
+Reverb's LIST endpoint omits the nested `listing` object; only the single-order
+GET includes it.
+
+That means a genuinely new Reverb order would have imported with **no line
+items → no SKU → no inventory deduction**. Silent, and only visible as stock
+drifting out of sync.
+
+The Java service had the identical code path, so this is **pre-existing, not a
+regression** — the port simply made it visible by logging it.
+
+Fixed: each order that survives the date filter is re-fetched individually for
+its line items (normally 0–2 calls per poll). If the detail *still* has no line
+items, the order is **skipped rather than imported**, because importing it
+without a SKU means silently missing the inventory change. The scheduler does
+not advance `lastSyncAt` on failure, so it retries next cycle.
+
+The per-order log line dropped from WARN to DEBUG — it is the normal case for
+the list endpoint, and at WARN it produced ~46,000 lines a day on a disk you had
+just cleared.
+
+**Verify after redeploying:** the next poll should log roughly
+
+```
+Fetched Reverb orders   scanned: 50   recent: 0   pages: 1   stoppedEarly: true
+```
+
+instead of `count: 321, pages: 7`.
+
+---
+
 ## Stage 6 — The Reverb inventory question (15 min)
 
 This is the open item I flagged. Your Java code contradicts itself: listing
