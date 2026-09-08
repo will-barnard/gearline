@@ -57,11 +57,15 @@ function getString(map: Record<string, unknown>, key: string): string | null {
  * "Localized contents model for English can't be blank" with an echoed listing
  * showing make "Unknown", a blank model and a $0.00 price.
  *
+ * `conditionUuid` is resolved by the caller rather than looked up here, so this
+ * stays a pure synchronous mapping with no network of its own.
+ *
  * Reference: https://www.reverb-api.com/docs/create-listings
  */
 export function toReverbRequest(
   product: ProductRow,
   request: PublishListingRequest,
+  conditionUuid: string,
 ): Record<string, unknown> {
   const listing: Record<string, unknown> = {};
   const extra = request.extraParams ?? {};
@@ -89,7 +93,13 @@ export function toReverbRequest(
   listing['has_inventory'] = true;
   listing['inventory'] = request.quantity;
 
-  listing['condition'] = { slug: mapCondition(product.condition) };
+  /**
+   * Reverb identifies conditions by UUID, not slug — `{ slug: 'excellent' }` is
+   * rejected with `400 condition[uuid] is missing`. The caller resolves the
+   * slug from mapCondition() / the condition_mapping override through
+   * conditions.ts, which reads the live catalogue.
+   */
+  listing['condition'] = { uuid: conditionUuid };
 
   // Reverb REQUIRES make and model to publish. Falling back to "Unknown" is
   // what the Java version did — an omitted make is rejected outright, whereas

@@ -18,7 +18,8 @@ import {
 } from '../types.js';
 import { reverbAuthProvider } from './auth-provider.js';
 import * as client from './client.js';
-import { toReverbRequest } from './listing-mapper.js';
+import { resolveConditionUuid } from './conditions.js';
+import { mapCondition, toReverbRequest } from './listing-mapper.js';
 import { toImportedOrder } from './order-mapper.js';
 import type { ReverbListingDto } from './types.js';
 
@@ -85,6 +86,22 @@ function buildMetadata(dto: ReverbListingDto): Record<string, unknown> {
   return metadata;
 }
 
+/**
+ * Resolves the condition UUID for a publish, honouring a per-listing
+ * `condition_mapping` override before the product's own condition.
+ *
+ * The override is a slug or display name ("b-stock", "Non Functioning"), not a
+ * UUID — operators set it from the Reverb vocabulary, not from internal IDs.
+ */
+async function conditionUuidFor(
+  account: MarketplaceAccountRow,
+  product: ProductRow,
+  request: PublishListingRequest,
+): Promise<string> {
+  const slug = request.conditionMapping ?? mapCondition(product.condition);
+  return resolveConditionUuid(account, slug);
+}
+
 function requireExternalId(listing: MarketplaceListingRow): string {
   if (!listing.external_listing_id) {
     throw new PermanentMarketplaceError(
@@ -120,7 +137,19 @@ export const reverbConnector: MarketplaceConnector = {
     log.info({ productId: product.id, sku: product.sku }, 'Publishing listing to Reverb');
 
     const current = await ensureValidToken(account);
-    const body = toReverbRequest(product, request);
+
+    let body: Record<string, unknown>;
+
+    try {
+      body = toReverbRequest(product, request, await conditionUuidFor(current, product, request));
+    } catch (err) {
+      // An unresolvable condition is permanent — retrying cannot invent one.
+      if (err instanceof PermanentMarketplaceError) {
+        log.error({ err, sku: product.sku }, 'Could not resolve Reverb condition');
+        return publishFailure(err.message);
+      }
+      throw err;
+    }
 
     try {
       const result = await client.createListing(current, body);
@@ -157,7 +186,18 @@ export const reverbConnector: MarketplaceConnector = {
     log.info({ externalId, sku: product.sku }, 'Updating Reverb listing');
 
     const current = await ensureValidToken(account);
-    const body = toReverbRequest(product, request);
+
+    let body: Record<string, unknown>;
+
+    try {
+      body = toReverbRequest(product, request, await conditionUuidFor(current, product, request));
+    } catch (err) {
+      if (err instanceof PermanentMarketplaceError) {
+        log.error({ err, externalId }, 'Could not resolve Reverb condition');
+        return publishFailure(err.message);
+      }
+      throw err;
+    }
 
     try {
       const result = await client.updateListing(current, externalId, body);

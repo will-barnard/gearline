@@ -5,6 +5,8 @@ import { readCredentials } from '../../security/credential-encryptor.js';
 import { apiRequest, isNotFound } from '../http.js';
 import { PermanentMarketplaceError } from '../types.js';
 import type {
+  ReverbListingCondition,
+  ReverbListingConditionsResponse,
   ReverbListingDto,
   ReverbOrderDto,
   ReverbOrdersResponse,
@@ -224,6 +226,35 @@ export async function getOrder(
     }
     throw err;
   }
+}
+
+/**
+ * Fetches the catalogue of listing conditions.
+ *
+ * Reverb identifies a listing's condition by UUID — `condition: { uuid }`.
+ * Sending `{ slug }` instead is rejected with
+ * `400 condition[uuid] is missing`.
+ *
+ * The UUIDs are stable but undocumented, so they are read from the API rather
+ * than hardcoded: a hardcoded table that drifts fails every publish with a
+ * message that points at the wrong thing.
+ */
+export async function getListingConditions(
+  account: MarketplaceAccountRow,
+): Promise<ReverbListingCondition[]> {
+  const response = await apiRequest<ReverbListingConditionsResponse | ReverbListingCondition[]>({
+    marketplace: 'Reverb',
+    method: 'GET',
+    url: url('/listing_conditions'),
+    accessToken: getAccessToken(account),
+    headers: baseHeaders(),
+  });
+
+  const body = response.body;
+
+  if (Array.isArray(body)) return body;
+
+  return body?.conditions ?? body?.listing_conditions ?? [];
 }
 
 /**

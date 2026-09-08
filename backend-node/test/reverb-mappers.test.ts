@@ -64,8 +64,10 @@ function request(overrides: Partial<PublishListingRequest> = {}): PublishListing
   };
 }
 
+const TEST_CONDITION_UUID = '11111111-2222-3333-4444-555555555555';
+
 function listingBody(p = product(), r = request()): Record<string, unknown> {
-  return toReverbRequest(p, r);
+  return toReverbRequest(p, r, TEST_CONDITION_UUID);
 }
 
 describe('ReverbListingMapper — condition slugs', () => {
@@ -95,7 +97,7 @@ describe('ReverbListingMapper — required fields', () => {
     // `listing` key, so the envelope makes the controller read an empty top
     // level and the publish fails with "Localized contents model ... can't be
     // blank". The fields must sit at the root.
-    const body = toReverbRequest(product(), request());
+    const body = toReverbRequest(product(), request(), TEST_CONDITION_UUID);
 
     expect(body).not.toHaveProperty('listing');
     expect(body['make']).toBeDefined();
@@ -103,6 +105,11 @@ describe('ReverbListingMapper — required fields', () => {
     expect(body['title']).toBeDefined();
     expect(body['description']).toBeDefined();
     expect(body['price']).toBeDefined();
+  });
+
+  it('sends condition as a UUID, never a slug', () => {
+    // `{ slug: 'excellent' }` is rejected with 400 condition[uuid] is missing.
+    expect(listingBody()['condition']).toEqual({ uuid: TEST_CONDITION_UUID });
   });
 
   it('sends inventory as a FLAT integer alongside has_inventory', () => {

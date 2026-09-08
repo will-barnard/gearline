@@ -92,6 +92,24 @@ export interface ReverbOrdersResponse {
   total_pages?: number;
 }
 
+/**
+ * GET /listing_conditions.
+ *
+ * Reverb has returned this as both a bare array and an object with a
+ * `conditions` key depending on the Accept-Version in play, so the parser
+ * tolerates either shape rather than assuming one.
+ */
+export interface ReverbListingCondition {
+  uuid?: string;
+  slug?: string;
+  display_name?: string;
+}
+
+export interface ReverbListingConditionsResponse {
+  conditions?: ReverbListingCondition[];
+  listing_conditions?: ReverbListingCondition[];
+}
+
 export interface ReverbShopResponse {
   shipping_profiles?: Array<{ id?: string | number; name?: string }>;
 }
