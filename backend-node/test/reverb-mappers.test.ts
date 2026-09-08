@@ -65,9 +65,13 @@ function request(overrides: Partial<PublishListingRequest> = {}): PublishListing
 }
 
 const TEST_CONDITION_UUID = '11111111-2222-3333-4444-555555555555';
+const TEST_CATEGORY_UUID = '99999999-8888-7777-6666-555555555555';
 
 function listingBody(p = product(), r = request()): Record<string, unknown> {
-  return toReverbRequest(p, r, TEST_CONDITION_UUID);
+  return toReverbRequest(p, r, {
+    conditionUuid: TEST_CONDITION_UUID,
+    categoryUuid: TEST_CATEGORY_UUID,
+  });
 }
 
 /**
@@ -140,7 +144,10 @@ describe('ReverbListingMapper — required fields', () => {
     // `listing` key, so the envelope makes the controller read an empty top
     // level and the publish fails with "Localized contents model ... can't be
     // blank". The fields must sit at the root.
-    const body = toReverbRequest(product(), request(), TEST_CONDITION_UUID);
+    const body = toReverbRequest(product(), request(), {
+      conditionUuid: TEST_CONDITION_UUID,
+      categoryUuid: TEST_CATEGORY_UUID,
+    });
 
     expect(body).not.toHaveProperty('listing');
     expect(body['make']).toBeDefined();
@@ -153,6 +160,39 @@ describe('ReverbListingMapper — required fields', () => {
   it('sends condition as a UUID, never a slug', () => {
     // `{ slug: 'excellent' }` is rejected with 400 condition[uuid] is missing.
     expect(listingBody()['condition']).toEqual({ uuid: TEST_CONDITION_UUID });
+  });
+
+  it('always sends a category — Reverb calls it product type and requires it', () => {
+    // Without it the listing is created but sticks as a draft on
+    // "Product type must be specified", invisible in the storefront.
+    expect(listingBody()['categories']).toEqual([{ uuid: TEST_CATEGORY_UUID }]);
+  });
+
+  it('marks UPC as not applicable', () => {
+    // Reverb blocks publishing unless a UPC is present or explicitly waived.
+    // String, not boolean.
+    expect(listingBody()['upc_does_not_apply']).toBe('true');
+  });
+
+  it('publishes as a string when asked, and stays a draft otherwise', () => {
+    /**
+     * POST /listings always creates a DRAFT. Without `publish` the listing never
+     * reaches the storefront, yet still holds its SKU — so the next attempt
+     * fails with "SKU already exists in your shop" and the operator sees a
+     * listing nowhere at all.
+     *
+     * Reverb wants the STRING "true", not a boolean.
+     */
+    const live = toReverbRequest(product(), request(), {
+      conditionUuid: TEST_CONDITION_UUID,
+      categoryUuid: TEST_CATEGORY_UUID,
+      publish: true,
+    });
+    expect(live['publish']).toBe('true');
+
+    // Update path: no publish key at all, so an update cannot revive an ended
+    // listing.
+    expect(listingBody()).not.toHaveProperty('publish');
   });
 
   it('sends inventory as a FLAT integer alongside has_inventory', () => {

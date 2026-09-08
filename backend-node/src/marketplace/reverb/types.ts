@@ -110,6 +110,24 @@ export interface ReverbListingConditionsResponse {
   listing_conditions?: ReverbListingCondition[];
 }
 
+/**
+ * GET /categories/flat.
+ *
+ * Same tolerance as the conditions parser: the array has arrived both bare and
+ * under a `categories` key, and the human-readable name has appeared as both
+ * `full_name` ("Parts & Accessories / Cables") and plain `name`.
+ */
+export interface ReverbCategory {
+  uuid?: string;
+  name?: string;
+  full_name?: string;
+  slug?: string;
+}
+
+export interface ReverbCategoriesResponse {
+  categories?: ReverbCategory[];
+}
+
 export interface ReverbShopResponse {
   shipping_profiles?: Array<{ id?: string | number; name?: string }>;
 }

@@ -18,6 +18,7 @@ import {
 } from '../types.js';
 import { reverbAuthProvider } from './auth-provider.js';
 import * as client from './client.js';
+import { configuredCategoryFor, resolveCategoryUuid } from './categories.js';
 import { resolveConditionUuid } from './conditions.js';
 import { mapCondition, toReverbRequest } from './listing-mapper.js';
 import { toImportedOrder } from './order-mapper.js';
@@ -102,6 +103,70 @@ async function conditionUuidFor(
   return resolveConditionUuid(account, slug);
 }
 
+/**
+ * Resolves the Reverb category UUID for a publish.
+ *
+ * Fails permanently when nothing is configured. The alternative — publishing
+ * without a category — produces a listing that is silently stuck as a draft,
+ * which is exactly the failure mode this whole path exists to avoid.
+ */
+async function categoryUuidFor(
+  account: MarketplaceAccountRow,
+  product: ProductRow,
+  request: PublishListingRequest,
+): Promise<string> {
+  const configured = configuredCategoryFor(account, product, request.categoryId);
+
+  if (!configured) {
+    throw new PermanentMarketplaceError(
+      `No Reverb category configured for product type "${product.category ?? '(none)'}". ` +
+        'Reverb will not publish a listing without one. Add an entry to ' +
+        'reverb_category_map in the Reverb account settings (e.g. ' +
+        '{"Cables": "Parts & Accessories / Cables"}), set reverb_default_category, ' +
+        "or set category_id on this listing's overrides.",
+    );
+  }
+
+  return resolveCategoryUuid(account, configured);
+}
+
+/**
+ * Adds the missing half of Reverb's SKU-collision message.
+ *
+ * "SKU already exists in your shop" is accurate but hides the usual cause: a
+ * DRAFT from an earlier failed publish. Drafts are invisible in the storefront
+ * yet still hold their SKU, so the operator sees no listing anywhere and no
+ * amount of retrying will ever succeed. Naming the cause turns a dead end into
+ * a two-minute fix.
+ */
+function explainSkuConflict(message: string, sku: string): string {
+  if (!/sku already exists/i.test(message)) return message;
+
+  return (
+    `${message} — a listing on Reverb already uses SKU "${sku}". This is often a ` +
+    'draft left by an earlier failed publish: drafts do not appear in your ' +
+    'storefront but still hold their SKU. Check Selling → Listings → Drafts on ' +
+    'Reverb and delete or publish it, then retry.'
+  );
+}
+
+/**
+ * Whether a newly created listing should go live immediately.
+ *
+ * Defaults to TRUE. A Reverb create always produces a draft, and a draft is
+ * invisible in the storefront while still consuming its SKU — so the default
+ * has to match what "publish to Reverb" plainly means, or every listing needs a
+ * second manual step on Reverb.
+ *
+ * Sellers who want to review on Reverb before going live can set
+ * `reverb_publish_immediately: false` in the account's sync_settings; listings
+ * then stay as drafts.
+ */
+function shouldPublishImmediately(account: MarketplaceAccountRow): boolean {
+  const setting = account.sync_settings?.['reverb_publish_immediately'];
+  return setting !== false && setting !== 'false';
+}
+
 function requireExternalId(listing: MarketplaceListingRow): string {
   if (!listing.external_listing_id) {
     throw new PermanentMarketplaceError(
@@ -141,11 +206,16 @@ export const reverbConnector: MarketplaceConnector = {
     let body: Record<string, unknown>;
 
     try {
-      body = toReverbRequest(product, request, await conditionUuidFor(current, product, request));
+      body = toReverbRequest(product, request, {
+        conditionUuid: await conditionUuidFor(current, product, request),
+        categoryUuid: await categoryUuidFor(current, product, request),
+        publish: shouldPublishImmediately(current),
+      });
     } catch (err) {
-      // An unresolvable condition is permanent — retrying cannot invent one.
+      // An unresolvable condition or category is permanent — retrying cannot
+      // invent one.
       if (err instanceof PermanentMarketplaceError) {
-        log.error({ err, sku: product.sku }, 'Could not resolve Reverb condition');
+        log.error({ err, sku: product.sku }, 'Could not build the Reverb listing');
         return publishFailure(err.message);
       }
       throw err;
@@ -169,7 +239,7 @@ export const reverbConnector: MarketplaceConnector = {
     } catch (err) {
       if (err instanceof PermanentMarketplaceError) {
         log.error({ err, sku: product.sku }, 'Reverb rejected the listing');
-        return publishFailure(err.message);
+        return publishFailure(explainSkuConflict(err.message, product.sku));
       }
       throw err; // retryable — let the consumer's ladder handle it
     }
@@ -190,10 +260,15 @@ export const reverbConnector: MarketplaceConnector = {
     let body: Record<string, unknown>;
 
     try {
-      body = toReverbRequest(product, request, await conditionUuidFor(current, product, request));
+      // No `publish` on update — see ReverbRequestOptions. An update must not
+      // change listing state.
+      body = toReverbRequest(product, request, {
+        conditionUuid: await conditionUuidFor(current, product, request),
+        categoryUuid: await categoryUuidFor(current, product, request),
+      });
     } catch (err) {
       if (err instanceof PermanentMarketplaceError) {
-        log.error({ err, externalId }, 'Could not resolve Reverb condition');
+        log.error({ err, externalId }, 'Could not build the Reverb listing');
         return publishFailure(err.message);
       }
       throw err;

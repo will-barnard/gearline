@@ -5,6 +5,8 @@ import { readCredentials } from '../../security/credential-encryptor.js';
 import { apiRequest, isNotFound } from '../http.js';
 import { PermanentMarketplaceError } from '../types.js';
 import type {
+  ReverbCategoriesResponse,
+  ReverbCategory,
   ReverbListingCondition,
   ReverbListingConditionsResponse,
   ReverbListingDto,
@@ -255,6 +257,30 @@ export async function getListingConditions(
   if (Array.isArray(body)) return body;
 
   return body?.conditions ?? body?.listing_conditions ?? [];
+}
+
+/**
+ * Fetches the full category tree.
+ *
+ * Reverb calls this "product type" in the listing editor, and refuses to
+ * publish a listing without one.
+ */
+export async function getCategories(
+  account: MarketplaceAccountRow,
+): Promise<ReverbCategory[]> {
+  const response = await apiRequest<ReverbCategoriesResponse | ReverbCategory[]>({
+    marketplace: 'Reverb',
+    method: 'GET',
+    url: url('/categories/flat'),
+    accessToken: getAccessToken(account),
+    headers: baseHeaders(),
+  });
+
+  const body = response.body;
+
+  if (Array.isArray(body)) return body;
+
+  return body?.categories ?? [];
 }
 
 /**

@@ -83,15 +83,33 @@ function getString(map: Record<string, unknown>, key: string): string | null {
  * "Localized contents model for English can't be blank" with an echoed listing
  * showing make "Unknown", a blank model and a $0.00 price.
  *
- * `conditionUuid` is resolved by the caller rather than looked up here, so this
- * stays a pure synchronous mapping with no network of its own.
+ * The condition UUID is resolved by the caller rather than looked up here, so
+ * this stays a pure synchronous mapping with no network of its own.
  *
  * Reference: https://www.reverb-api.com/docs/create-listings
  */
+export interface ReverbRequestOptions {
+  /** Resolved by the caller via conditions.ts — Reverb wants a UUID, not a name. */
+  conditionUuid: string;
+  /**
+   * Reverb category UUID — the listing editor's "product type". Required:
+   * Reverb blocks publishing without one.
+   */
+  categoryUuid: string;
+  /**
+   * Emit `publish: "true"`, taking the listing live on creation.
+   *
+   * Omitted on UPDATE. Reverb treats `publish` as a state transition, so
+   * sending it on every update would silently revive a listing the operator had
+   * ended — turning an inventory sync into a relist.
+   */
+  publish?: boolean;
+}
+
 export function toReverbRequest(
   product: ProductRow,
   request: PublishListingRequest,
-  conditionUuid: string,
+  options: ReverbRequestOptions,
 ): Record<string, unknown> {
   const listing: Record<string, unknown> = {};
   const extra = request.extraParams ?? {};
@@ -125,13 +143,41 @@ export function toReverbRequest(
    * slug from mapCondition() / the condition_mapping override through
    * conditions.ts, which reads the live catalogue.
    */
-  listing['condition'] = { uuid: conditionUuid };
+  listing['condition'] = { uuid: options.conditionUuid };
 
   // Reverb REQUIRES make and model to publish. Falling back to "Unknown" is
   // what the Java version did — an omitted make is rejected outright, whereas
   // "Unknown" at least produces a live listing the operator can correct.
   listing['make'] = product.brand ?? 'Unknown';
   listing['sku'] = product.sku;
+
+  /**
+   * ── UPC ────────────────────────────────────────────────────────────────────
+   *
+   * Reverb blocks publishing until a listing either carries a UPC/EAN or is
+   * explicitly marked as having none. Like `publish`, the flag is a STRING.
+   *
+   * This shop does not use UPCs, so the flag is always set. If that changes,
+   * the real source is the Shopify variant's `barcode` field — which would need
+   * a `upc` column on products and a line in the webhook processor's
+   * extractProductFields; send `upc` instead of this flag when one is present.
+   */
+  listing['upc_does_not_apply'] = 'true';
+
+  /**
+   * ── Draft vs live ──────────────────────────────────────────────────────────
+   *
+   * POST /listings creates a DRAFT. The Reverb docs are explicit: "this is
+   * intended to create a draft on your live Reverb account." A draft does not
+   * appear in the seller's storefront and cannot be bought — but it DOES hold
+   * its SKU, so a retry fails with "SKU already exists in your shop".
+   *
+   * `publish` is Reverb's state transition and is a STRING, not a boolean.
+   * Sending it on the create takes the listing live immediately.
+   */
+  if (options.publish) {
+    listing['publish'] = 'true';
+  }
 
   // ── Instrument attributes (from extraParams passthrough) ───────────────────
 
@@ -170,9 +216,12 @@ export function toReverbRequest(
 
   // ── Category ───────────────────────────────────────────────────────────────
 
-  if (request.categoryId) {
-    listing['categories'] = [{ uuid: request.categoryId }];
-  }
+  /**
+   * Reverb calls this "product type" and will not publish without it. The
+   * caller resolves it — from the listing's category_id override, the account's
+   * category map, or its default — via categories.ts.
+   */
+  listing['categories'] = [{ uuid: options.categoryUuid }];
 
   // ── Shipping ───────────────────────────────────────────────────────────────
 
