@@ -14,29 +14,55 @@ const log = loggerFor('reverb-listing-mapper');
  */
 
 /**
- * Maps ProductCondition to Reverb condition slugs.
+ * Maps ProductCondition to a Reverb condition NAME.
+ *
+ * ── Reverb offers exactly eight, identified by display name ──────────────────
+ *
+ * Brand New, Mint, Excellent, Very Good, Good, Fair, Poor, Non Functioning.
+ * GET /listing_conditions returns only `uuid`, `display_name` and
+ * `description` — there is no `slug` field, and the earlier slug-shaped values
+ * here were invented. Three of them named nothing at all:
+ *
+ *   'b-stock'         — Reverb retired B-Stock
+ *   'used'            — never existed
+ *   'used' (default)  — likewise, and it was the fallback for a null condition
+ *
+ * 'used' was the worst of the three, because it is what the Shopify importer
+ * stamps on every product it creates. Every Shopify-sourced listing resolved to
+ * a condition Reverb has never heard of.
+ *
+ * ── The two judgement calls ─────────────────────────────────────────────────
+ *
+ * USED and OPEN_BOX have no Reverb equivalent, so they are mapped by meaning:
+ *
+ *   USED     -> Good. Reverb's Good is "functional with visible wear" — the
+ *               honest middle. A bare USED carries no evidence for anything
+ *               better, and understating beats overstating on a listing a
+ *               buyer can dispute. Also the fallback for a missing condition.
+ *   OPEN_BOX -> Mint. Reverb's own wording for Mint is "essentially new
+ *               original condition but have been opened or played", which is
+ *               what open-box means.
  *
  * Written as a Record rather than a switch so TypeScript enforces
- * exhaustiveness: adding a ProductCondition without a Reverb slug becomes a
- * compile error instead of a runtime fallback to "used", which would silently
- * misrepresent an item's condition on a live listing.
+ * exhaustiveness: adding a ProductCondition without a Reverb condition becomes
+ * a compile error rather than a silent misrepresentation on a live listing.
  */
-const CONDITION_SLUGS: Record<ProductCondition, string> = {
-  NEW: 'brand-new',
-  MINT: 'mint',
-  EXCELLENT: 'excellent',
-  VERY_GOOD: 'very-good',
-  GOOD: 'good',
-  FAIR: 'fair',
-  POOR: 'poor',
-  OPEN_BOX: 'b-stock',
-  USED: 'used',
-  FOR_PARTS: 'non-functioning',
+const CONDITION_NAMES: Record<ProductCondition, string> = {
+  NEW: 'Brand New',
+  MINT: 'Mint',
+  EXCELLENT: 'Excellent',
+  VERY_GOOD: 'Very Good',
+  GOOD: 'Good',
+  FAIR: 'Fair',
+  POOR: 'Poor',
+  OPEN_BOX: 'Mint',
+  USED: 'Good',
+  FOR_PARTS: 'Non Functioning',
 };
 
 export function mapCondition(condition: ProductCondition | null): string {
-  if (!condition) return 'used';
-  return CONDITION_SLUGS[condition] ?? 'used';
+  if (!condition) return 'Good';
+  return CONDITION_NAMES[condition] ?? 'Good';
 }
 
 function getString(map: Record<string, unknown>, key: string): string | null {

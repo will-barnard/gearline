@@ -70,24 +70,67 @@ function listingBody(p = product(), r = request()): Record<string, unknown> {
   return toReverbRequest(p, r, TEST_CONDITION_UUID);
 }
 
-describe('ReverbListingMapper — condition slugs', () => {
+/**
+ * The complete set Reverb offers, verified against GET /listing_conditions on
+ * 2026-09-08. Anything mapCondition emits MUST be in here — a name outside this
+ * set resolves to no UUID and fails the publish.
+ */
+const REVERB_CONDITIONS = [
+  'Brand New',
+  'Mint',
+  'Excellent',
+  'Very Good',
+  'Good',
+  'Fair',
+  'Poor',
+  'Non Functioning',
+] as const;
+
+const ALL_PRODUCT_CONDITIONS = [
+  'NEW',
+  'MINT',
+  'EXCELLENT',
+  'VERY_GOOD',
+  'GOOD',
+  'FAIR',
+  'POOR',
+  'OPEN_BOX',
+  'USED',
+  'FOR_PARTS',
+] as const;
+
+describe('ReverbListingMapper — condition names', () => {
   it.each([
-    ['NEW', 'brand-new'],
-    ['MINT', 'mint'],
-    ['EXCELLENT', 'excellent'],
-    ['VERY_GOOD', 'very-good'],
-    ['GOOD', 'good'],
-    ['FAIR', 'fair'],
-    ['POOR', 'poor'],
-    ['OPEN_BOX', 'b-stock'],
-    ['USED', 'used'],
-    ['FOR_PARTS', 'non-functioning'],
-  ] as const)('%s -> %s', (condition, slug) => {
-    expect(mapCondition(condition)).toBe(slug);
+    ['NEW', 'Brand New'],
+    ['MINT', 'Mint'],
+    ['EXCELLENT', 'Excellent'],
+    ['VERY_GOOD', 'Very Good'],
+    ['GOOD', 'Good'],
+    ['FAIR', 'Fair'],
+    ['POOR', 'Poor'],
+    // Reverb retired B-Stock; Mint is its wording for "opened but as-new".
+    ['OPEN_BOX', 'Mint'],
+    // Reverb has no "Used"; Good is the honest middle, and USED is what the
+    // Shopify importer stamps on every product it creates.
+    ['USED', 'Good'],
+    ['FOR_PARTS', 'Non Functioning'],
+  ] as const)('%s -> %s', (condition, name) => {
+    expect(mapCondition(condition)).toBe(name);
   });
 
-  it('defaults to "used" when condition is missing', () => {
-    expect(mapCondition(null)).toBe('used');
+  it('defaults to "Good" when condition is missing', () => {
+    expect(mapCondition(null)).toBe('Good');
+  });
+
+  /**
+   * The regression that mattered: the old table emitted 'b-stock', 'used' and a
+   * 'used' default, none of which Reverb has ever offered.
+   */
+  it('never emits a condition Reverb does not offer', () => {
+    for (const condition of ALL_PRODUCT_CONDITIONS) {
+      expect(REVERB_CONDITIONS).toContain(mapCondition(condition));
+    }
+    expect(REVERB_CONDITIONS).toContain(mapCondition(null));
   });
 });
 
