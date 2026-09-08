@@ -64,9 +64,8 @@ function request(overrides: Partial<PublishListingRequest> = {}): PublishListing
   };
 }
 
-/** Unwraps the { listing: {...} } envelope. */
 function listingBody(p = product(), r = request()): Record<string, unknown> {
-  return toReverbRequest(p, r).listing as Record<string, unknown>;
+  return toReverbRequest(p, r);
 }
 
 describe('ReverbListingMapper — condition slugs', () => {
@@ -91,6 +90,21 @@ describe('ReverbListingMapper — condition slugs', () => {
 });
 
 describe('ReverbListingMapper — required fields', () => {
+  it('returns a FLAT body, with no { listing } envelope', () => {
+    // Reverb's Rails ParamsWrapper skips wrapping when the body already has a
+    // `listing` key, so the envelope makes the controller read an empty top
+    // level and the publish fails with "Localized contents model ... can't be
+    // blank". The fields must sit at the root.
+    const body = toReverbRequest(product(), request());
+
+    expect(body).not.toHaveProperty('listing');
+    expect(body['make']).toBeDefined();
+    expect(body['model']).toBeDefined();
+    expect(body['title']).toBeDefined();
+    expect(body['description']).toBeDefined();
+    expect(body['price']).toBeDefined();
+  });
+
   it('sends inventory as a FLAT integer alongside has_inventory', () => {
     // Not { total: n } — the nested form silently fails to set stock.
     const body = listingBody(product(), request({ quantity: 3 }));

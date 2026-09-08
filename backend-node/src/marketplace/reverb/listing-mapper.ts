@@ -47,8 +47,17 @@ function getString(map: Record<string, unknown>, key: string): string | null {
 /**
  * Builds the Reverb create/update body.
  *
- * Returns the payload wrapped as `{ listing: {...} }`, which is what the Reverb
- * API expects.
+ * Returns a FLAT object — the fields sit at the top level of the request body.
+ *
+ * This used to return `{ listing: {...} }`. Reverb is a Rails app, and sending
+ * that envelope defeats its ParamsWrapper: because the body already has a
+ * `listing` key, Rails skips wrapping and the controller reads the top level,
+ * which is then empty. Nothing 400s — Reverb falls through to its make/model
+ * guesser, which has no title to guess from, and the publish dies on
+ * "Localized contents model for English can't be blank" with an echoed listing
+ * showing make "Unknown", a blank model and a $0.00 price.
+ *
+ * Reference: https://www.reverb-api.com/docs/create-listings
  */
 export function toReverbRequest(
   product: ProductRow,
@@ -163,7 +172,7 @@ export function toReverbRequest(
     listing[key] = value;
   }
 
-  return { listing };
+  return listing;
 }
 
 /**
