@@ -143,6 +143,43 @@
                     </div>
                   </div>
                 </template>
+
+                <!-- Reverb category mapping -->
+                <template v-if="account.marketplaceType === 'REVERB'">
+                  <div class="mt-3 border-t border-gray-800 pt-3 space-y-2">
+                    <div class="flex items-center justify-between">
+                      <p class="text-xs font-medium text-gray-400">Reverb product types</p>
+                      <button
+                        @click="openReverbCategories(account)"
+                        class="text-xs text-gray-500 hover:text-gray-300 underline underline-offset-2"
+                      >Edit</button>
+                    </div>
+                    <p class="text-xs text-gray-600">
+                      Reverb refuses to publish a listing without a product type.
+                    </p>
+                    <div v-if="Object.keys(account.reverbCategoryMap || {}).length" class="space-y-0.5">
+                      <div
+                        v-for="(category, type) in account.reverbCategoryMap"
+                        :key="type"
+                        class="flex items-center gap-2 text-xs"
+                      >
+                        <span class="text-gray-400 truncate max-w-[10rem]" :title="type">{{ type }}</span>
+                        <span class="text-gray-600">&rarr;</span>
+                        <span class="text-gray-400 truncate" :title="category">{{ category }}</span>
+                      </div>
+                    </div>
+                    <p v-else class="text-xs text-yellow-500/80 italic">
+                      No product types mapped — listings cannot publish yet.
+                    </p>
+                    <div class="flex items-start gap-2">
+                      <span class="text-xs text-gray-600 shrink-0">Fallback:</span>
+                      <span v-if="account.reverbDefaultCategory" class="text-xs text-gray-400 truncate">
+                        {{ account.reverbDefaultCategory }}
+                      </span>
+                      <span v-else class="text-xs text-gray-600 italic">none</span>
+                    </div>
+                  </div>
+                </template>
               </div>
               <div class="flex items-center gap-2">
                 <button
@@ -578,6 +615,82 @@
       </div>
     </div>
 
+    <!-- ── Reverb product type mapping modal ─────────────────────────────── -->
+    <div v-if="editingReverbCategories" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+      <div class="card w-full max-w-2xl p-6">
+        <h2 class="text-base font-semibold text-white mb-1">Reverb Product Types</h2>
+        <p class="text-xs text-gray-500 mb-5">
+          Reverb calls its categories &ldquo;product types&rdquo; and will not publish a listing without one.
+          Map each Shopify product type to the Reverb category it should list under. Any listing can still
+          override this individually.
+        </p>
+
+        <div v-if="reverbConfigError" class="rounded-lg bg-red-900/30 border border-red-700/50 px-4 py-3 mb-4 text-xs text-red-300 space-y-2">
+          <p class="font-medium text-red-200">Could not load Reverb categories</p>
+          <p class="break-all font-mono">{{ reverbConfigError }}</p>
+          <p>Check that the Reverb account's token is still valid, then reopen this dialog.</p>
+        </div>
+
+        <div class="max-h-80 overflow-y-auto space-y-2 pr-1">
+          <div
+            v-for="(row, i) in reverbCategoryRows"
+            :key="i"
+            class="flex items-center gap-2"
+          >
+            <input
+              v-model="row.productType"
+              class="input flex-1 text-sm"
+              placeholder="Shopify product type"
+            />
+            <span class="text-gray-600 text-xs shrink-0">&rarr;</span>
+            <select v-model="row.category" class="input flex-1 text-sm">
+              <option value="">
+                {{ reverbConfigLoading ? 'Loading…' : (reverbConfig?.categories?.length ? '— Select category —' : 'No categories found') }}
+              </option>
+              <option v-for="c in reverbConfig?.categories || []" :key="c.uuid" :value="c.name">
+                {{ c.name }}
+              </option>
+            </select>
+            <button
+              @click="reverbCategoryRows.splice(i, 1)"
+              class="text-xs text-gray-600 hover:text-red-400 shrink-0 px-1"
+              title="Remove this mapping"
+            >&times;</button>
+          </div>
+
+          <p v-if="!reverbCategoryRows.length" class="text-xs text-gray-600 italic py-2">
+            No mappings yet.
+          </p>
+        </div>
+
+        <button
+          @click="reverbCategoryRows.push({ productType: '', category: '' })"
+          class="mt-2 text-xs text-brand-400 hover:text-brand-300 underline underline-offset-2"
+        >+ Add mapping</button>
+
+        <div class="mt-5 border-t border-gray-800 pt-4">
+          <label class="text-xs font-medium text-gray-300">Fallback category</label>
+          <p class="text-xs text-gray-500 mb-1.5">
+            Used for any product type not listed above. Leave blank to make an unmapped
+            product type fail loudly instead of publishing under the wrong category.
+          </p>
+          <select v-model="reverbDefaultCategory" class="input w-full text-sm">
+            <option value="">— None —</option>
+            <option v-for="c in reverbConfig?.categories || []" :key="c.uuid" :value="c.name">
+              {{ c.name }}
+            </option>
+          </select>
+        </div>
+
+        <div class="mt-6 flex gap-3 justify-end">
+          <button @click="editingReverbCategories = null" class="btn-secondary px-4 py-2 text-sm">Cancel</button>
+          <button @click="saveReverbCategories" :disabled="savingReverbCategories" class="btn-primary px-4 py-2 text-sm">
+            {{ savingReverbCategories ? 'Saving…' : 'Save' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- ── Assign Pricing Profile modal ──────────────────────────────────── -->
     <div v-if="assigningAccount" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
       <div class="card w-full max-w-sm p-6">
@@ -933,6 +1046,87 @@ async function saveEbayDefaults() {
     load()
   } finally {
     savingEbayDefaults.value = false
+  }
+}
+
+// ── Reverb product type mapping ──────────────────────────────────────────────
+
+const editingReverbCategories = ref(null)
+const savingReverbCategories = ref(false)
+const reverbConfig = ref(null)          // { categories, productTypes }
+const reverbConfigLoading = ref(false)
+const reverbConfigError = ref(null)
+const reverbCategoryRows = ref([])      // [{ productType, category }]
+const reverbDefaultCategory = ref('')
+
+function openReverbCategories(account) {
+  editingReverbCategories.value = account
+  reverbConfig.value = null
+  reverbConfigError.value = null
+  reverbDefaultCategory.value = account.reverbDefaultCategory || ''
+  reverbCategoryRows.value = Object.entries(account.reverbCategoryMap || {})
+    .map(([productType, category]) => ({ productType, category }))
+  loadReverbConfig()
+}
+
+async function loadReverbConfig() {
+  if (!editingReverbCategories.value) return
+  reverbConfigLoading.value = true
+  reverbConfigError.value = null
+  try {
+    const res = await api.get(`/marketplace/accounts/${editingReverbCategories.value.id}/reverb/config`)
+    if (res.data?.error) {
+      reverbConfigError.value = res.data.error
+    } else {
+      reverbConfig.value = res.data
+      seedRowsFromCatalogue()
+    }
+  } catch (e) {
+    reverbConfigError.value = e.response?.data?.error || e.message || 'Failed to load Reverb categories'
+    console.error('Failed to load Reverb config', e)
+  } finally {
+    reverbConfigLoading.value = false
+  }
+}
+
+/**
+ * Adds an empty row for every Shopify product type in the catalogue that has no
+ * mapping yet, so the operator picks from a list instead of recalling the exact
+ * spelling of a string that lives in Shopify.
+ */
+function seedRowsFromCatalogue() {
+  const known = new Set(
+    reverbCategoryRows.value.map((r) => r.productType.trim().toLowerCase()),
+  )
+
+  for (const productType of reverbConfig.value?.productTypes || []) {
+    if (known.has(productType.trim().toLowerCase())) continue
+    reverbCategoryRows.value.push({ productType, category: '' })
+    known.add(productType.trim().toLowerCase())
+  }
+}
+
+async function saveReverbCategories() {
+  savingReverbCategories.value = true
+  try {
+    // Rows with no category chosen are dropped rather than saved blank — the
+    // backend would strip them anyway, and keeping them would imply a mapping
+    // that does not exist.
+    const map = {}
+    for (const row of reverbCategoryRows.value) {
+      const type = row.productType.trim()
+      const category = (row.category || '').trim()
+      if (type && category) map[type] = category
+    }
+
+    await api.patch(`/marketplace/accounts/${editingReverbCategories.value.id}/settings`, {
+      reverbCategoryMap: map,
+      reverbDefaultCategory: reverbDefaultCategory.value,
+    })
+    editingReverbCategories.value = null
+    load()
+  } finally {
+    savingReverbCategories.value = false
   }
 }
 

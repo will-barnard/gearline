@@ -14,7 +14,10 @@ import {
 import { loggerFor } from '../logger.js';
 import { getConnector, hasConnector } from '../marketplace/registry.js';
 import { syncAllProducts } from '../marketplace/shopify/initial-sync.js';
-import { getShippingProfiles as getReverbShippingProfiles } from '../marketplace/reverb/client.js';
+import {
+  getCategories as getReverbCategories,
+  getShippingProfiles as getReverbShippingProfiles,
+} from '../marketplace/reverb/client.js';
 import * as ebayClient from '../marketplace/ebay/client.js';
 import { backfillListingsForNewAccount } from '../services/listing-backfill.js';
 import { encrypt } from '../security/credential-encryptor.js';
@@ -172,6 +175,13 @@ const settingsSchema = z.object({
   ebayMerchantLocationKey: z.string().nullish(),
   ebayFulfillmentPolicyId: z.string().nullish(),
   ebayReturnPolicyId: z.string().nullish(),
+  /**
+   * Shopify product type -> Reverb category name or UUID. Sent whole rather
+   * than per key: the settings screen edits the entire map at once, and a
+   * per-key merge would leave no way to delete a row.
+   */
+  reverbCategoryMap: z.record(z.string(), z.string()).nullish(),
+  reverbDefaultCategory: z.string().nullish(),
 });
 
 /**
@@ -213,11 +223,29 @@ marketplaceAccountsRouter.patch(
       merge['excluded_tags'] = normalised;
     }
 
+    /**
+     * The category map replaces wholesale. An empty object means "no mappings",
+     * which is a removal — merging would strand rows the operator deleted.
+     */
+    if (body.reverbCategoryMap != null) {
+      const cleaned: Record<string, string> = {};
+
+      for (const [type, category] of Object.entries(body.reverbCategoryMap)) {
+        const key = type.trim();
+        const value = category.trim();
+        if (key !== '' && value !== '') cleaned[key] = value;
+      }
+
+      if (Object.keys(cleaned).length === 0) removeKeys.push('reverb_category_map');
+      else merge['reverb_category_map'] = cleaned;
+    }
+
     const stringSettings: Array<[string | null | undefined, string]> = [
       [body.descriptionSuffix, 'description_suffix'],
       [body.ebayMerchantLocationKey, 'ebay_merchant_location_key'],
       [body.ebayFulfillmentPolicyId, 'ebay_fulfillment_policy_id'],
       [body.ebayReturnPolicyId, 'ebay_return_policy_id'],
+      [body.reverbDefaultCategory, 'reverb_default_category'],
     ];
 
     for (const [value, key] of stringSettings) {
@@ -381,6 +409,68 @@ marketplaceAccountsRouter.get(
     // Already slimmed to { id, name } by the client — the id is what gets sent
     // as shipping_profile_id when publishing.
     res.json(await getReverbShippingProfiles(account));
+  }),
+);
+
+// ── GET /:id/reverb/config ───────────────────────────────────────────────────
+
+/**
+ * Everything the Reverb settings screen needs to build its category mapping:
+ * Reverb's own category tree, plus the Shopify product types actually present
+ * in this catalogue.
+ *
+ * Sending both together means the form can render one row per product type the
+ * operator really has, instead of asking them to recall the exact spelling of a
+ * string that lives in Shopify.
+ */
+marketplaceAccountsRouter.get(
+  '/:id/reverb/config',
+  asyncHandler(async (req, res) => {
+    const id = uuidSchema.parse(req.params.id);
+
+    const account = await db
+      .selectFrom('marketplace_accounts')
+      .selectAll()
+      .where('id', '=', id)
+      .executeTakeFirst();
+
+    if (!account) throw new ResourceNotFoundError('MarketplaceAccount', id);
+
+    if (account.marketplace_type !== 'REVERB') {
+      res.status(400).end();
+      return;
+    }
+
+    try {
+      const [categories, productTypes] = await Promise.all([
+        getReverbCategories(account),
+        db
+          .selectFrom('products')
+          .select('category')
+          .distinct()
+          .where('category', 'is not', null)
+          .orderBy('category')
+          .execute(),
+      ]);
+
+      res.json({
+        categories: categories
+          .filter((c) => c.uuid)
+          .map((c) => ({
+            uuid: c.uuid as string,
+            // full_name is the qualified path; fall back to the leaf so the
+            // dropdown is never blank.
+            name: c.full_name ?? c.name ?? (c.uuid as string),
+          })),
+        productTypes: productTypes
+          .map((row) => row.category)
+          .filter((c): c is string => typeof c === 'string' && c.trim() !== ''),
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      log.warn({ err, accountId: id }, 'Reverb config fetch failed');
+      res.status(502).json({ error: message });
+    }
   }),
 );
 

@@ -155,6 +155,20 @@ export function toSyncJobDto(j: SyncJobRow) {
 
 // ── Marketplace account ──────────────────────────────────────────────────────
 
+/** Reverb's Shopify-product-type -> category map, coerced to a flat string map. */
+function categoryMapSetting(settings: Record<string, unknown> | null): Record<string, string> {
+  const raw = settings?.['reverb_category_map'];
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+
+  const out: Record<string, string> = {};
+
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof value === 'string' && value.trim() !== '') out[key] = value;
+  }
+
+  return out;
+}
+
 function stringSetting(settings: Record<string, unknown> | null, key: string): string | null {
   const raw = settings?.[key];
   return typeof raw === 'string' && raw.trim() !== '' ? raw : null;
@@ -193,6 +207,9 @@ export function toMarketplaceAccountDto(
     ebayMerchantLocationKey: stringSetting(settings, 'ebay_merchant_location_key'),
     ebayFulfillmentPolicyId: stringSetting(settings, 'ebay_fulfillment_policy_id'),
     ebayReturnPolicyId: stringSetting(settings, 'ebay_return_policy_id'),
+    // Always an object, never null — the settings form iterates it unguarded.
+    reverbCategoryMap: categoryMapSetting(settings),
+    reverbDefaultCategory: stringSetting(settings, 'reverb_default_category'),
   });
 }
 
