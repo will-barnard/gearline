@@ -128,6 +128,12 @@ export interface ReverbCategoriesResponse {
   categories?: ReverbCategory[];
 }
 
+/** GET /my/listings — the seller's own listings, filterable by sku and state. */
+export interface ReverbMyListingsResponse {
+  listings?: ReverbListingDto[];
+  total?: number;
+}
+
 export interface ReverbShopResponse {
   shipping_profiles?: Array<{ id?: string | number; name?: string }>;
 }

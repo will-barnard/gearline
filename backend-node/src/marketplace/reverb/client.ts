@@ -6,6 +6,7 @@ import { apiRequest, isNotFound } from '../http.js';
 import { PermanentMarketplaceError } from '../types.js';
 import type {
   ReverbCategoriesResponse,
+  ReverbMyListingsResponse,
   ReverbCategory,
   ReverbListingCondition,
   ReverbListingConditionsResponse,
@@ -78,6 +79,35 @@ export async function updateListing(
   });
 
   return response.body ?? {};
+}
+
+/**
+ * Finds one of the seller's own listings by SKU.
+ *
+ * `state=all` is what makes drafts visible; without it only live listings come
+ * back, and a draft is the most likely thing to be holding a SKU hostage.
+ *
+ * Reverb's `sku` filter is not guaranteed to be an exact match, so the result is
+ * re-checked here. Adopting a listing whose SKU merely resembles the one asked
+ * for would attach gearline to the wrong product and then overwrite it.
+ */
+export async function findListingBySku(
+  account: MarketplaceAccountRow,
+  sku: string,
+): Promise<ReverbListingDto | null> {
+  const response = await apiRequest<ReverbMyListingsResponse | ReverbListingDto[]>({
+    marketplace: 'Reverb',
+    method: 'GET',
+    url: url('/my/listings'),
+    accessToken: getAccessToken(account),
+    headers: baseHeaders(),
+    query: { sku, state: 'all', per_page: 50 },
+  });
+
+  const body = response.body;
+  const listings = Array.isArray(body) ? body : (body?.listings ?? []);
+
+  return listings.find((listing) => listing.sku === sku && listing.id) ?? null;
 }
 
 /**

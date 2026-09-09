@@ -176,6 +176,89 @@ function requireExternalId(listing: MarketplaceListingRow): string {
   return listing.external_listing_id;
 }
 
+/**
+ * Recovers from a SKU collision by taking ownership of the listing Reverb
+ * already has.
+ *
+ * Returns null when this was not a SKU collision, when no listing with an
+ * EXACT SKU match can be found, or when the lookup itself fails — in every
+ * one of those cases the caller falls back to reporting the original error,
+ * because a wrong adoption is worse than a failed publish: it would point
+ * gearline at someone else's listing and then overwrite it.
+ *
+ * On success the listing is updated with this product's data and returned as
+ * a normal publish result, so the external ID is recorded and every later
+ * update, delist and inventory sync works against it.
+ */
+async function adoptExistingListing(
+  account: MarketplaceAccountRow,
+  product: ProductRow,
+  request: PublishListingRequest,
+  cause: PermanentMarketplaceError,
+): Promise<PublishListingResult | null> {
+  if (!/sku already exists/i.test(cause.message)) return null;
+
+  let existing;
+
+  try {
+    existing = await client.findListingBySku(account, product.sku);
+  } catch (lookupErr) {
+    log.warn(
+      { err: lookupErr, sku: product.sku },
+      'SKU collision, but the Reverb lookup failed — reporting the original error',
+    );
+    return null;
+  }
+
+  if (!existing?.id) {
+    log.warn(
+      { sku: product.sku },
+      'Reverb reported a SKU collision but no listing with that exact SKU came back',
+    );
+    return null;
+  }
+
+  log.info(
+    { sku: product.sku, reverbId: existing.id, state: existing.state },
+    'Adopting the existing Reverb listing that already holds this SKU',
+  );
+
+  let result;
+
+  try {
+    result = await client.updateListing(
+      account,
+      existing.id,
+      toReverbRequest(product, request, {
+        conditionUuid: await conditionUuidFor(account, product, request),
+        categoryUuid: await categoryUuidFor(account, product, request),
+        // No publish on an adoption. If the operator had deliberately ended
+        // or drafted this listing, silently reviving it is not our call.
+      }),
+    );
+  } catch (updateErr) {
+    // The ID is still worth keeping even if the update failed — without it
+    // gearline can never reach this listing again.
+    if (updateErr instanceof PermanentMarketplaceError) {
+      log.error({ err: updateErr, reverbId: existing.id }, 'Adopted listing but could not update it');
+      return publishFailure(
+        `Adopted the existing Reverb listing ${existing.id}, but updating it failed: ${updateErr.message}`,
+      );
+    }
+    throw updateErr;
+  }
+
+  const metadata = buildMetadata(result);
+  metadata['adopted_existing'] = true;
+
+  return publishSuccess(
+    result.id ?? existing.id,
+    extractPrice(result),
+    request.quantity,
+    metadata,
+  );
+}
+
 export const reverbConnector: MarketplaceConnector = {
   marketplaceType: 'REVERB',
 
@@ -238,6 +321,19 @@ export const reverbConnector: MarketplaceConnector = {
       );
     } catch (err) {
       if (err instanceof PermanentMarketplaceError) {
+        /**
+         * A SKU collision means Reverb already holds a listing for this
+         * product — a draft from an earlier failure, a double-clicked publish,
+         * or one created by hand. Recording a plain failure here is the worst
+         * outcome available: the listing is real, possibly LIVE, and gearline
+         * would hold no ID for it, so it could never be updated, delisted, or
+         * inventory-synced. It would sell with no stock behind it.
+         *
+         * So adopt it instead.
+         */
+        const adopted = await adoptExistingListing(current, product, request, err);
+        if (adopted) return adopted;
+
         log.error({ err, sku: product.sku }, 'Reverb rejected the listing');
         return publishFailure(explainSkuConflict(err.message, product.sku));
       }
