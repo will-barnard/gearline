@@ -68,9 +68,29 @@ function str(node: unknown, key: string, fallback = ''): string {
   return value === null || value === undefined ? fallback : String(value);
 }
 
-function firstVariantSku(shopifyProduct: Record<string, unknown>): string {
+/**
+ * The SKU Shopify holds for ONE variant.
+ *
+ * Products are keyed per variant (V18), so a resync must read the variant this
+ * row actually represents. Reading variants[0] here would stamp variant 1's SKU
+ * onto every sibling row and collide against products.sku's unique constraint —
+ * or, worse, succeed on a two-variant product and swap the two rows' identities.
+ */
+function skuForVariant(
+  shopifyProduct: Record<string, unknown>,
+  shopifyVariantId: string | null,
+): string {
   const variants = shopifyProduct['variants'];
   if (!Array.isArray(variants) || variants.length === 0) return '';
+
+  if (shopifyVariantId) {
+    const match = variants.find((v) => str(v, 'id') === shopifyVariantId);
+    // No match means the variant was deleted in Shopify. Returning '' leaves the
+    // row's SKU alone; the webhook path archives and delists it.
+    return match ? str(match, 'sku') : '';
+  }
+
+  // Pre-V18 row with no recorded variant id: it was created from variants[0].
   return str(variants[0], 'sku');
 }
 
@@ -112,7 +132,7 @@ export async function resync(productId: string): Promise<ResyncResult> {
   }
 
   const oldSku = product.sku;
-  const shopifySku = firstVariantSku(shopifyProduct);
+  const shopifySku = skuForVariant(shopifyProduct, product.shopify_variant_id);
 
   /**
    * ── Pre-flight collision check ─────────────────────────────────────────────
@@ -148,7 +168,7 @@ export async function resync(productId: string): Promise<ResyncResult> {
     }
   }
 
-  const patch = extractResyncFields(shopifyProduct);
+  const patch = extractResyncFields(shopifyProduct, product.shopify_variant_id);
 
   // Metafields are best-effort — a failure here must not block the field repair.
   try {
@@ -249,9 +269,21 @@ export async function bulkResyncSkus(): Promise<BulkResyncResult> {
       for (const raw of page.products) {
         const p = raw as Record<string, unknown>;
         const shopifyId = str(p, 'id');
-        const sku = firstVariantSku(p);
+        if (shopifyId === '') continue;
 
-        if (shopifyId !== '' && sku !== '') shopifySkuMap.set(shopifyId, sku);
+        const variants = Array.isArray(p['variants']) ? (p['variants'] as unknown[]) : [];
+
+        for (const [index, variant] of variants.entries()) {
+          const sku = str(variant, 'sku');
+          if (sku === '') continue;
+
+          const variantId = str(variant, 'id');
+          if (variantId !== '') shopifySkuMap.set(`variant:${variantId}`, sku);
+
+          // Pre-V18 rows carry no variant id and were created from variants[0];
+          // key the first variant by product id as well so they still reconcile.
+          if (index === 0) shopifySkuMap.set(`product:${shopifyId}`, sku);
+        }
       }
 
       pageInfo = page.nextPageInfo;
@@ -275,7 +307,7 @@ export async function bulkResyncSkus(): Promise<BulkResyncResult> {
   return db.transaction().execute(async (trx) => {
     const allProducts = await trx
       .selectFrom('products')
-      .select(['id', 'sku', 'title', 'shopify_product_id'])
+      .select(['id', 'sku', 'title', 'shopify_product_id', 'shopify_variant_id'])
       // Lock every row for the duration. Without this a concurrent webhook could
       // write a SKU between the temp pass and the final pass, reintroducing the
       // very collision the algorithm just cleared.
@@ -293,7 +325,12 @@ export async function bulkResyncSkus(): Promise<BulkResyncResult> {
     for (const product of allProducts) {
       if (!product.shopify_product_id) continue;
 
-      const correctSku = shopifySkuMap.get(product.shopify_product_id);
+      // Prefer the row's own variant; fall back to the product key for pre-V18
+      // rows that never recorded one.
+      const correctSku = product.shopify_variant_id
+        ? shopifySkuMap.get(`variant:${product.shopify_variant_id}`)
+        : shopifySkuMap.get(`product:${product.shopify_product_id}`);
+
       if (correctSku === undefined) continue; // not among active Shopify products
       if (correctSku === product.sku) continue;
 
@@ -402,12 +439,22 @@ export async function bulkResyncSkus(): Promise<BulkResyncResult> {
 
 // ── Field extraction ─────────────────────────────────────────────────────────
 
-/** Mutable fields pulled from a Shopify product during resync. */
-function extractResyncFields(shopifyProduct: Record<string, unknown>): Record<string, unknown> {
+/**
+ * Mutable fields pulled from a Shopify product during resync, for ONE variant.
+ *
+ * The variant matters: products are keyed per variant, so pulling variants[0]
+ * here would overwrite a sibling row's SKU, price, quantity AND its identity
+ * columns — pointing two rows at the same variant, which V18's unique index now
+ * rejects outright rather than letting it corrupt quietly.
+ */
+function extractResyncFields(
+  shopifyProduct: Record<string, unknown>,
+  shopifyVariantId: string | null,
+): Record<string, unknown> {
   const patch: Record<string, unknown> = {};
 
-  const title = str(shopifyProduct, 'title');
-  if (title !== '') patch['title'] = title;
+  // Title is applied after the variant is resolved, below — a variant row's
+  // title carries the variant name so siblings stay distinguishable.
 
   if ('body_html' in shopifyProduct) patch['description'] = str(shopifyProduct, 'body_html');
 
@@ -417,8 +464,14 @@ function extractResyncFields(shopifyProduct: Record<string, unknown>): Record<st
   const productType = str(shopifyProduct, 'product_type');
   if (productType !== '') patch['category'] = productType;
 
-  const variants = shopifyProduct['variants'];
-  const variant = Array.isArray(variants) && variants.length > 0 ? variants[0] : null;
+  const variants = Array.isArray(shopifyProduct['variants'])
+    ? (shopifyProduct['variants'] as unknown[])
+    : [];
+
+  const variant = shopifyVariantId
+    ? (variants.find((v) => str(v, 'id') === shopifyVariantId) ?? null)
+    // Pre-V18 row with no recorded variant id: it was created from variants[0].
+    : (variants[0] ?? null);
 
   if (variant) {
     const sku = str(variant, 'sku');
@@ -439,6 +492,22 @@ function extractResyncFields(shopifyProduct: Record<string, unknown>): Record<st
     const inventoryItemId = str(variant, 'inventory_item_id');
     if (inventoryItemId !== '' && inventoryItemId !== 'null') {
       patch['shopify_inventory_item_id'] = inventoryItemId;
+    }
+
+    /**
+     * Title carries the variant name, matching the webhook processor, so
+     * sibling rows stay distinguishable in the products list and publish as
+     * distinct listings. "Default Title" is Shopify's placeholder for the
+     * implicit variant of an option-less product and is never appended.
+     */
+    const productTitle = str(shopifyProduct, 'title');
+
+    if (productTitle !== '') {
+      const suffix = str(variant, 'title').trim();
+      patch['title'] =
+        suffix === '' || suffix === 'Default Title'
+          ? productTitle
+          : `${productTitle} — ${suffix}`;
     }
   }
 

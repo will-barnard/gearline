@@ -308,7 +308,25 @@ export const reverbConnector: MarketplaceConnector = {
       const result = await client.createListing(current, body);
 
       if (!result.id) {
-        return publishFailure('Reverb returned a listing with no id');
+        /**
+         * Reverb accepted the create but the id is not where it was expected.
+         * This is NOT a timing effect — the create is synchronous — so it means
+         * the response shape moved. Naming the keys that DID come back is the
+         * difference between a two-minute fix and another round of guessing.
+         *
+         * The listing itself is probably live, so this is also the moment the
+         * operator most needs to know something is wrong.
+         */
+        log.error(
+          { sku: product.sku, responseKeys: Object.keys(result) },
+          'Reverb create returned no listing id',
+        );
+
+        return publishFailure(
+          'Reverb accepted the listing but returned no id, so it cannot be tracked. ' +
+            `The response contained: ${Object.keys(result).join(', ') || '(nothing)'}. ` +
+            'The listing may still be live on Reverb — check your Reverb listings before retrying.',
+        );
       }
 
       log.info({ reverbId: result.id, sku: product.sku }, 'Published Reverb listing');

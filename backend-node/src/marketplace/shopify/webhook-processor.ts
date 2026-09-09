@@ -69,10 +69,54 @@ function arr(node: unknown, key: string): unknown[] {
   return Array.isArray(value) ? value : [];
 }
 
-function firstVariant(payload: Json): Json | null {
-  const variants = arr(payload, 'variants');
-  const first = variants[0];
-  return typeof first === 'object' && first !== null ? (first as Json) : null;
+/**
+ * Every variant on the payload.
+ *
+ * Shopify always sends at least one — a product with no options still has a
+ * single variant titled "Default Title" — so an empty result means a malformed
+ * payload, not a product without variants.
+ */
+function variantsOf(payload: Json): Json[] {
+  return arr(payload, 'variants').filter(
+    (v): v is Json => typeof v === 'object' && v !== null,
+  );
+}
+
+/**
+ * Shopify's placeholder title for the implicit variant of a product with no
+ * options. Appending it to titles would put "— Default Title" on every
+ * single-variant product in the catalogue.
+ */
+const DEFAULT_VARIANT_TITLE = 'Default Title';
+
+/**
+ * The product title as this variant should carry it.
+ *
+ * Variants of one product share a Shopify title, which would make sibling rows
+ * indistinguishable in the products list, the SKU audit and the listing picker
+ * — and would publish as identical-looking listings. products.title is also the
+ * fallback for the Reverb listing title, so the variant name has to reach it.
+ */
+function variantTitle(productTitle: string, variant: Json): string {
+  const suffix = str(variant, 'title').trim();
+
+  if (suffix === '' || suffix === DEFAULT_VARIANT_TITLE) return productTitle;
+
+  return `${productTitle} — ${suffix}`;
+}
+
+/**
+ * SKU for a variant, falling back to a placeholder the operator can replace.
+ *
+ * The variant id is part of the placeholder because `sku` is NOT NULL UNIQUE:
+ * two SKU-less variants of one product would otherwise collide on
+ * `SHOPIFY-{productId}` and the whole product would fail to import.
+ */
+function variantSku(shopifyProductId: string, variant: Json): string {
+  const sku = str(variant, 'sku').trim();
+  if (sku !== '') return sku;
+
+  return `SHOPIFY-${shopifyProductId}-${str(variant, 'id')}`;
 }
 
 // ── Entry point ──────────────────────────────────────────────────────────────
@@ -189,41 +233,49 @@ async function processProductCreate(shopDomain: string, payload: Json): Promise<
     return;
   }
 
-  const saved = await upsertProductFromPayload(shopDomain, shopifyProductId, payload, {
+  const saved = await upsertVariantsFromPayload(shopDomain, shopifyProductId, payload, {
     restoreArchived: true,
   });
 
-  if (!saved) return;
+  if (saved.length === 0) return;
 
-  /**
-   * marketplace_excluded is authoritative and immune to Shopify updates. A user
-   * set it deliberately (deposit listings, restoration placeholders); nothing
-   * arriving from Shopify may clear it or create listings against it.
-   */
-  if (saved.marketplace_excluded) {
-    log.info({ sku: saved.sku }, 'Product skipped for listings — marketplace_excluded=true');
-    return;
-  }
+  // Tag exclusion is a property of the Shopify product, so it is evaluated once
+  // and applies to all of its variants.
+  const tagExcluded = await isExcludedByTags(payload, shopDomain);
 
-  if (await isExcludedByTags(payload, shopDomain)) {
-    // Cancel NEEDS_REVIEW stubs that predate the tag being applied.
-    const cancelled = await db
-      .updateTable('marketplace_listings')
-      .set({ listing_status: 'INACTIVE', updated_at: new Date() })
-      .where('product_id', '=', saved.id)
-      .where('listing_status', '=', 'NEEDS_REVIEW')
-      .returning('id')
-      .execute();
-
-    if (cancelled.length > 0) {
-      log.info({ sku: saved.sku, count: cancelled.length }, 'Cancelled NEEDS_REVIEW listings for tag-excluded product');
+  for (const product of saved) {
+    /**
+     * marketplace_excluded is authoritative and immune to Shopify updates. A user
+     * set it deliberately (deposit listings, restoration placeholders); nothing
+     * arriving from Shopify may clear it or create listings against it.
+     *
+     * It is per ROW, so one variant can be excluded while its siblings list.
+     */
+    if (product.marketplace_excluded) {
+      log.info({ sku: product.sku }, 'Product skipped for listings — marketplace_excluded=true');
+      continue;
     }
 
-    log.info({ sku: saved.sku }, 'Product not queued for listings — matches an excluded tag');
-    return;
-  }
+    if (tagExcluded) {
+      // Cancel NEEDS_REVIEW stubs that predate the tag being applied.
+      const cancelled = await db
+        .updateTable('marketplace_listings')
+        .set({ listing_status: 'INACTIVE', updated_at: new Date() })
+        .where('product_id', '=', product.id)
+        .where('listing_status', '=', 'NEEDS_REVIEW')
+        .returning('id')
+        .execute();
 
-  await upsertReviewListings(saved);
+      if (cancelled.length > 0) {
+        log.info({ sku: product.sku, count: cancelled.length }, 'Cancelled NEEDS_REVIEW listings for tag-excluded product');
+      }
+
+      log.info({ sku: product.sku }, 'Product not queued for listings — matches an excluded tag');
+      continue;
+    }
+
+    await upsertReviewListings(product);
+  }
 }
 
 // ── products/update ──────────────────────────────────────────────────────────
@@ -236,11 +288,11 @@ async function processProductUpdate(shopDomain: string, payload: Json): Promise<
 
   if (shopifyProductId === '') return;
 
-  const existing = await db
+  const existingRows = await db
     .selectFrom('products')
     .selectAll()
     .where('shopify_product_id', '=', shopifyProductId)
-    .executeTakeFirst();
+    .execute();
 
   /**
    * Not in Gearline yet but now active → route through the create path.
@@ -250,7 +302,7 @@ async function processProductUpdate(shopDomain: string, payload: Json): Promise<
    * imported. When it later goes active Shopify sends products/UPDATE, not
    * create — so without this fallthrough the product is silently lost forever.
    */
-  if (!existing) {
+  if (existingRows.length === 0) {
     if (shopifyStatus === 'active') {
       log.info({ shopifyProductId }, 'Product not in Gearline but now active — importing via create path');
       await processProductCreate(shopDomain, payload);
@@ -260,80 +312,93 @@ async function processProductUpdate(shopDomain: string, payload: Json): Promise<
 
   // ── Draft or archived in Shopify → archive here and delist everywhere ──────
   if (shopifyStatus === 'draft' || shopifyStatus === 'archived') {
-    await archiveAndDelist(existing, shopifyProductId, shopifyStatus, payload);
+    for (const row of existingRows) {
+      await archiveAndDelist(row, shopifyProductId, shopifyStatus, payload);
+    }
     return;
   }
 
   // ── Active ─────────────────────────────────────────────────────────────────
-  const wasArchived = existing.status === 'ARCHIVED';
 
-  const saved = await upsertProductFromPayload(shopDomain, shopifyProductId, payload, {
+  // Which rows were archived BEFORE this upsert restores them.
+  const wasArchived = new Set(
+    existingRows.filter((row) => row.status === 'ARCHIVED').map((row) => row.id),
+  );
+
+  const saved = await upsertVariantsFromPayload(shopDomain, shopifyProductId, payload, {
     restoreArchived: true,
-    existing,
+    existing: existingRows,
   });
 
-  if (!saved) return;
+  if (saved.length === 0) return;
 
-  if (wasArchived) {
-    /**
-     * Just restored. Its old listings were delisted when it was archived, so
-     * there is nothing ACTIVE to send LISTING_UPDATE to — instead the listings
-     * go back to NEEDS_REVIEW for the operator to re-publish.
-     */
-    if (saved.marketplace_excluded) {
-      log.info({ sku: saved.sku }, 'Restored product not queued — marketplace_excluded=true');
-      return;
-    }
+  // A variant removed in Shopify leaves a row behind. Do this AFTER the upsert
+  // so a variant being renamed or re-ordered is never mistaken for a deletion.
+  await archiveMissingVariants(shopifyProductId, payload, existingRows);
 
-    if (await isExcludedByTags(payload, shopDomain)) {
-      log.info({ sku: saved.sku }, 'Restored product not queued — matches an excluded tag');
-      return;
-    }
-
-    await upsertReviewListings(saved);
-    return;
-  }
-
-  // Safety net: excluded products should have no ACTIVE listings, but if one
-  // survived (excluded after publishing), do not propagate updates to it.
-  if (saved.marketplace_excluded) {
-    log.debug({ sku: saved.sku }, 'Skipping LISTING_UPDATE propagation — marketplace_excluded');
-    return;
-  }
-
-  /**
-   * Push changes to listings that are already live. Shopify is the source of
-   * truth, so a price or title change there should cascade without review.
-   *
-   * NEEDS_REVIEW / PENDING / FAILED listings are left alone — they pick up
-   * current product data when they are eventually published.
-   */
-  const activeListings = await db
-    .selectFrom('marketplace_listings')
-    .selectAll()
-    .where('product_id', '=', saved.id)
-    .where('listing_status', '=', 'ACTIVE')
-    .execute();
-
+  const tagExcluded = await isExcludedByTags(payload, shopDomain);
   const updatedAt = str(payload, 'updated_at', String(Date.now()));
 
-  for (const listing of activeListings) {
-    if (listing.marketplace_type === 'SHOPIFY') continue;
+  for (const product of saved) {
+    if (wasArchived.has(product.id)) {
+      /**
+       * Just restored. Its old listings were delisted when it was archived, so
+       * there is nothing ACTIVE to send LISTING_UPDATE to — instead the listings
+       * go back to NEEDS_REVIEW for the operator to re-publish.
+       */
+      if (product.marketplace_excluded) {
+        log.info({ sku: product.sku }, 'Restored product not queued — marketplace_excluded=true');
+        continue;
+      }
 
-    await enqueue({
-      jobType: 'LISTING_UPDATE',
-      marketplaceType: listing.marketplace_type,
-      marketplaceAccountId: listing.marketplace_account_id,
-      productId: saved.id,
-      listingId: listing.id,
-      payload: { shopifyProductId },
-      idempotencyKey: `shopify-product-update-${shopifyProductId}-listing-${listing.id}-${updatedAt}`,
-    });
+      if (tagExcluded) {
+        log.info({ sku: product.sku }, 'Restored product not queued — matches an excluded tag');
+        continue;
+      }
 
-    log.info(
-      { marketplace: listing.marketplace_type, listingId: listing.id },
-      'Enqueued LISTING_UPDATE after Shopify product update',
-    );
+      await upsertReviewListings(product);
+      continue;
+    }
+
+    // Safety net: excluded products should have no ACTIVE listings, but if one
+    // survived (excluded after publishing), do not propagate updates to it.
+    if (product.marketplace_excluded) {
+      log.debug({ sku: product.sku }, 'Skipping LISTING_UPDATE propagation — marketplace_excluded');
+      continue;
+    }
+
+    /**
+     * Push changes to listings that are already live. Shopify is the source of
+     * truth, so a price or title change there should cascade without review.
+     *
+     * NEEDS_REVIEW / PENDING / FAILED listings are left alone — they pick up
+     * current product data when they are eventually published.
+     */
+    const activeListings = await db
+      .selectFrom('marketplace_listings')
+      .selectAll()
+      .where('product_id', '=', product.id)
+      .where('listing_status', '=', 'ACTIVE')
+      .execute();
+
+    for (const listing of activeListings) {
+      if (listing.marketplace_type === 'SHOPIFY') continue;
+
+      await enqueue({
+        jobType: 'LISTING_UPDATE',
+        marketplaceType: listing.marketplace_type,
+        marketplaceAccountId: listing.marketplace_account_id,
+        productId: product.id,
+        listingId: listing.id,
+        payload: { shopifyProductId },
+        idempotencyKey: `shopify-product-update-${shopifyProductId}-listing-${listing.id}-${updatedAt}`,
+      });
+
+      log.info(
+        { marketplace: listing.marketplace_type, listingId: listing.id },
+        'Enqueued LISTING_UPDATE after Shopify product update',
+      );
+    }
   }
 }
 
@@ -469,83 +534,171 @@ async function processFulfillmentCreate(shopDomain: string, payload: Json): Prom
 // ── Product upsert ───────────────────────────────────────────────────────────
 
 /**
- * Creates or updates the Product from a Shopify payload, then applies metafields.
+ * Creates or updates ONE products row per Shopify variant, then applies
+ * metafields to all of them.
  *
- * The insert uses ON CONFLICT on sku so two webhooks racing for the same new
- * product cannot both insert.
+ * ── Why per variant ──────────────────────────────────────────────────────────
+ *
+ * Marketplaces sell variants, not products: a cable in two connector types is
+ * two Reverb listings with two SKUs, two prices and two stock counts. This used
+ * to read variants[0] and drop the rest, so the second variant had no row and
+ * its stock changes went nowhere — inventory_levels/update matches on
+ * shopify_inventory_item_id, which is per-variant.
+ *
+ * ── Identity ─────────────────────────────────────────────────────────────────
+ *
+ * Rows are matched on shopify_variant_id, guarded by uq_products_shopify_variant
+ * (V18). SKU is no longer an identity: two variants can both be SKU-less, and
+ * the operator may change a SKU at any time, but a variant id is stable for the
+ * life of the variant.
+ *
+ * The insert still carries ON CONFLICT on sku so two webhooks racing for the
+ * same new variant cannot both insert.
+ *
+ * Returns every row it touched, in payload order.
  */
-async function upsertProductFromPayload(
+async function upsertVariantsFromPayload(
   shopDomain: string,
   shopifyProductId: string,
   payload: Json,
-  opts: { restoreArchived: boolean; existing?: ProductRow },
-): Promise<ProductRow | null> {
-  const existing =
+  opts: { restoreArchived: boolean; existing?: ProductRow[] },
+): Promise<ProductRow[]> {
+  const variants = variantsOf(payload);
+
+  if (variants.length === 0) {
+    log.warn({ shopifyProductId }, 'Shopify product payload has no variants — skipping');
+    return [];
+  }
+
+  const existingRows =
     opts.existing ??
     (await db
       .selectFrom('products')
       .selectAll()
       .where('shopify_product_id', '=', shopifyProductId)
-      .executeTakeFirst());
+      .execute());
 
-  const fields = extractProductFields(payload);
+  const byVariantId = new Map<string, ProductRow>();
+  for (const row of existingRows) {
+    if (row.shopify_variant_id) byVariantId.set(row.shopify_variant_id, row);
+  }
 
-  let saved: ProductRow | undefined;
+  /**
+   * Rows imported before V18 that never recorded a variant id. There is at most
+   * one per product (ingestion only ever created one), and it is variant 1 —
+   * so it is claimed by the first variant rather than orphaned, which keeps its
+   * id, its SKU and any live listing attached to it.
+   */
+  const unkeyed = existingRows.filter((row) => !row.shopify_variant_id);
 
-  if (existing) {
-    const patch: Record<string, unknown> = { ...fields, updated_at: new Date() };
+  const productTitle = str(payload, 'title', 'Untitled Product');
+  const saved: ProductRow[] = [];
 
-    /**
-     * Products arriving on these paths are active by definition. Restoring the
-     * status here re-activates something that was archived while it was a draft.
-     */
-    if (opts.restoreArchived && existing.status === 'ARCHIVED') {
-      patch['status'] = 'ACTIVE';
-      log.info({ sku: existing.sku }, 'Restored archived product to ACTIVE during sync');
+  for (const [index, variant] of variants.entries()) {
+    const variantId = str(variant, 'id');
+
+    if (variantId === '' || variantId === 'null') {
+      log.warn({ shopifyProductId }, 'Shopify variant has no id — skipping');
+      continue;
     }
 
-    saved = await db
-      .updateTable('products')
-      .set(patch)
-      .where('id', '=', existing.id)
-      .returningAll()
-      .executeTakeFirst();
-  } else {
-    const variant = firstVariant(payload);
+    const existing = byVariantId.get(variantId) ?? (index === 0 ? unkeyed[0] : undefined);
+    const fields = extractVariantFields(payload, variant, productTitle);
 
-    // Fall back to the Shopify product ID when the merchant has not set a SKU.
-    // applyProductFields replaces this placeholder as soon as a real SKU appears.
-    const sku = str(variant, 'sku') || `SHOPIFY-${shopifyProductId}`;
+    let row: ProductRow | undefined;
 
-    saved = await db
-      .insertInto('products')
-      .values({
-        sku,
-        title: str(payload, 'title', 'Untitled Product'),
-        price: fields.price ?? '0',
-        quantity: fields.quantity ?? 0,
-        condition: 'USED', // sensible default; metafields or the user may override
-        status: 'ACTIVE',
-        shopify_product_id: shopifyProductId,
-        shopify_variant_id: str(variant, 'id') || null,
-        shopify_inventory_item_id: str(variant, 'inventory_item_id') || null,
-        image_urls: toJson(fields.image_urls ?? []),
-        description: fields.description ?? null,
-        brand: fields.brand ?? null,
-        category: fields.category ?? null,
-        weight_kg: fields.weight_kg ?? null,
-      })
-      .onConflict((oc) => oc.column('sku').doUpdateSet({ ...fields, updated_at: new Date() }))
-      .returningAll()
-      .executeTakeFirst();
+    if (existing) {
+      const patch: Record<string, unknown> = { ...fields, updated_at: new Date() };
+
+      /**
+       * Products arriving on these paths are active by definition. Restoring the
+       * status here re-activates something that was archived while it was a
+       * draft.
+       */
+      if (opts.restoreArchived && existing.status === 'ARCHIVED') {
+        patch['status'] = 'ACTIVE';
+        log.info({ sku: existing.sku }, 'Restored archived product to ACTIVE during sync');
+      }
+
+      row = await db
+        .updateTable('products')
+        .set(patch)
+        .where('id', '=', existing.id)
+        .returningAll()
+        .executeTakeFirst();
+    } else {
+      row = await db
+        .insertInto('products')
+        .values({
+          sku: fields.sku ?? variantSku(shopifyProductId, variant),
+          title: fields.title ?? productTitle,
+          price: fields.price ?? '0',
+          quantity: fields.quantity ?? 0,
+          condition: 'USED', // sensible default; metafields or the user may override
+          status: 'ACTIVE',
+          shopify_product_id: shopifyProductId,
+          shopify_variant_id: variantId,
+          shopify_inventory_item_id: fields.shopify_inventory_item_id ?? null,
+          image_urls: toJson(fields.image_urls ?? []),
+          description: fields.description ?? null,
+          brand: fields.brand ?? null,
+          category: fields.category ?? null,
+          weight_kg: fields.weight_kg ?? null,
+        })
+        .onConflict((oc) => oc.column('sku').doUpdateSet({ ...fields, updated_at: new Date() }))
+        .returningAll()
+        .executeTakeFirst();
+    }
+
+    if (!row) {
+      log.error({ shopifyProductId, variantId }, 'Product upsert returned no row');
+      continue;
+    }
+
+    saved.push(row);
   }
 
-  if (!saved) {
-    log.error({ shopifyProductId }, 'Product upsert returned no row');
-    return null;
-  }
+  if (saved.length === 0) return [];
 
   return applyMetafields(saved, shopDomain, shopifyProductId);
+}
+
+/**
+ * Archives rows whose variant is no longer on the payload.
+ *
+ * Shopify has no variant-level delete webhook — a deleted variant simply stops
+ * appearing in products/update. Leaving the row ACTIVE would keep a marketplace
+ * listing live with nothing behind it, which is the failure this codebase
+ * guards against everywhere else, so archiveAndDelist takes the listing down
+ * with it rather than orphaning it.
+ */
+async function archiveMissingVariants(
+  shopifyProductId: string,
+  payload: Json,
+  existingRows: ProductRow[],
+): Promise<void> {
+  const present = new Set(
+    variantsOf(payload)
+      .map((v) => str(v, 'id'))
+      .filter((id) => id !== '' && id !== 'null'),
+  );
+
+  if (present.size === 0) return; // malformed payload — archive nothing
+
+  for (const row of existingRows) {
+    // Rows with no variant id predate V18 and are claimed by variant 1; rows
+    // already archived need no second delist.
+    if (!row.shopify_variant_id) continue;
+    if (present.has(row.shopify_variant_id)) continue;
+    if (row.status === 'ARCHIVED') continue;
+
+    log.info(
+      { sku: row.sku, variantId: row.shopify_variant_id },
+      'Variant no longer exists in Shopify — archiving and delisting',
+    );
+
+    await archiveAndDelist(row, shopifyProductId, 'variant-removed', payload);
+  }
 }
 
 /**
@@ -566,22 +719,29 @@ interface ProductFieldPatch {
   price?: string;
   quantity?: number;
   weight_kg?: string;
-  shopify_variant_id?: string;
   shopify_inventory_item_id?: string;
   image_urls?: ReturnType<typeof toJson>;
 }
 
 /**
- * Extracts mutable fields from a payload.
+ * Extracts mutable fields for ONE variant.
+ *
+ * Product-level fields (description, vendor, product type, images) are shared
+ * by every variant of the product; the rest come from the variant itself.
  *
  * Shopify's own IDs are identity keys and are never overwritten here, except
- * for variant/inventory IDs which Shopify can legitimately reassign.
+ * for the inventory item id which Shopify can legitimately reassign.
  */
-function extractProductFields(payload: Json): ProductFieldPatch {
+function extractVariantFields(
+  payload: Json,
+  variant: Json,
+  productTitle: string,
+): ProductFieldPatch {
   const fields: ProductFieldPatch = {};
 
-  const title = str(payload, 'title');
-  if (title !== '') fields.title = title;
+  // ── Product level ──────────────────────────────────────────────────────────
+
+  if (productTitle !== '') fields.title = variantTitle(productTitle, variant);
 
   if ('body_html' in payload) fields.description = str(payload, 'body_html');
 
@@ -591,35 +751,6 @@ function extractProductFields(payload: Json): ProductFieldPatch {
   const productType = str(payload, 'product_type');
   if (productType !== '') fields.category = productType;
 
-  const variant = firstVariant(payload);
-
-  if (variant) {
-    // SKU is kept in sync, which is what replaces a "SHOPIFY-{id}" placeholder
-    // once the merchant sets a real one.
-    const sku = str(variant, 'sku');
-    if (sku !== '') fields.sku = sku;
-
-    const price = str(variant, 'price');
-    if (price !== '' && /^-?\d+(\.\d+)?$/.test(price)) fields.price = price;
-
-    const qty = num(variant, 'inventory_quantity', Number.NEGATIVE_INFINITY);
-    if (Number.isFinite(qty)) fields.quantity = Math.max(0, qty);
-
-    // Shopify sends grams; the column is kg at scale 3.
-    const grams = num(variant, 'grams', 0);
-    if (grams > 0) {
-      fields.weight_kg = decimalToString(divideHalfUp(BigInt(Math.round(grams)), 1000n, 3));
-    }
-
-    const variantId = str(variant, 'id');
-    if (variantId !== '' && variantId !== 'null') fields.shopify_variant_id = variantId;
-
-    const inventoryItemId = str(variant, 'inventory_item_id');
-    if (inventoryItemId !== '' && inventoryItemId !== 'null') {
-      fields.shopify_inventory_item_id = inventoryItemId;
-    }
-  }
-
   const images = arr(payload, 'images');
   if (images.length > 0) {
     const urls = images
@@ -627,6 +758,30 @@ function extractProductFields(payload: Json): ProductFieldPatch {
       .filter((src) => src !== '');
 
     if (urls.length > 0) fields.image_urls = toJson(urls);
+  }
+
+  // ── Variant level ──────────────────────────────────────────────────────────
+
+  // SKU is kept in sync, which is what replaces a "SHOPIFY-{id}-{variant}"
+  // placeholder once the merchant sets a real one.
+  const sku = str(variant, 'sku');
+  if (sku !== '') fields.sku = sku;
+
+  const price = str(variant, 'price');
+  if (price !== '' && /^-?\d+(\.\d+)?$/.test(price)) fields.price = price;
+
+  const qty = num(variant, 'inventory_quantity', Number.NEGATIVE_INFINITY);
+  if (Number.isFinite(qty)) fields.quantity = Math.max(0, qty);
+
+  // Shopify sends grams; the column is kg at scale 3.
+  const grams = num(variant, 'grams', 0);
+  if (grams > 0) {
+    fields.weight_kg = decimalToString(divideHalfUp(BigInt(Math.round(grams)), 1000n, 3));
+  }
+
+  const inventoryItemId = str(variant, 'inventory_item_id');
+  if (inventoryItemId !== '' && inventoryItemId !== 'null') {
+    fields.shopify_inventory_item_id = inventoryItemId;
   }
 
   return fields;
@@ -642,10 +797,10 @@ function extractProductFields(payload: Json): ProductFieldPatch {
  * (model, year, finish, video, dimensions), not correctness-critical data.
  */
 async function applyMetafields(
-  product: ProductRow,
+  products: ProductRow[],
   shopDomain: string,
   shopifyProductId: string,
-): Promise<ProductRow> {
+): Promise<ProductRow[]> {
   const account = await db
     .selectFrom('marketplace_accounts')
     .selectAll()
@@ -654,7 +809,7 @@ async function applyMetafields(
 
   if (!account) {
     log.debug({ shopDomain }, 'No Shopify account for this domain — skipping metafields');
-    return product;
+    return products;
   }
 
   try {
@@ -706,20 +861,32 @@ async function applyMetafields(
       }
     }
 
-    if (Object.keys(patch).length === 0) return product;
+    if (Object.keys(patch).length === 0) return products;
 
+    /**
+     * Metafields live on the Shopify PRODUCT, so they apply to every variant of
+     * it. That is right for a cable sold in two connector types, and wrong when
+     * two variants genuinely differ in year or finish — per-listing overrides
+     * are the escape hatch for that.
+     *
+     * Fetched once and applied to all, rather than once per variant.
+     */
     const updated = await db
       .updateTable('products')
       .set({ ...patch, updated_at: new Date() })
-      .where('id', '=', product.id)
+      .where('id', 'in', products.map((p) => p.id))
       .returningAll()
-      .executeTakeFirst();
+      .execute();
 
-    log.debug({ shopifyProductId, keys: Object.keys(patch) }, 'Applied Shopify metafields');
-    return updated ?? product;
+    log.debug(
+      { shopifyProductId, keys: Object.keys(patch), rows: updated.length },
+      'Applied Shopify metafields',
+    );
+
+    return updated.length > 0 ? updated : products;
   } catch (err) {
     log.warn({ err, shopifyProductId }, 'Could not apply metafields');
-    return product;
+    return products;
   }
 }
 

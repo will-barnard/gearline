@@ -317,6 +317,39 @@
                           >{{ p.name }}</option>
                         </select>
                       </div>
+                      <div>
+                        <label class="text-xs text-gray-500">Product type</label>
+                        <select
+                          v-model="editOverrides[l.id].category_id"
+                          class="input w-full mt-1 py-1 text-xs"
+                        >
+                          <option value="">
+                            {{ reverbCategoriesLoading[l.marketplaceAccountId]
+                                ? 'Loading…'
+                                : (reverbCategoryFallback(l.marketplaceAccountId)
+                                    ? 'Use account mapping'
+                                    : '— Select product type —') }}
+                          </option>
+                          <option
+                            v-for="c in reverbCategoriesFor(l.marketplaceAccountId)"
+                            :key="c.uuid"
+                            :value="c.uuid"
+                          >{{ c.name }}</option>
+                        </select>
+                        <p
+                          v-if="!editOverrides[l.id].category_id"
+                          class="mt-1 text-xs"
+                          :class="reverbCategoryFallback(l.marketplaceAccountId) ? 'text-gray-600' : 'text-amber-500/90'"
+                        >
+                          <template v-if="reverbCategoryFallback(l.marketplaceAccountId)">
+                            Using {{ reverbCategoryFallback(l.marketplaceAccountId).source }}:
+                            {{ reverbCategoryFallback(l.marketplaceAccountId).value }}
+                          </template>
+                          <template v-else>
+                            No account mapping for this product type — Reverb will reject the publish.
+                          </template>
+                        </p>
+                      </div>
                     </div>
                   </template>
 
@@ -515,6 +548,40 @@
                     >{{ p.name }}</option>
                   </select>
                 </div>
+                <div>
+                  <label class="block text-xs font-medium text-gray-400 mb-1">Product type</label>
+                  <select
+                    v-model="publishForm.category_id"
+                    class="input w-full py-1.5 text-sm"
+                  >
+                    <option value="">
+                      {{ reverbCategoriesLoading[publishForm.accountId]
+                          ? 'Loading…'
+                          : (reverbCategoryFallback(publishForm.accountId)
+                              ? 'Use account mapping'
+                              : '— Select product type —') }}
+                    </option>
+                    <option
+                      v-for="c in reverbCategoriesFor(publishForm.accountId)"
+                      :key="c.uuid"
+                      :value="c.uuid"
+                    >{{ c.name }}</option>
+                  </select>
+                  <p
+                    v-if="!publishForm.category_id"
+                    class="mt-1 text-xs"
+                    :class="reverbCategoryFallback(publishForm.accountId) ? 'text-gray-500' : 'text-amber-500/90'"
+                  >
+                    <template v-if="reverbCategoryFallback(publishForm.accountId)">
+                      Using {{ reverbCategoryFallback(publishForm.accountId).source }}:
+                      {{ reverbCategoryFallback(publishForm.accountId).value }}
+                    </template>
+                    <template v-else>
+                      No account mapping for this product type. Reverb requires a product type —
+                      pick one here, or set up the mapping on the Marketplaces page.
+                    </template>
+                  </p>
+                </div>
               </div>
             </template>
 
@@ -589,6 +656,7 @@
 import { ref, computed, onMounted, watch, defineComponent, h } from 'vue'
 import { useRoute } from 'vue-router'
 import api from '@/lib/api'
+import { isTransientStatus, pollUntilSettled } from '@/lib/listingStatus'
 
 // ── Field limit constants (sourced from official API docs) ────────────────────
 // eBay Inventory API: https://developer.ebay.com/api-docs/sell/inventory/types/slr:Product
@@ -770,6 +838,7 @@ const publishValidationErrors = computed(() => {
 watch(() => publishForm.value.accountId, (accountId) => {
   if (selectedAccountType.value === 'REVERB' && accountId) {
     loadReverbShippingProfiles(accountId)
+    loadReverbCategories(accountId)
   }
 })
 
@@ -941,13 +1010,31 @@ async function submitPublish() {
     const listingId = createRes.data.id
     await api.post(`/listings/${listingId}/publish`)
 
-    const l = await api.get(`/listings/product/${route.params.id}`)
-    listings.value = l.data
-    l.data.forEach(listing => {
-      if (!editOverrides.value[listing.id]) {
-        editOverrides.value[listing.id] = flattenOverrides(listing)
-      }
-    })
+    const syncOverrideForms = () => {
+      listings.value.forEach(listing => {
+        if (!editOverrides.value[listing.id]) {
+          editOverrides.value[listing.id] = flattenOverrides(listing)
+        }
+      })
+    }
+
+    await refreshListings()
+    syncOverrideForms()
+
+    // Keep the modal open until the publish settles, so a failure is seen here
+    // with its reason instead of the modal closing on an apparent success.
+    await pollUntilSettled(
+      async () => { await refreshListings(); syncOverrideForms() },
+      () => stillWorking(listingId),
+    )
+
+    const published = listings.value.find(l => l.id === listingId)
+
+    if (published && published.listingStatus === 'FAILED') {
+      publishError.value = published.lastError || 'Publishing failed on the marketplace.'
+      return
+    }
+
     closePublishModal()
   } catch (e) {
     publishError.value = e.response?.data?.message
@@ -960,12 +1047,21 @@ async function submitPublish() {
 
 // ── Listing actions ───────────────────────────────────────────────────────────
 
+/** True while this listing is still queued or mid-publish. */
+function stillWorking(id) {
+  const listing = listings.value.find((l) => l.id === id)
+  return !!listing && isTransientStatus(listing.listingStatus)
+}
+
 async function publishListing(listing) {
   if (hasOverrideErrors(listing)) return
   publishingId.value = listing.id
   try {
     await api.post(`/listings/${listing.id}/publish`)
     await refreshListings()
+    // 202 — the worker runs it afterwards. Poll so the outcome shows up here
+    // rather than on the operator's next manual refresh.
+    await pollUntilSettled(refreshListings, () => stillWorking(listing.id))
   } catch (e) { console.error(e) }
   finally { publishingId.value = null }
 }
@@ -975,6 +1071,7 @@ async function delistListing(listing) {
   try {
     await api.post(`/listings/${listing.id}/delist`)
     await refreshListings()
+    await pollUntilSettled(refreshListings, () => stillWorking(listing.id))
   } catch (e) { console.error(e) }
   finally { delistingId.value = null }
 }
@@ -988,6 +1085,7 @@ function toggleOverridesEditor(listingId) {
     const listing = listings.value.find(l => l.id === listingId)
     if (listing?.marketplaceType === 'REVERB') {
       loadReverbShippingProfiles(listing.marketplaceAccountId)
+      loadReverbCategories(listing.marketplaceAccountId)
     }
   }
 }
@@ -1015,6 +1113,62 @@ async function loadReverbShippingProfiles(accountId) {
 
 function reverbProfilesFor(accountId) {
   return reverbShippingProfiles.value[accountId] || []
+}
+
+// ── Reverb categories (Reverb calls them "product types") ─────────────────────
+
+const reverbCategories = ref({})        // accountId -> [{ uuid, name }]
+const reverbCategoriesLoading = ref({})
+
+/**
+ * Fetches the Reverb category tree for an account and caches it by account ID.
+ *
+ * Reverb refuses to publish without a category. The account-level map (set on
+ * the Marketplaces page) covers the normal case; this dropdown is the per-
+ * listing escape hatch for a product whose Shopify type maps to the wrong
+ * thing, or to nothing at all.
+ */
+async function loadReverbCategories(accountId) {
+  if (!accountId) return
+  if (reverbCategories.value[accountId] || reverbCategoriesLoading.value[accountId]) return
+  reverbCategoriesLoading.value[accountId] = true
+  try {
+    const res = await api.get(`/marketplace/accounts/${accountId}/reverb/config`)
+    reverbCategories.value[accountId] = res.data?.categories || []
+  } catch (e) {
+    console.error('Failed to load Reverb categories', e)
+    reverbCategories.value[accountId] = []
+  } finally {
+    reverbCategoriesLoading.value[accountId] = false
+  }
+}
+
+function reverbCategoriesFor(accountId) {
+  return reverbCategories.value[accountId] || []
+}
+
+/**
+ * What this listing will actually publish under, for the hint under the
+ * dropdown — the account map is invisible from here otherwise, which is what
+ * made the whole thing feel arbitrary.
+ */
+function reverbCategoryFallback(accountId) {
+  const account = accounts.value.find(a => a.id === accountId)
+  if (!account) return null
+
+  const map = account.reverbCategoryMap || {}
+  const type = product.value?.category
+
+  if (type) {
+    const hit = Object.entries(map).find(([k]) => k.trim().toLowerCase() === type.trim().toLowerCase())
+    if (hit) return { source: `product type "${type}"`, value: hit[1] }
+  }
+
+  if (account.reverbDefaultCategory) {
+    return { source: 'account fallback', value: account.reverbDefaultCategory }
+  }
+
+  return null
 }
 
 // ── eBay category search ──────────────────────────────────────────────────────
@@ -1101,6 +1255,7 @@ function emptyPublishForm() {
     reverb_year: '',
     reverb_finish: '',
     reverb_shipping_profile_name: '',
+    category_id: '',
     ebay_merchant_location_key: '',
     ebay_category_id: '',
     ebay_fulfillment_policy_id: '',
@@ -1118,6 +1273,7 @@ function buildOverrides(form) {
     reverb_year: 'reverb_year',
     reverb_finish: 'reverb_finish',
     reverb_shipping_profile_name: 'reverb_shipping_profile_name',
+    category_id: 'category_id',
     ebay_merchant_location_key: 'ebay_merchant_location_key',
     ebay_category_id: 'ebay_category_id',
     ebay_fulfillment_policy_id: 'ebay_fulfillment_policy_id',
@@ -1140,6 +1296,7 @@ function flattenOverrides(listing) {
     reverb_year: o.reverb_year ?? '',
     reverb_finish: o.reverb_finish ?? '',
     reverb_shipping_profile_name: o.reverb_shipping_profile_name ?? '',
+    category_id: o.category_id ?? '',
     ebay_merchant_location_key: o.ebay_merchant_location_key ?? '',
     ebay_category_id: o.ebay_category_id ?? '',
     ebay_fulfillment_policy_id: o.ebay_fulfillment_policy_id ?? '',

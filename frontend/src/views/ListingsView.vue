@@ -66,8 +66,13 @@
               </td>
               <td class="px-4 py-3">
                 <div class="flex gap-2 justify-end items-center">
+                  <!-- In flight: the worker has the job; buttons would double-submit -->
+                  <span
+                    v-if="workingId === l.id || ['PENDING','PUBLISHING'].includes(l.listingStatus)"
+                    class="text-xs text-gray-500 italic"
+                  >Working…</span>
                   <!-- NEEDS_REVIEW: Publish + Archive -->
-                  <template v-if="l.listingStatus === 'NEEDS_REVIEW'">
+                  <template v-else-if="l.listingStatus === 'NEEDS_REVIEW'">
                     <button
                       @click="publishListing(l.id)"
                       class="rounded px-3 py-1 text-xs font-medium bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 transition-colors"
@@ -111,6 +116,7 @@
 <script setup>
 import { ref, watch, onMounted } from 'vue'
 import api from '@/lib/api'
+import { isTransientStatus, pollUntilSettled } from '@/lib/listingStatus'
 
 const listings = ref([])
 const loading = ref(true)
@@ -130,14 +136,36 @@ async function load() {
   } finally { loading.value = false }
 }
 
+const workingId = ref(null)
+
+/** True while this listing is still queued or mid-publish. */
+function stillWorking(id) {
+  const listing = listings.value.find((l) => l.id === id)
+  return !!listing && isTransientStatus(listing.listingStatus)
+}
+
+/**
+ * Publish and delist return 202 — the worker picks the job up afterwards. Poll
+ * until the row settles so the outcome (ACTIVE, or FAILED with a reason)
+ * appears on its own instead of on the next manual refresh.
+ */
+async function runListingJob(id, action) {
+  workingId.value = id
+  try {
+    await api.post(`/listings/${id}/${action}`)
+    await load()
+    await pollUntilSettled(load, () => stillWorking(id))
+  } finally {
+    workingId.value = null
+  }
+}
+
 async function publishListing(id) {
-  await api.post(`/listings/${id}/publish`)
-  load()
+  await runListingJob(id, 'publish')
 }
 
 async function delistListing(id) {
-  await api.post(`/listings/${id}/delist`)
-  load()
+  await runListingJob(id, 'delist')
 }
 
 async function dismissListing(id) {

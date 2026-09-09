@@ -48,6 +48,29 @@ function url(path: string): string {
   return `${config.reverb.apiBaseUrl}${path}`;
 }
 
+/**
+ * Unwraps a listing response.
+ *
+ * Reverb's REQUEST body is flat, but its RESPONSES are not consistently so —
+ * the error envelope is `{ message, listing: {...} }`, and the create/update
+ * responses have been seen both wrapped and bare. Reading `id` off the wrapper
+ * yields undefined, which surfaced as "Reverb returned a listing with no id"
+ * on a listing that had in fact been created and gone live: the publish was
+ * recorded as failed, no external ID was stored, and the next attempt then
+ * collided on SKU.
+ *
+ * Tolerating both shapes costs one line and removes a whole class of that bug.
+ */
+function unwrapListing(body: unknown): ReverbListingDto {
+  if (!body || typeof body !== 'object') return {};
+
+  const wrapper = body as { listing?: ReverbListingDto };
+
+  if (wrapper.listing && typeof wrapper.listing === 'object') return wrapper.listing;
+
+  return body as ReverbListingDto;
+}
+
 export async function createListing(
   account: MarketplaceAccountRow,
   body: Record<string, unknown>,
@@ -61,7 +84,7 @@ export async function createListing(
     json: body,
   });
 
-  return response.body ?? {};
+  return unwrapListing(response.body);
 }
 
 export async function updateListing(
@@ -78,7 +101,7 @@ export async function updateListing(
     json: body,
   });
 
-  return response.body ?? {};
+  return unwrapListing(response.body);
 }
 
 /**
@@ -196,7 +219,7 @@ export async function updateInventory(
    * though it is written flat — the asymmetry that made the original confusion
    * plausible in the first place.
    */
-  const actual = check.body?.inventory?.total;
+  const actual = unwrapListing(check.body).inventory?.total;
 
   if (actual === undefined || actual === null) {
     // Cannot confirm either way. Do not fail the job over a missing read field.
