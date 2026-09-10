@@ -4,8 +4,8 @@
     <aside class="flex w-64 flex-shrink-0 flex-col border-r border-gray-800 bg-gray-900">
       <!-- Logo -->
       <div class="flex h-16 items-center gap-3 border-b border-gray-800 px-5">
-        <div class="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-500 text-lg">
-          🎚️
+        <div class="flex h-8 w-8 items-center justify-center text-2xl leading-none">
+          🎛️
         </div>
         <span class="text-lg font-bold tracking-tight text-white">Gearline</span>
       </div>
