@@ -27,84 +27,26 @@
           <thead>
             <tr class="border-b border-gray-800 bg-gray-900">
               <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Product</th>
-              <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Marketplace</th>
-              <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Status</th>
+              <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Channels</th>
               <th class="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Price</th>
               <th class="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Qty</th>
-              <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Last Sync</th>
               <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Error</th>
               <th class="px-4 py-3"></th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="l in listings" :key="l.id" class="table-row">
-              <td class="px-4 py-3">
-                <router-link
-                  :to="`/products/${l.productId}`"
-                  class="text-sm text-white hover:text-brand-400 transition-colors font-medium"
-                >{{ l.productTitle || l.productSku || l.productId }}</router-link>
-                <p v-if="l.productSku" class="text-xs text-gray-500 font-mono mt-0.5">{{ l.productSku }}</p>
+            <ProductListingGroup
+              v-for="g in groups"
+              :key="g.productId"
+              :group="g"
+              @publish="publishListings"
+              @delist="delistListing"
+              @archive="dismissListing"
+            />
+            <tr v-if="groups.length === 0">
+              <td colspan="6" class="px-4 py-10 text-center text-xs text-gray-500">
+                No listings match this filter.
               </td>
-              <td class="px-4 py-3">
-                <div class="flex flex-col gap-1">
-                  <span class="badge-blue">{{ l.marketplaceType }}</span>
-                  <span v-if="l.externalListingId" class="font-mono text-xs text-gray-500">{{ l.externalListingId }}</span>
-                </div>
-              </td>
-              <td class="px-4 py-3">
-                <span :class="listingBadge(l.listingStatus)">{{ l.listingStatus }}</span>
-              </td>
-              <td class="px-4 py-3 text-right text-gray-200 text-xs">
-                {{ formatPrice(l.syncedPrice ?? l.productPrice) }}
-              </td>
-              <td class="px-4 py-3 text-right text-gray-200 text-xs">
-                {{ l.syncedQuantity ?? l.productQuantity ?? '—' }}
-              </td>
-              <td class="px-4 py-3 text-xs text-gray-500">{{ formatDate(l.lastSyncAt) }}</td>
-              <td class="px-4 py-3 max-w-xs">
-                <span v-if="l.lastError" class="text-xs text-red-400 truncate block" :title="l.lastError">{{ l.lastError }}</span>
-              </td>
-              <td class="px-4 py-3">
-                <div class="flex gap-2 justify-end items-center">
-                  <!-- In flight: the worker has the job; buttons would double-submit -->
-                  <span
-                    v-if="workingId === l.id || ['PENDING','PUBLISHING'].includes(l.listingStatus)"
-                    class="text-xs text-gray-500 italic"
-                  >Working…</span>
-                  <!-- NEEDS_REVIEW: Publish + Archive -->
-                  <template v-else-if="l.listingStatus === 'NEEDS_REVIEW'">
-                    <button
-                      @click="publishListing(l.id)"
-                      class="rounded px-3 py-1 text-xs font-medium bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 transition-colors"
-                    >Publish</button>
-                    <button
-                      @click="dismissListing(l.id)"
-                      class="text-xs text-gray-500 hover:text-red-400 transition-colors"
-                      title="Remove from review queue without publishing"
-                    >Archive</button>
-                  </template>
-                  <!-- ACTIVE: Delist -->
-                  <button
-                    v-else-if="l.listingStatus === 'ACTIVE'"
-                    @click="delistListing(l.id)"
-                    class="text-xs text-red-400 hover:text-red-300 transition-colors"
-                  >Delist</button>
-                  <!-- Other terminal statuses (FAILED, INACTIVE, DELISTED): can re-publish or dismiss -->
-                  <template v-else-if="['FAILED','INACTIVE','DELISTED'].includes(l.listingStatus)">
-                    <button
-                      @click="publishListing(l.id)"
-                      class="text-xs text-brand-400 hover:text-brand-300 transition-colors"
-                    >Re-publish</button>
-                    <button
-                      @click="dismissListing(l.id)"
-                      class="text-xs text-gray-500 hover:text-red-400 transition-colors"
-                    >Archive</button>
-                  </template>
-                </div>
-              </td>
-            </tr>
-            <tr v-if="listings.length === 0">
-              <td colspan="8" class="px-4 py-12 text-center text-sm text-gray-500">No listings found</td>
             </tr>
           </tbody>
         </table>
@@ -114,11 +56,19 @@
 </template>
 
 <script setup>
-import { ref, watch, onMounted } from 'vue'
+import { computed, ref, watch, onMounted } from 'vue'
 import api from '@/lib/api'
 import { isTransientStatus, pollUntilSettled } from '@/lib/listingStatus'
+import { groupByProduct } from '@/lib/groupListings'
+import ProductListingGroup from '@/components/listings/ProductListingGroup.vue'
 
 const listings = ref([])
+/**
+ * One row per product rather than per (product x marketplace). The API returns
+ * the flat shape; showing it verbatim made one instrument look like two or
+ * three items of stock.
+ */
+const groups = computed(() => groupByProduct(listings.value))
 const loading = ref(true)
 const statusFilter = ref('')
 const statuses = ['PENDING','PUBLISHING','ACTIVE','INACTIVE','SOLD','DELISTED','FAILED','NEEDS_REVIEW']
@@ -136,65 +86,36 @@ async function load() {
   } finally { loading.value = false }
 }
 
-const workingId = ref(null)
-
-/** True while this listing is still queued or mid-publish. */
-function stillWorking(id) {
-  const listing = listings.value.find((l) => l.id === id)
-  return !!listing && isTransientStatus(listing.listingStatus)
+/** True while any of these listings is still queued or mid-publish. */
+function stillWorking(ids) {
+  return listings.value.some((l) => ids.includes(l.id) && isTransientStatus(l.listingStatus))
 }
 
 /**
  * Publish and delist return 202 — the worker picks the job up afterwards. Poll
- * until the row settles so the outcome (ACTIVE, or FAILED with a reason)
- * appears on its own instead of on the next manual refresh.
+ * until every listing acted on settles, so the outcome (ACTIVE, or FAILED with
+ * a reason) appears on its own instead of on the next manual refresh.
+ *
+ * Takes a LIST because the collapsed row publishes a product to every channel
+ * that is ready in one click.
  */
-async function runListingJob(id, action) {
-  workingId.value = id
-  try {
-    await api.post(`/listings/${id}/${action}`)
-    await load()
-    await pollUntilSettled(load, () => stillWorking(id))
-  } finally {
-    workingId.value = null
-  }
+async function runListingJobs(ids, action) {
+  await Promise.all(ids.map((id) => api.post(`/listings/${id}/${action}`)))
+  await load()
+  await pollUntilSettled(load, () => stillWorking(ids))
 }
 
-async function publishListing(id) {
-  await runListingJob(id, 'publish')
+async function publishListings(ids) {
+  await runListingJobs(ids, 'publish')
 }
 
 async function delistListing(id) {
-  await runListingJob(id, 'delist')
+  await runListingJobs([id], 'delist')
 }
 
 async function dismissListing(id) {
   await api.delete(`/listings/${id}`)
   load()
-}
-
-function listingBadge(s) {
-  const map = {
-    ACTIVE:       'badge-green',
-    FAILED:       'badge-red',
-    PENDING:      'badge-yellow',
-    NEEDS_REVIEW: 'inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium bg-amber-500/20 text-amber-300',
-    PUBLISHING:   'badge-blue',
-    SOLD:         'badge-blue',
-    DELISTED:     'badge-gray',
-    INACTIVE:     'badge-gray',
-  }
-  return map[s] || 'badge-gray'
-}
-
-function formatDate(d) {
-  if (!d) return '—'
-  return new Date(d).toLocaleString()
-}
-
-function formatPrice(v) {
-  if (v == null) return '—'
-  return '$' + Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
 
 watch(statusFilter, load)

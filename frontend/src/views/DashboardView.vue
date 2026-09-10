@@ -21,66 +21,36 @@
               </span>
             </h2>
           </div>
-          <p class="text-xs text-gray-500">Review each listing's overrides, then click Publish.</p>
+          <p class="text-xs text-gray-500">
+            One row per product. Expand a row to see each marketplace, or publish to all of
+            its ready channels at once.
+          </p>
         </div>
 
         <div v-if="reviewLoading" class="flex justify-center py-6">
           <div class="h-6 w-6 animate-spin rounded-full border-2 border-amber-400 border-t-transparent"></div>
         </div>
 
-        <div v-else-if="reviewListings.length > 0" class="overflow-hidden rounded-lg border border-gray-800">
+        <div v-else-if="reviewGroups.length > 0" class="overflow-hidden rounded-lg border border-gray-800">
           <table class="w-full text-sm">
             <thead>
               <tr class="border-b border-gray-800 bg-gray-900">
                 <th class="px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Product</th>
-                <th class="px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Marketplace</th>
+                <th class="px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Channels</th>
                 <th class="px-4 py-2.5 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Price</th>
                 <th class="px-4 py-2.5 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Qty</th>
-                <th class="px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Since</th>
+                <th class="px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Error</th>
                 <th class="px-4 py-2.5"></th>
               </tr>
             </thead>
             <tbody>
-              <tr v-for="l in reviewListings" :key="l.id" class="table-row">
-                <td class="px-4 py-3">
-                  <router-link
-                    :to="`/products/${l.productId}`"
-                    class="text-sm text-white hover:text-brand-400 transition-colors font-medium"
-                  >{{ l.productTitle || l.productSku || l.productId }}</router-link>
-                  <p v-if="l.productSku" class="text-xs text-gray-500 font-mono mt-0.5">{{ l.productSku }}</p>
-                </td>
-                <td class="px-4 py-3">
-                  <span class="badge-blue">{{ l.marketplaceType }}</span>
-                </td>
-                <td class="px-4 py-3 text-right text-gray-200 text-xs">
-                  {{ formatPrice(l.syncedPrice ?? l.productPrice) }}
-                </td>
-                <td class="px-4 py-3 text-right text-gray-200 text-xs">
-                  {{ l.syncedQuantity ?? l.productQuantity ?? '—' }}
-                </td>
-                <td class="px-4 py-3 text-xs text-gray-500">{{ formatDate(l.createdAt) }}</td>
-                <td class="px-4 py-3 text-right">
-                  <div class="flex items-center justify-end gap-3">
-                    <button
-                      @click="dismissListing(l.id)"
-                      :disabled="publishing[l.id]"
-                      class="text-xs text-gray-500 hover:text-red-400 transition-colors disabled:opacity-50"
-                      title="Remove from review queue without publishing"
-                    >Archive</button>
-                    <router-link
-                      :to="`/products/${l.productId}`"
-                      class="text-xs text-gray-400 hover:text-white transition-colors"
-                    >Configure</router-link>
-                    <button
-                      @click="publishListing(l.id)"
-                      :disabled="publishing[l.id]"
-                      class="rounded px-3 py-1 text-xs font-medium bg-brand-600 text-white hover:bg-brand-500 disabled:opacity-50 transition-colors"
-                    >
-                      {{ publishing[l.id] ? 'Queued…' : 'Publish' }}
-                    </button>
-                  </div>
-                </td>
-              </tr>
+              <ProductListingGroup
+                v-for="g in reviewGroups"
+                :key="g.productId"
+                :group="g"
+                @publish="publishListings"
+                @archive="dismissListing"
+              />
             </tbody>
           </table>
         </div>
@@ -88,7 +58,8 @@
         <!-- Truncation notice — shown when we have more listings than we loaded -->
         <div v-else-if="reviewListings.length > 0 && reviewTotal > reviewListings.length"
              class="mt-3 rounded-lg border border-amber-700/40 bg-amber-900/20 px-4 py-3 text-xs text-amber-300">
-          Showing {{ reviewListings.length }} of {{ reviewTotal }} listings.
+          Showing {{ reviewListings.length }} of {{ reviewTotal }} listings,
+          across {{ reviewGroups.length }} product{{ reviewGroups.length !== 1 ? 's' : '' }}.
           <span class="text-amber-400 font-medium">{{ reviewTotal - reviewListings.length }} more not shown.</span>
           If many of these are deposit listings or restoration placeholders, go to
           <router-link to="/products" class="underline hover:text-white">Products → Excluded</router-link>
@@ -159,10 +130,12 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { computed, ref, onMounted } from 'vue'
 import api from '@/lib/api'
 import StatCard from '@/components/dashboard/StatCard.vue'
 import HealthRow from '@/components/dashboard/HealthRow.vue'
+import ProductListingGroup from '@/components/listings/ProductListingGroup.vue'
+import { groupByProduct } from '@/lib/groupListings'
 
 const stats = ref({
   totalProducts: 0, activeListings: 0, failedListings: 0, pendingReviewListings: 0,
@@ -173,6 +146,12 @@ const refreshedAt = ref('—')
 
 // Review queue state
 const reviewListings = ref([])
+/**
+ * The queue is per (product x marketplace); a product awaiting review on both
+ * Reverb and eBay appeared as two rows that looked like two items. Grouping
+ * makes one row with a count, which is what the operator is deciding about.
+ */
+const reviewGroups = computed(() => groupByProduct(reviewListings.value))
 const reviewLoading = ref(false)
 const reviewTotal = ref(0)   // total NEEDS_REVIEW count from stats
 const publishing = ref({})
@@ -207,17 +186,23 @@ async function loadReviewQueue() {
   }
 }
 
-async function publishListing(id) {
-  publishing.value[id] = true
+/**
+ * Publishes every ready channel for one product in a single click.
+ *
+ * Each id still becomes its own job — the API is per listing — but the operator
+ * makes one decision per product rather than one per channel.
+ */
+async function publishListings(ids) {
+  for (const id of ids) publishing.value[id] = true
   try {
-    await api.post(`/listings/${id}/publish`)
-    // Optimistically remove from queue and decrement counter
-    reviewListings.value = reviewListings.value.filter(l => l.id !== id)
-    stats.value.pendingReviewListings = Math.max(0, stats.value.pendingReviewListings - 1)
+    await Promise.all(ids.map((id) => api.post(`/listings/${id}/publish`)))
+    // Optimistically drop them from the queue and decrement the counter.
+    reviewListings.value = reviewListings.value.filter(l => !ids.includes(l.id))
+    stats.value.pendingReviewListings = Math.max(0, stats.value.pendingReviewListings - ids.length)
   } catch (e) {
     console.error('Publish failed', e)
   } finally {
-    delete publishing.value[id]
+    for (const id of ids) delete publishing.value[id]
   }
 }
 
@@ -232,16 +217,6 @@ async function dismissListing(id) {
   } finally {
     delete publishing.value[id]
   }
-}
-
-function formatDate(d) {
-  if (!d) return '—'
-  return new Date(d).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
-}
-
-function formatPrice(v) {
-  if (v == null) return '—'
-  return '$' + Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
 
 onMounted(loadStats)
