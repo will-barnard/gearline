@@ -4,10 +4,8 @@
     <aside class="flex w-64 flex-shrink-0 flex-col border-r border-gray-800 bg-gray-900">
       <!-- Logo -->
       <div class="flex h-16 items-center gap-3 border-b border-gray-800 px-5">
-        <div class="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-500">
-          <svg class="h-5 w-5 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
-          </svg>
+        <div class="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-500 text-lg">
+          🎚️
         </div>
         <span class="text-lg font-bold tracking-tight text-white">Gearline</span>
       </div>
