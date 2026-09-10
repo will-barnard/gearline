@@ -408,11 +408,22 @@
                           <span class="text-gray-600 ml-1">#{{ cat.categoryId }}</span>
                         </button>
                       </div>
+                      <div
+                        v-else-if="ebayCategoryError[l.id]"
+                        class="mt-1 rounded-lg border border-red-700/50 bg-red-900/25 px-2.5 py-2 text-xs text-red-300"
+                      >
+                        <p class="font-medium text-red-200">Could not search eBay categories</p>
+                        <p class="break-all font-mono mt-0.5">{{ ebayCategoryError[l.id] }}</p>
+                        <p class="mt-1">
+                          If the token has expired beyond refresh, disconnect and reconnect the eBay
+                          account on the Marketplaces page.
+                        </p>
+                      </div>
                       <div v-else-if="ebayCategoryResults[l.id]?.length === 0" class="mt-1 text-xs text-gray-600 px-1">No results.</div>
                       <!-- Selected value -->
                       <p v-if="editOverrides[l.id].ebay_category_id" class="mt-1 text-xs text-gray-500">
                         Selected: <span class="text-gray-300 font-mono">{{ editOverrides[l.id].ebay_category_id }}</span>
-                        <button @click="editOverrides[l.id].ebay_category_id = ''; ebayCategoryResults[l.id] = null" class="ml-2 text-gray-600 hover:text-gray-400">✕</button>
+                        <button @click="editOverrides[l.id].ebay_category_id = ''; ebayCategoryResults[l.id] = null; ebayCategoryError[l.id] = null" class="ml-2 text-gray-600 hover:text-gray-400">✕</button>
                       </p>
                     </div>
                     <!-- Description override — eBay product.description max 4000 chars -->
@@ -790,6 +801,7 @@ const reverbProfilesLoading = ref({})  // { [accountId]: boolean }
 const ebayCategorySearch = ref({})    // { [listingId]: string }
 const ebayCategorySearching = ref({}) // { [listingId]: boolean }
 const ebayCategoryResults = ref({})   // { [listingId]: [{categoryId, categoryName, level}] | null }
+const ebayCategoryError = ref({})     // { [listingId]: string | null }
 
 // Video URL editor state
 const editingVideo = ref(false)
@@ -1203,6 +1215,7 @@ async function searchEbayCategories(listing) {
   if (!q) return
   ebayCategorySearching.value[listing.id] = true
   ebayCategoryResults.value[listing.id] = null
+  ebayCategoryError.value[listing.id] = null
   try {
     const res = await api.get(
       `/marketplace/accounts/${listing.marketplaceAccountId}/ebay/category-suggestions`,
@@ -1210,8 +1223,14 @@ async function searchEbayCategories(listing) {
     )
     ebayCategoryResults.value[listing.id] = res.data?.slice(0, 8) ?? []
   } catch (e) {
+    /**
+     * The backend answers 502 with { error } when eBay refuses. Showing "No
+     * results" for that would be a lie — the search never happened — so the
+     * reason goes on screen instead of only into the console.
+     */
+    ebayCategoryError.value[listing.id] =
+      e.response?.data?.error || e.message || 'eBay category search failed'
     console.error('eBay category search failed', e)
-    ebayCategoryResults.value[listing.id] = []
   } finally {
     ebayCategorySearching.value[listing.id] = false
   }

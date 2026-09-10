@@ -19,6 +19,7 @@ import {
   getShippingProfiles as getReverbShippingProfiles,
 } from '../marketplace/reverb/client.js';
 import * as ebayClient from '../marketplace/ebay/client.js';
+import { ebayAuthProvider } from '../marketplace/ebay/auth-provider.js';
 import { backfillListingsForNewAccount } from '../services/listing-backfill.js';
 import { encrypt } from '../security/credential-encryptor.js';
 
@@ -477,6 +478,24 @@ marketplaceAccountsRouter.get(
 // ── eBay account configuration ───────────────────────────────────────────────
 
 /** Loads an eBay account or sends the appropriate error. Returns null if handled. */
+/**
+ * Loads an eBay account with a token that is actually usable.
+ *
+ * ── Why the refresh is here ──────────────────────────────────────────────────
+ *
+ * eBay access tokens last about two hours. The connector refreshes before every
+ * call it makes, but these settings-screen endpoints did not — they read the row
+ * and used whatever token was stored. So the eBay dropdowns and the category
+ * search worked right after connecting and then broke a couple of hours later,
+ * staying broken until some background job happened to refresh the token as a
+ * side effect. From the browser that looked like an intermittent 502 with no
+ * explanation.
+ *
+ * Same logic as the connector's ensureValidToken: refresh only when the stored
+ * credentials are past their skew window, then re-read, because
+ * refreshAccessToken writes to the database and the caller's copy is stale
+ * immediately afterwards.
+ */
 async function requireEbayAccount(id: string) {
   const account = await db
     .selectFrom('marketplace_accounts')
@@ -485,7 +504,20 @@ async function requireEbayAccount(id: string) {
     .executeTakeFirst();
 
   if (!account) throw new ResourceNotFoundError('MarketplaceAccount', id);
-  return account;
+  if (account.marketplace_type !== 'EBAY') return account;
+
+  if (await ebayAuthProvider.areCredentialsValid(account)) return account;
+
+  log.info({ accountId: id }, 'eBay token expired or near-expiry — refreshing');
+  await ebayAuthProvider.refreshAccessToken(account);
+
+  const refreshed = await db
+    .selectFrom('marketplace_accounts')
+    .selectAll()
+    .where('id', '=', id)
+    .executeTakeFirst();
+
+  return refreshed ?? account;
 }
 
 /**
@@ -551,6 +583,13 @@ marketplaceAccountsRouter.get(
       return;
     }
 
+    // eBay rejects an empty category_name; answer directly rather than spending
+    // a round trip to be told so.
+    if (q.trim() === '') {
+      res.json([]);
+      return;
+    }
+
     try {
       const suggestions = await ebayClient.getCategorySuggestions(account, q);
 
@@ -570,10 +609,17 @@ marketplaceAccountsRouter.get(
         }),
       );
     } catch (err) {
-      // Returns an empty array rather than an error object — the Java version
-      // did the same, and the UI renders it as "no matches".
+      /**
+       * The previous version answered 502 with an empty array, on the reasoning
+       * that the UI would render it as "no matches". It cannot: a 502 makes the
+       * browser's HTTP client reject, so the array was never read and the
+       * operator saw a bare AxiosError with the reason left in the server log.
+       *
+       * Same shape as /ebay/config: the message travels, and the UI shows it.
+       */
+      const message = err instanceof Error ? err.message : String(err);
       log.warn({ err, accountId: id, q }, 'eBay category search failed');
-      res.status(502).json([]);
+      res.status(502).json({ error: message });
     }
   }),
 );
