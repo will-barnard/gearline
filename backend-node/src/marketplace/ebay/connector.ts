@@ -18,7 +18,7 @@ import {
 } from '../types.js';
 import { ebayAuthProvider } from './auth-provider.js';
 import * as client from './client.js';
-import { buildInventoryItemBody, buildOfferBody } from './listing-mapper.js';
+import { buildInventoryItemBody, buildOfferBody, ebayCategoryId } from './listing-mapper.js';
 import { map as mapOrder } from './order-mapper.js';
 
 const log = loggerFor('ebay-connector');
@@ -200,6 +200,23 @@ export const ebayConnector: MarketplaceConnector = {
   ): Promise<PublishListingResult> {
     const current = await ensureValidToken(account);
     const sku = product.sku;
+
+    /**
+     * Checked BEFORE anything is created.
+     *
+     * eBay only rejects a missing category at publish — step 3 — by which point
+     * the offer exists. That is how offer 262864374011 became an orphan: created,
+     * unpublishable, and blocking every retry. Failing here costs nothing and
+     * leaves nothing behind.
+     */
+    if (!ebayCategoryId(request)) {
+      const message =
+        `No eBay category set for "${product.title}". eBay will not publish a listing without ` +
+        'one. Use the category search on this listing to pick a leaf category, which sets ' +
+        'ebay_category_id in its overrides.';
+      log.error({ sku }, 'eBay publish blocked — no category');
+      return publishFailure(message);
+    }
 
     try {
       // Step 1 — inventory item

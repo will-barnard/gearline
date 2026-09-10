@@ -194,6 +194,22 @@ export function buildInventoryItemBody(
 }
 
 /**
+ * The eBay leaf category for a listing.
+ *
+ * `ebay_category_id` (per listing, set by the category search) wins over the
+ * generic `category_id`, which is the marketplace-agnostic override and, on a
+ * Reverb listing, holds a Reverb category UUID rather than an eBay id.
+ */
+export function ebayCategoryId(request: PublishListingRequest): string | null {
+  const specific = (request.extraParams ?? {})['ebay_category_id'];
+
+  if (typeof specific === 'string' && specific.trim() !== '') return specific.trim();
+  if (typeof specific === 'number') return String(specific);
+
+  return nonEmpty(request.categoryId) ? request.categoryId : null;
+}
+
+/**
  * Builds POST /sell/inventory/v1/offer or PUT /offer/{offerId}.
  *
  * merchantLocationKey is REQUIRED before an offer can be published. Without it
@@ -220,7 +236,21 @@ export function buildOfferBody(
     availableQuantity: request.quantity,
   };
 
-  if (request.categoryId) body['categoryId'] = request.categoryId;
+  /**
+   * eBay's leaf category. Publishing without it fails with
+   * "missing required input tag <Item.PrimaryCategory.CategoryID>" — and it
+   * fails at PUBLISH, after the offer has already been created, which leaves an
+   * orphan offer behind. ebayCategoryId() is therefore also checked up front by
+   * the connector.
+   *
+   * `ebay_category_id` comes first because that is what the whole UI writes:
+   * the category search on the listing, and the field in the publish modal. It
+   * was never read here — the mapper looked only at the generic `category_id`,
+   * which nothing on the eBay side sets — so the category picker has never had
+   * any effect and every offer went out uncategorised.
+   */
+  const categoryId = ebayCategoryId(request);
+  if (categoryId) body['categoryId'] = categoryId;
 
   const policies: Record<string, unknown> = {};
 
