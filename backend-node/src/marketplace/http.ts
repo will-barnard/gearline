@@ -125,11 +125,11 @@ export async function apiRequest<T = unknown>(opts: ApiRequestOptions): Promise<
 
     if (RETRYABLE_STATUSES.has(status)) {
       log.warn({ status, url, marketplace: opts.marketplace }, 'Retryable marketplace API error');
-      throw new RetryableMarketplaceError(message, status);
+      throw new RetryableMarketplaceError(message, status, rawBody);
     }
 
     log.error({ status, url, marketplace: opts.marketplace }, 'Permanent marketplace API error');
-    throw new PermanentMarketplaceError(message, status);
+    throw new PermanentMarketplaceError(message, status, rawBody);
   }
 
   const responseHeaders = opts.includeResponseHeaders ? response.headers : undefined;

@@ -73,6 +73,86 @@ function getSku(listing: MarketplaceListingRow): string | null {
 }
 
 /** Creates an offer and extracts its ID, failing loudly if either step is empty. */
+/**
+ * eBay's error id for "this SKU already has an offer".
+ *
+ * The response carries the conflicting offerId in `parameters`, which is what
+ * makes recovery possible rather than a dead end:
+ *
+ *   { "errors": [{ "errorId": 25002, "message": "... Offer entity already exists.",
+ *                  "parameters": [{ "name": "offerId", "value": "262864374011" }] }] }
+ */
+const OFFER_ALREADY_EXISTS = 25002;
+
+/**
+ * Digs the conflicting offerId out of an eBay error body.
+ *
+ * Returns null unless this really is 25002 with an offerId parameter — a
+ * different error must never be mistaken for a recoverable conflict, and
+ * adopting the wrong offer would attach this product to someone else's listing.
+ */
+function conflictingOfferId(err: PermanentMarketplaceError): string | null {
+  if (!err.responseBody) return null;
+
+  let parsed: unknown;
+
+  try {
+    parsed = JSON.parse(err.responseBody);
+  } catch {
+    return null; // not JSON — nothing to recover from
+  }
+
+  const errors = (parsed as { errors?: unknown })?.errors;
+  if (!Array.isArray(errors)) return null;
+
+  for (const entry of errors) {
+    const record = entry as { errorId?: unknown; parameters?: unknown };
+    if (record.errorId !== OFFER_ALREADY_EXISTS) continue;
+    if (!Array.isArray(record.parameters)) continue;
+
+    for (const parameter of record.parameters) {
+      const p = parameter as { name?: unknown; value?: unknown };
+      if (p.name === 'offerId' && typeof p.value === 'string' && p.value.trim() !== '') {
+        return p.value;
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Creates the offer, or takes over the one eBay says already exists.
+ *
+ * An offer is left behind whenever a publish gets past step 2 and then fails —
+ * which is exactly what the packageType bug did to every heavy item. Retrying
+ * afterwards can never succeed: eBay refuses to create a second offer for the
+ * SKU, and gearline holds no offerId, so the listing is unreachable forever.
+ *
+ * Adopting it also refreshes it, so an offer created by an earlier, buggier
+ * build does not go live carrying stale data.
+ */
+async function createOrAdoptOffer(
+  account: MarketplaceAccountRow,
+  sku: string,
+  body: Record<string, unknown>,
+): Promise<string> {
+  try {
+    return await createOfferOrThrow(account, sku, body);
+  } catch (err) {
+    if (!(err instanceof PermanentMarketplaceError)) throw err;
+
+    const offerId = conflictingOfferId(err);
+    if (!offerId) throw err;
+
+    log.info({ sku, offerId }, 'eBay offer already exists — adopting and updating it');
+
+    await client.updateOffer(account, offerId, body);
+
+    return offerId;
+  }
+}
+
 async function createOfferOrThrow(
   account: MarketplaceAccountRow,
   sku: string,
@@ -127,8 +207,8 @@ export const ebayConnector: MarketplaceConnector = {
       log.info({ sku }, 'eBay inventory item created/updated');
 
       // Step 2 — offer
-      const offerId = await createOfferOrThrow(current, sku, buildOfferBody(sku, product, request));
-      log.info({ offerId, sku }, 'eBay offer created');
+      const offerId = await createOrAdoptOffer(current, sku, buildOfferBody(sku, product, request));
+      log.info({ offerId, sku }, 'eBay offer ready');
 
       // Step 3 — publish
       const publishResponse = await client.publishOffer(current, offerId);

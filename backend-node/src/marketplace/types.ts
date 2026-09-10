@@ -225,22 +225,36 @@ export interface MarketplaceConnector {
 export class RetryableMarketplaceError extends Error {
   readonly retryable = true;
   readonly statusCode: number | undefined;
+  /** Raw response body, for callers that need to react to WHICH error it was. */
+  readonly responseBody: string | undefined;
 
-  constructor(message: string, statusCode?: number) {
+  constructor(message: string, statusCode?: number, responseBody?: string) {
     super(message);
     this.name = 'RetryableMarketplaceError';
     this.statusCode = statusCode;
+    this.responseBody = responseBody;
   }
 }
 
 export class PermanentMarketplaceError extends Error {
   readonly retryable = false;
   readonly statusCode: number | undefined;
+  /**
+   * Raw response body.
+   *
+   * The message carries a 500-character snippet for logs, which is fine to read
+   * and hopeless to react to. Marketplaces answer some failures with the
+   * information needed to recover — eBay returns the conflicting offerId with
+   * "Offer entity already exists" — and digging that out of a formatted,
+   * truncated message with a regex is how brittle recovery code gets written.
+   */
+  readonly responseBody: string | undefined;
 
-  constructor(message: string, statusCode?: number) {
+  constructor(message: string, statusCode?: number, responseBody?: string) {
     super(message);
     this.name = 'PermanentMarketplaceError';
     this.statusCode = statusCode;
+    this.responseBody = responseBody;
   }
 }
 
