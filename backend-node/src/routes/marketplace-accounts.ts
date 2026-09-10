@@ -570,6 +570,41 @@ marketplaceAccountsRouter.get(
   }),
 );
 
+/**
+ * Item specifics eBay requires for a category.
+ *
+ * The listing editor renders one field per required aspect, so the operator
+ * fills them in before publishing instead of discovering them one publish at a
+ * time — eBay reports only a single missing aspect per attempt.
+ */
+marketplaceAccountsRouter.get(
+  '/:id/ebay/category-aspects',
+  asyncHandler(async (req, res) => {
+    const id = uuidSchema.parse(req.params.id);
+    const categoryId = typeof req.query.categoryId === 'string' ? req.query.categoryId : '';
+
+    const account = await requireEbayAccount(id);
+
+    if (account.marketplace_type !== 'EBAY') {
+      res.status(400).end();
+      return;
+    }
+
+    if (categoryId.trim() === '') {
+      res.json([]);
+      return;
+    }
+
+    try {
+      res.json(await ebayClient.getItemAspectsForCategory(account, categoryId));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      log.warn({ err, accountId: id, categoryId }, 'eBay aspect lookup failed');
+      res.status(502).json({ error: message });
+    }
+  }),
+);
+
 marketplaceAccountsRouter.get(
   '/:id/ebay/category-suggestions',
   asyncHandler(async (req, res) => {

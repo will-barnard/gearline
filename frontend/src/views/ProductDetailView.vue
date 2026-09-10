@@ -423,8 +423,68 @@
                       <!-- Selected value -->
                       <p v-if="editOverrides[l.id].ebay_category_id" class="mt-1 text-xs text-gray-500">
                         Selected: <span class="text-gray-300 font-mono">{{ editOverrides[l.id].ebay_category_id }}</span>
-                        <button @click="editOverrides[l.id].ebay_category_id = ''; ebayCategoryResults[l.id] = null; ebayCategoryError[l.id] = null" class="ml-2 text-gray-600 hover:text-gray-400">✕</button>
+                        <button @click="editOverrides[l.id].ebay_category_id = ''; ebayCategoryResults[l.id] = null; ebayCategoryError[l.id] = null; ebayAspects[l.id] = null" class="ml-2 text-gray-600 hover:text-gray-400">✕</button>
                       </p>
+                    </div>
+
+                    <!-- ── Item specifics ──────────────────────────────────── -->
+                    <div v-if="editOverrides[l.id].ebay_category_id">
+                      <div class="flex items-center justify-between mb-1">
+                        <label class="text-xs text-gray-500">Item specifics</label>
+                        <button
+                          @click="loadEbayAspects(l)"
+                          :disabled="ebayAspectsLoading[l.id]"
+                          class="text-xs text-brand-400 hover:text-brand-300 underline underline-offset-2 disabled:opacity-50"
+                        >{{ ebayAspectsLoading[l.id] ? 'Loading…' : (ebayAspects[l.id] ? 'Reload' : 'Load required fields') }}</button>
+                      </div>
+                      <p class="text-xs text-gray-600 mb-1.5">
+                        eBay refuses to publish without the required ones, and names only one per
+                        attempt — so fill them in here first.
+                      </p>
+
+                      <div
+                        v-if="ebayAspectsError[l.id]"
+                        class="rounded-lg border border-red-700/50 bg-red-900/25 px-2.5 py-2 text-xs text-red-300"
+                      >
+                        <p class="font-medium text-red-200">Could not load eBay's required fields</p>
+                        <p class="break-all font-mono mt-0.5">{{ ebayAspectsError[l.id] }}</p>
+                        <p class="mt-1">You can still add specifics by hand below.</p>
+                      </div>
+
+                      <div v-if="ebayAspectRows(l).length" class="space-y-1.5">
+                        <div v-for="(row, i) in ebayAspectRows(l)" :key="row.name + i" class="flex items-center gap-2">
+                          <span
+                            class="w-40 shrink-0 truncate text-xs"
+                            :class="row.required ? 'text-gray-300' : 'text-gray-500'"
+                            :title="row.name"
+                          >
+                            {{ row.name }}<span v-if="row.required" class="text-amber-400 ml-0.5">*</span>
+                          </span>
+                          <input
+                            :value="specificValue(l.id, row.name)"
+                            @input="setSpecific(l.id, row.name, $event.target.value)"
+                            class="input flex-1 py-1 text-xs"
+                            :placeholder="row.required ? 'Required by eBay' : 'Optional'"
+                          />
+                        </div>
+                      </div>
+                      <p v-else-if="!ebayAspectsLoading[l.id]" class="text-xs text-gray-600">
+                        None loaded yet.
+                      </p>
+
+                      <!-- Free-form addition, for anything the lookup does not list -->
+                      <div class="mt-2 flex items-center gap-2">
+                        <input
+                          v-model="ebayNewSpecific[l.id]"
+                          placeholder="Add another specific (e.g. Model)"
+                          class="input flex-1 py-1 text-xs"
+                          @keydown.enter.prevent="addSpecific(l.id)"
+                        />
+                        <button
+                          @click="addSpecific(l.id)"
+                          class="text-xs text-brand-400 hover:text-brand-300 underline underline-offset-2 shrink-0"
+                        >Add</button>
+                      </div>
                     </div>
                     <!-- Description override — eBay product.description max 4000 chars -->
                     <div>
@@ -802,6 +862,10 @@ const ebayCategorySearch = ref({})    // { [listingId]: string }
 const ebayCategorySearching = ref({}) // { [listingId]: boolean }
 const ebayCategoryResults = ref({})   // { [listingId]: [{categoryId, categoryName, level}] | null }
 const ebayCategoryError = ref({})     // { [listingId]: string | null }
+const ebayAspects = ref({})           // { [listingId]: [{name, required}] | null }
+const ebayAspectsLoading = ref({})
+const ebayAspectsError = ref({})
+const ebayNewSpecific = ref({})       // { [listingId]: string } — free-form key being added
 
 // Video URL editor state
 const editingVideo = ref(false)
@@ -1236,10 +1300,102 @@ async function searchEbayCategories(listing) {
   }
 }
 
+// ── eBay item specifics ───────────────────────────────────────────────────────
+
+/**
+ * Loads the aspects eBay defines for the selected category.
+ *
+ * eBay only validates required aspects at publish, and names one per attempt.
+ * Pulling the list here turns a multi-round guessing game into a form.
+ */
+async function loadEbayAspects(listing) {
+  const categoryId = editOverrides.value[listing.id]?.ebay_category_id
+  if (!categoryId) return
+
+  ebayAspectsLoading.value[listing.id] = true
+  ebayAspectsError.value[listing.id] = null
+  try {
+    const res = await api.get(
+      `/marketplace/accounts/${listing.marketplaceAccountId}/ebay/category-aspects`,
+      { params: { categoryId } }
+    )
+    ebayAspects.value[listing.id] = Array.isArray(res.data) ? res.data : []
+  } catch (e) {
+    ebayAspectsError.value[listing.id] =
+      e.response?.data?.error || e.message || 'Could not load required fields'
+    console.error('eBay aspect lookup failed', e)
+  } finally {
+    ebayAspectsLoading.value[listing.id] = false
+  }
+}
+
+/**
+ * Rows to render: every required aspect, then anything already filled in.
+ *
+ * Optional aspects eBay merely offers are left out — the list runs to dozens for
+ * some categories, and the point of this panel is what blocks publishing.
+ */
+function ebayAspectRows(listing) {
+  const defined = ebayAspects.value[listing.id] || []
+  const rows = defined.filter(a => a.required).map(a => ({ name: a.name, required: true }))
+  const seen = new Set(rows.map(r => r.name.toLowerCase()))
+
+  for (const name of Object.keys(specificsFor(listing.id))) {
+    if (!seen.has(name.toLowerCase())) {
+      rows.push({ name, required: false })
+      seen.add(name.toLowerCase())
+    }
+  }
+
+  return rows
+}
+
+function specificsFor(listingId) {
+  const current = editOverrides.value[listingId]?.ebay_item_specifics
+  return current && typeof current === 'object' && !Array.isArray(current) ? current : {}
+}
+
+function specificValue(listingId, name) {
+  const value = specificsFor(listingId)[name]
+  return Array.isArray(value) ? value.join(', ') : (value ?? '')
+}
+
+function setSpecific(listingId, name, value) {
+  if (!editOverrides.value[listingId]) return
+  const next = { ...specificsFor(listingId) }
+
+  // Drop emptied keys rather than sending a blank value — eBay treats a blank
+  // required aspect exactly like a missing one.
+  if (value.trim() === '') delete next[name]
+  else next[name] = value
+
+  editOverrides.value[listingId].ebay_item_specifics = next
+}
+
+/**
+ * Adds an empty row for a specific eBay's lookup did not list.
+ *
+ * Written directly rather than through setSpecific, which deletes empty keys —
+ * here the empty key IS the point: it puts a labelled field on screen to fill in.
+ */
+function addSpecific(listingId) {
+  const name = (ebayNewSpecific.value[listingId] || '').trim()
+  if (!name || !editOverrides.value[listingId]) return
+
+  editOverrides.value[listingId].ebay_item_specifics = {
+    ...specificsFor(listingId),
+    [name]: '',
+  }
+  ebayNewSpecific.value[listingId] = ''
+}
+
 /** Selects a category from the search results and collapses the list. */
 function selectEbayCategory(listingId, cat) {
   if (!editOverrides.value[listingId]) return
   editOverrides.value[listingId].ebay_category_id = cat.categoryId
+  // Different category, different required aspects.
+  ebayAspects.value[listingId] = null
+  ebayAspectsError.value[listingId] = null
   ebayCategoryResults.value[listingId] = null
   ebayCategorySearch.value[listingId] = cat.categoryName
 }
@@ -1277,6 +1433,7 @@ function emptyPublishForm() {
     category_id: '',
     ebay_merchant_location_key: '',
     ebay_category_id: '',
+    ebay_item_specifics: null,
     ebay_fulfillment_policy_id: '',
     ebay_return_policy_id: '',
   }
@@ -1295,6 +1452,7 @@ function buildOverrides(form) {
     category_id: 'category_id',
     ebay_merchant_location_key: 'ebay_merchant_location_key',
     ebay_category_id: 'ebay_category_id',
+    ebay_item_specifics: 'ebay_item_specifics',
     ebay_fulfillment_policy_id: 'ebay_fulfillment_policy_id',
     ebay_return_policy_id: 'ebay_return_policy_id',
   }
@@ -1318,6 +1476,7 @@ function flattenOverrides(listing) {
     category_id: o.category_id ?? '',
     ebay_merchant_location_key: o.ebay_merchant_location_key ?? '',
     ebay_category_id: o.ebay_category_id ?? '',
+    ebay_item_specifics: o.ebay_item_specifics ?? null,
     ebay_fulfillment_policy_id: o.ebay_fulfillment_policy_id ?? '',
     ebay_return_policy_id: o.ebay_return_policy_id ?? '',
   }

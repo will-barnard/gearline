@@ -17,6 +17,7 @@ import {
   type PublishListingResult,
 } from '../types.js';
 import { ebayAuthProvider } from './auth-provider.js';
+import { missingRequiredAspects } from './aspects.js';
 import * as client from './client.js';
 import { buildInventoryItemBody, buildOfferBody, ebayCategoryId } from './listing-mapper.js';
 import { map as mapOrder } from './order-mapper.js';
@@ -209,12 +210,32 @@ export const ebayConnector: MarketplaceConnector = {
      * unpublishable, and blocking every retry. Failing here costs nothing and
      * leaves nothing behind.
      */
-    if (!ebayCategoryId(request)) {
+    const categoryId = ebayCategoryId(request);
+
+    if (!categoryId) {
       const message =
         `No eBay category set for "${product.title}". eBay will not publish a listing without ` +
         'one. Use the category search on this listing to pick a leaf category, which sets ' +
         'ebay_category_id in its overrides.';
       log.error({ sku }, 'eBay publish blocked — no category');
+      return publishFailure(message);
+    }
+
+    /**
+     * Required item specifics, checked before anything is created.
+     *
+     * eBay validates these at publish and names only ONE per attempt, so
+     * discovering them by trial costs a round trip each. This names them all at
+     * once — and, like the category check, leaves nothing behind when it fails.
+     */
+    const missing = await missingRequiredAspects(current, categoryId, request);
+
+    if (missing.length > 0) {
+      const message =
+        `eBay requires ${missing.length} item specific${missing.length === 1 ? '' : 's'} for ` +
+        `category ${categoryId} that this listing does not set: ${missing.join(', ')}. ` +
+        'Fill them in under Item specifics on the listing.';
+      log.error({ sku, categoryId, missing }, 'eBay publish blocked — missing required aspects');
       return publishFailure(message);
     }
 

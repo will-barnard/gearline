@@ -362,6 +362,45 @@ export async function getCategorySuggestions(
   return response.body?.categorySuggestions ?? [];
 }
 
+/**
+ * Required and optional item specifics ("aspects") for a leaf category.
+ *
+ * eBay enforces required aspects only at PUBLISH, and reports them ONE AT A
+ * TIME — publish, get told "Number of Keys is missing", add it, publish, get
+ * told the next one. Fetching the list up front turns that loop into a single
+ * answer.
+ *
+ * Shapes verified against eBay's OpenAPI spec for the Taxonomy API:
+ *   query param  category_id
+ *   response     { aspects: [ { localizedAspectName, aspectConstraint: { aspectRequired } } ] }
+ *
+ * Tree id 0 is EBAY_US, matching getCategorySuggestions.
+ */
+export async function getItemAspectsForCategory(
+  account: MarketplaceAccountRow,
+  categoryId: string,
+): Promise<Array<{ name: string; required: boolean }>> {
+  const response = await apiRequest<{
+    aspects?: Array<{
+      localizedAspectName?: string;
+      aspectConstraint?: { aspectRequired?: boolean };
+    }>;
+  }>({
+    marketplace: 'eBay',
+    method: 'GET',
+    url: url('/commerce/taxonomy/v1/category_tree/0/get_item_aspects_for_category'),
+    accessToken: bearer(account),
+    query: { category_id: categoryId },
+  });
+
+  return (response.body?.aspects ?? [])
+    .map((aspect) => ({
+      name: aspect.localizedAspectName ?? '',
+      required: aspect.aspectConstraint?.aspectRequired === true,
+    }))
+    .filter((aspect) => aspect.name !== '');
+}
+
 /** Health check — cheap authenticated call. */
 export async function verifyToken(account: MarketplaceAccountRow): Promise<boolean> {
   try {
