@@ -495,19 +495,17 @@ function extractResyncFields(
     }
 
     /**
-     * Title carries the variant name, matching the webhook processor, so
-     * sibling rows stay distinguishable in the products list and publish as
-     * distinct listings. "Default Title" is Shopify's placeholder for the
-     * implicit variant of an option-less product and is never appended.
+     * The row is called what the variant is, matching the webhook processor.
+     * "Default Title" is Shopify's placeholder for the implicit variant of an
+     * option-less product, so those keep the product title.
      */
     const productTitle = str(shopifyProduct, 'title');
+    const variantName = str(variant, 'title').trim();
 
-    if (productTitle !== '') {
-      const suffix = str(variant, 'title').trim();
-      patch['title'] =
-        suffix === '' || suffix === 'Default Title'
-          ? productTitle
-          : `${productTitle} — ${suffix}`;
+    if (variantName !== '' && variantName !== 'Default Title') {
+      patch['title'] = variantName;
+    } else if (productTitle !== '') {
+      patch['title'] = productTitle;
     }
   }
 

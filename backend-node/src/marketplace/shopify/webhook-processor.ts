@@ -90,19 +90,29 @@ function variantsOf(payload: Json): Json[] {
 const DEFAULT_VARIANT_TITLE = 'Default Title';
 
 /**
- * The product title as this variant should carry it.
+ * What this row is called: the variant's own name.
  *
- * Variants of one product share a Shopify title, which would make sibling rows
- * indistinguishable in the products list, the SKU audit and the listing picker
- * — and would publish as identical-looking listings. products.title is also the
- * fallback for the Reverb listing title, so the variant name has to reach it.
+ * Not the product title, and not the two concatenated. Concatenating produced
+ * titles like "Rhodes Peterson Cable (4-Pin) — Peterson 4-Pin Square
+ * (1970–1973)", where sibling rows share their first 29 characters and only
+ * diverge at the tail — so in a table, or truncated in a listing picker, the two
+ * variants are indistinguishable at a glance. The variant name is the part that
+ * identifies the item, so it is the whole name.
+ *
+ * products.title is also the Reverb listing title, and the same reasoning holds
+ * there: the listing should be called what the variant is. Reverb carries
+ * "Rhodes" separately in `make`.
+ *
+ * A product with no options still has one variant, titled "Default Title" —
+ * Shopify's placeholder, never a real name. Those keep the product title, which
+ * is every one-off instrument in the catalogue.
  */
 function variantTitle(productTitle: string, variant: Json): string {
-  const suffix = str(variant, 'title').trim();
+  const name = str(variant, 'title').trim();
 
-  if (suffix === '' || suffix === DEFAULT_VARIANT_TITLE) return productTitle;
+  if (name === '' || name === DEFAULT_VARIANT_TITLE) return productTitle;
 
-  return `${productTitle} — ${suffix}`;
+  return name;
 }
 
 /**
