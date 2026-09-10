@@ -645,13 +645,43 @@ async function upsertVariantsFromPayload(
           category: fields.category ?? null,
           weight_kg: fields.weight_kg ?? null,
         })
-        .onConflict((oc) => oc.column('sku').doUpdateSet({ ...fields, updated_at: new Date() }))
+        /**
+         * ── The guard on this conflict clause is load-bearing ────────────────
+         *
+         * An unguarded DO UPDATE here is what corrupted rows before V18: when a
+         * NEW Shopify product first arrived carrying a SKU an existing row
+         * already held — a duplicated product, or a SKU typed before being
+         * corrected — the insert did not create a row. It overwrote a different
+         * product's row with this product's title, price and (until V18) variant
+         * id, while leaving its shopify_product_id pointing elsewhere.
+         *
+         * Restricting the update to the SAME Shopify product keeps what the
+         * clause is actually for — two webhooks racing to create one variant —
+         * and makes a cross-product SKU collision do nothing instead. The
+         * caller then sees no row and logs it, so a collision is a visible
+         * error rather than silent, undetectable damage to an unrelated
+         * product.
+         */
+        .onConflict((oc) =>
+          oc
+            .column('sku')
+            .doUpdateSet({ ...fields, updated_at: new Date() })
+            .where('products.shopify_product_id', '=', shopifyProductId),
+        )
         .returningAll()
         .executeTakeFirst();
     }
 
     if (!row) {
-      log.error({ shopifyProductId, variantId }, 'Product upsert returned no row');
+      /**
+       * Almost always the guarded conflict above declining a cross-product SKU
+       * collision. Naming the SKU makes it fixable: the operator changes it in
+       * Shopify and the next webhook creates the row properly.
+       */
+      log.error(
+        { shopifyProductId, variantId, sku: fields.sku },
+        'Could not upsert product row — its SKU is already held by a different Shopify product',
+      );
       continue;
     }
 

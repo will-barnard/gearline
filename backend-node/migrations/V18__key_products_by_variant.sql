@@ -11,37 +11,63 @@
 -- correct variant-1 row and keeps its id, its SKU and its listings. The
 -- backfill for variants 2..n happens through a normal product resync.
 
--- Fail with an actionable message rather than a bare unique_violation.
+-- ── Repair rows that share a variant id ──────────────────────────────────────
 --
--- If two rows already claim one variant, CREATE UNIQUE INDEX below aborts with
--- "could not create unique index" and names the index, not the data. This block
--- names the variant ids and SKUs involved, which is what anyone reading a
--- failed deploy log actually needs.
+-- The old insert used ON CONFLICT (sku) DO UPDATE, and the update set included
+-- shopify_variant_id. So when a NEW Shopify product first arrived carrying a
+-- SKU that an EXISTING row already held, the insert did not create a row — it
+-- overwrote the existing one with the new product's variant id, title and
+-- price, while leaving its shopify_product_id pointing at the original product.
+-- Correcting the SKU in Shopify afterwards then created the row that should
+-- have existed all along, leaving two rows claiming one variant.
 --
--- migrate.ts runs each migration in its own transaction together with its
--- history row, so raising here rolls the whole thing back cleanly: no partial
--- schema, no FAILED history entry to clear by hand, and the previously deployed
--- container keeps serving.
+-- Nulling the identity columns on every row in such a group is safe and
+-- self-healing: the columns are exempt from the partial index below while null,
+-- and ingestion re-keys each row from its own shopify_product_id on the next
+-- product sync, which is where the correct variant id comes from anyway. No row
+-- is deleted and no listing is touched — listings key on the product's UUID.
+--
+-- Rows whose Shopify product no longer exists simply stay unkeyed, which is
+-- the state they were already in before this migration.
 DO $$
 DECLARE
-    offenders TEXT;
+    repaired INT;
+    detail   TEXT;
 BEGIN
-    SELECT string_agg(detail, '; ')
-    INTO   offenders
+    SELECT string_agg(d, '; ')
+    INTO   detail
     FROM (
-        SELECT shopify_variant_id || ' held by ' || string_agg(sku, ' + ') AS detail
+        SELECT shopify_variant_id || ' was claimed by ' || string_agg(sku, ' + ') AS d
         FROM   products
         WHERE  shopify_variant_id IS NOT NULL
         GROUP  BY shopify_variant_id
         HAVING COUNT(*) > 1
     ) dupes;
 
-    IF offenders IS NOT NULL THEN
-        RAISE EXCEPTION
-            'Cannot key products by variant: % product row(s) share a Shopify variant id. %',
-            'two or more', offenders
-        USING HINT = 'Merge or delete the duplicate rows, then redeploy. Nothing has been changed.';
+    IF detail IS NULL THEN
+        RETURN; -- nothing to repair
     END IF;
+
+    WITH duplicated AS (
+        SELECT shopify_variant_id
+        FROM   products
+        WHERE  shopify_variant_id IS NOT NULL
+        GROUP  BY shopify_variant_id
+        HAVING COUNT(*) > 1
+    )
+    UPDATE products p
+    SET    shopify_variant_id        = NULL,
+           shopify_inventory_item_id = NULL,
+           updated_at                = NOW()
+    FROM   duplicated d
+    WHERE  p.shopify_variant_id = d.shopify_variant_id;
+
+    GET DIAGNOSTICS repaired = ROW_COUNT;
+
+    RAISE WARNING
+        'Unlinked % product row(s) that shared a Shopify variant id: %. '
+        'Run "Sync Products" on the Shopify account to re-key them.',
+        repaired, detail;
 END $$;
 
 -- Identity for Shopify-sourced products. PARTIAL so that products created by
