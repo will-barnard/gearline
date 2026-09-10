@@ -29,6 +29,15 @@ const MAX_IMAGE_URLS = 12;
 const VERY_LARGE_PACKAGE_OZ = parseDecimal('320');
 
 /**
+ * The subset of eBay's PackageTypeEnum this mapper emits.
+ *
+ * Typed as a union rather than a bare string so a typo becomes a compile error
+ * instead of a 400 at publish time — which is exactly how VERY_LARGE_PACKAGE
+ * survived: it reads correctly, and nothing checked it until eBay refused.
+ */
+type PackageType = 'MAILING_BOX' | 'VERY_LARGE_PACK';
+
+/**
  * ProductCondition → eBay Inventory API condition enum.
  *
  * A Record rather than a switch, so a new ProductCondition without a mapping is
@@ -151,13 +160,22 @@ export function buildInventoryItemBody(
        * packageType drives eBay's carrier eligibility checks. Calling a 30 lb
        * guitar a MAILING_BOX produces wrong shipping quotes at checkout, so the
        * threshold is applied on exact decimals rather than a float compare.
+       *
+       * Both values MUST come from eBay's PackageTypeEnum. It was previously
+       * 'VERY_LARGE_PACKAGE', which is not in the enum — the real value is
+       * VERY_LARGE_PACK. eBay does not reject an unknown value with a useful
+       * message; it answers a generic 400 whose only clue is
+       * "Could not serialize field [packageWeightAndSize.packageType]", and
+       * every heavy item failed to publish while every light one went through.
+       *
+       * https://developer.ebay.com/api-docs/sell/inventory/types/slr:PackageTypeEnum
        */
-      let packageType = 'MAILING_BOX';
+      let packageType: PackageType = 'MAILING_BOX';
 
       if (shipping.weightOz !== null) {
         const weight = parseDecimal(shipping.weightOz);
         if (compareDecimal(weight, VERY_LARGE_PACKAGE_OZ) > 0) {
-          packageType = 'VERY_LARGE_PACKAGE';
+          packageType = 'VERY_LARGE_PACK';
         }
       }
 
