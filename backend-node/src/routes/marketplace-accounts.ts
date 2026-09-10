@@ -583,8 +583,8 @@ marketplaceAccountsRouter.get(
       return;
     }
 
-    // eBay rejects an empty category_name; answer directly rather than spending
-    // a round trip to be told so.
+    // eBay rejects an empty `q` (error 62007); answer directly rather than
+    // spending a round trip to be told so.
     if (q.trim() === '') {
       res.json([]);
       return;

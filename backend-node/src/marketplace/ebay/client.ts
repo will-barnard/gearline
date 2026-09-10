@@ -343,7 +343,20 @@ export async function getCategorySuggestions(
     method: 'GET',
     url: url('/commerce/taxonomy/v1/category_tree/0/get_category_suggestions'),
     accessToken: bearer(account),
-    query: { category_name: query },
+    /**
+     * The parameter is `q`, not `category_name`. eBay is explicit about it:
+     *
+     *   62007 API_TAXONOMY / REQUEST
+     *   "Missing keyword 'q'. Please specify a valid set of keywords that best
+     *    describes your item."  (fieldName: q)
+     *
+     * `category_name` is silently ignored, so every search arrived with no
+     * keywords at all and came back 400 — which the route then wrapped as a
+     * 502, hiding the one message that named the problem.
+     *
+     * The tree id 0 in the path is EBAY_US.
+     */
+    query: { q: query },
   });
 
   return response.body?.categorySuggestions ?? [];
