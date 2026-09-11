@@ -1209,15 +1209,43 @@ async function createEbayLocation() {
 }
 
 // Returns a human-readable policy name from cached config, or falls back to a truncated UUID
+/**
+ * A policy's NAME, falling back to a truncated id until the list has loaded.
+ *
+ * The name matters more than it looks: an account default called "Standard
+ * Shipping Large Instruments" quietly applies to every eBay listing, including
+ * small parts, and reading "5091234…" gives no hint of that.
+ */
 function ebayPolicyName(accountId, type, id) {
   if (!id) return '—'
-  if (!ebayConfig.value) return id.substring(0, 8) + '…'
+  if (!ebayConfig.value) {
+    loadEbayConfigForCard(accountId)
+    return id.substring(0, 8) + '…'
+  }
   const list =
     type === 'fulfillment' ? ebayConfig.value.fulfillmentPolicies
     : type === 'payment'   ? ebayConfig.value.paymentPolicies
     : ebayConfig.value.returnPolicies
   const match = (list || []).find(p => p.id === id)
   return match ? match.name : id.substring(0, 8) + '…'
+}
+
+/**
+ * Fetches the policy lists so the account card can show names without the
+ * operator opening the defaults dialog first. Fires once per page load.
+ */
+let cardConfigRequested = false
+
+async function loadEbayConfigForCard(accountId) {
+  if (cardConfigRequested || ebayConfig.value || ebayConfigLoading.value) return
+  cardConfigRequested = true
+  try {
+    const res = await api.get(`/marketplace/accounts/${accountId}/ebay/config`)
+    if (!res.data?.error) ebayConfig.value = res.data
+  } catch (e) {
+    // The card falls back to truncated ids; the dialog reports the real error.
+    console.error('Failed to load eBay policy names', e)
+  }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

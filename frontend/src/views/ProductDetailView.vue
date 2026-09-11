@@ -360,20 +360,27 @@
                     <!-- Account-level defaults summary -->
                     <div class="rounded-lg bg-gray-800/60 border border-gray-700/50 px-3 py-2 text-xs text-gray-400 space-y-1">
                       <p class="font-medium text-gray-300">Account defaults (set on Marketplaces page)</p>
-                      <div class="grid grid-cols-3 gap-2 mt-1">
+                      <div class="grid grid-cols-2 gap-2 mt-1">
                         <div>
                           <span class="text-gray-600">Location: </span>
                           <span>{{ ebayAccountDefault(l.marketplaceAccountId, 'location') }}</span>
                         </div>
                         <div>
-                          <span class="text-gray-600">Fulfillment: </span>
+                          <span class="text-gray-600">Shipping: </span>
                           <span>{{ ebayAccountDefault(l.marketplaceAccountId, 'fulfillment') }}</span>
                         </div>
                         <div>
                           <span class="text-gray-600">Returns: </span>
                           <span>{{ ebayAccountDefault(l.marketplaceAccountId, 'return') }}</span>
                         </div>
+                        <div>
+                          <span class="text-gray-600">Payment: </span>
+                          <span>{{ ebayAccountDefault(l.marketplaceAccountId, 'payment') }}</span>
+                        </div>
                       </div>
+                      <p class="text-gray-600 mt-1">
+                        Applied to every eBay listing unless overridden below.
+                      </p>
                       <p v-if="!hasEbayDefaults(l.marketplaceAccountId)" class="text-yellow-400 mt-1">
                         ⚠ No account defaults set — go to Marketplaces → eBay → Edit to configure them.
       </p>
@@ -443,12 +450,48 @@
                     </div>
 
                     <div>
+                      <label class="text-xs text-gray-500">Shipping policy override</label>
+                      <select
+                        v-model="editOverrides[l.id].ebay_fulfillment_policy_id"
+                        class="input w-full mt-1 py-1 text-xs"
+                      >
+                        <option value="">
+                          Account default ({{ ebayAccountDefault(l.marketplaceAccountId, 'fulfillment') }})
+                        </option>
+                        <option v-for="p in ebayConfigFor(l.marketplaceAccountId).fulfillmentPolicies || []" :key="p.id" :value="p.id">
+                          {{ p.name }}
+                        </option>
+                      </select>
+                      <p class="mt-1 text-xs text-gray-600">
+                        Decides what eBay charges for shipping. A policy meant for large
+                        instruments will quote freight rates on a small parcel.
+                      </p>
+                    </div>
+
+                    <div>
+                      <label class="text-xs text-gray-500">Return policy override</label>
+                      <select
+                        v-model="editOverrides[l.id].ebay_return_policy_id"
+                        class="input w-full mt-1 py-1 text-xs"
+                      >
+                        <option value="">
+                          Account default ({{ ebayAccountDefault(l.marketplaceAccountId, 'return') }})
+                        </option>
+                        <option v-for="p in ebayConfigFor(l.marketplaceAccountId).returnPolicies || []" :key="p.id" :value="p.id">
+                          {{ p.name }}
+                        </option>
+                      </select>
+                    </div>
+
+                    <div>
                       <label class="text-xs text-gray-500">Payment policy override</label>
                       <select
                         v-model="editOverrides[l.id].ebay_payment_policy_id"
                         class="input w-full mt-1 py-1 text-xs"
                       >
-                        <option value="">Account default</option>
+                        <option value="">
+                          Account default ({{ ebayAccountDefault(l.marketplaceAccountId, 'payment') }})
+                        </option>
                         <option v-for="p in ebayConfigFor(l.marketplaceAccountId).paymentPolicies || []" :key="p.id" :value="p.id">
                           {{ p.name }}
                         </option>
@@ -1317,17 +1360,32 @@ function reverbCategoryFallback(accountId) {
  * Returns a human-readable label for an account-level eBay default.
  * type: 'location' | 'fulfillment' | 'return'
  */
+/**
+ * The account default for a policy, by NAME.
+ *
+ * This used to show the first 8 characters of the ID. A policy called
+ * "Standard Shipping Large Instruments" being silently applied to an 8 lb cable
+ * is invisible when it reads "5091234…" — the name is the whole point.
+ */
 function ebayAccountDefault(accountId, type) {
   const account = accounts.value.find(a => a.id === accountId)
   if (!account) return '—'
   if (type === 'location') return account.ebayMerchantLocationKey || '—'
-  if (type === 'fulfillment') return account.ebayFulfillmentPolicyId
-    ? account.ebayFulfillmentPolicyId.slice(0, 8) + '…'
-    : '—'
-  if (type === 'return') return account.ebayReturnPolicyId
-    ? account.ebayReturnPolicyId.slice(0, 8) + '…'
-    : '—'
-  return '—'
+
+  const id =
+    type === 'fulfillment' ? account.ebayFulfillmentPolicyId
+    : type === 'return'    ? account.ebayReturnPolicyId
+    : type === 'payment'   ? account.ebayPaymentPolicyId
+    : null
+
+  if (!id) return '—'
+
+  const list =
+    type === 'fulfillment' ? ebayConfigFor(accountId).fulfillmentPolicies
+    : type === 'return'    ? ebayConfigFor(accountId).returnPolicies
+    : ebayConfigFor(accountId).paymentPolicies
+
+  return (list || []).find(p => p.id === id)?.name || id.slice(0, 8) + '…'
 }
 
 /** True if the eBay account has at least one default configured. */
