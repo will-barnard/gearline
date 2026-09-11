@@ -61,6 +61,13 @@ const EBAY_ACCOUNT_DEFAULT_KEYS = [
   'ebay_merchant_location_key',
   'ebay_fulfillment_policy_id',
   'ebay_return_policy_id',
+  /**
+   * Payment policy was missing from this list, so it could only ever be set per
+   * listing — and an offer published without one is rejected by eBay. Every
+   * other policy has always had an account-level default; this one being absent
+   * was an oversight, not a decision.
+   */
+  'ebay_payment_policy_id',
 ] as const;
 
 function getString(map: Record<string, unknown>, key: string): string | null {

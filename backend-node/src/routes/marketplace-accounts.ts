@@ -176,6 +176,7 @@ const settingsSchema = z.object({
   ebayMerchantLocationKey: z.string().nullish(),
   ebayFulfillmentPolicyId: z.string().nullish(),
   ebayReturnPolicyId: z.string().nullish(),
+  ebayPaymentPolicyId: z.string().nullish(),
   /**
    * Shopify product type -> Reverb category name or UUID. Sent whole rather
    * than per key: the settings screen edits the entire map at once, and a
@@ -246,6 +247,7 @@ marketplaceAccountsRouter.patch(
       [body.ebayMerchantLocationKey, 'ebay_merchant_location_key'],
       [body.ebayFulfillmentPolicyId, 'ebay_fulfillment_policy_id'],
       [body.ebayReturnPolicyId, 'ebay_return_policy_id'],
+      [body.ebayPaymentPolicyId, 'ebay_payment_policy_id'],
       [body.reverbDefaultCategory, 'reverb_default_category'],
     ];
 
@@ -539,10 +541,11 @@ marketplaceAccountsRouter.get(
     }
 
     try {
-      const [locations, fulfillmentPolicies, returnPolicies] = await Promise.all([
+      const [locations, fulfillmentPolicies, returnPolicies, paymentPolicies] = await Promise.all([
         ebayClient.getMerchantLocations(account),
         ebayClient.getFulfillmentPolicies(account),
         ebayClient.getReturnPolicies(account),
+        ebayClient.getPaymentPolicies(account),
       ]);
 
       res.json({
@@ -559,6 +562,10 @@ marketplaceAccountsRouter.get(
         })),
         returnPolicies: returnPolicies.map((p) => ({
           id: p['returnPolicyId'] ?? '',
+          name: p['name'] ?? '',
+        })),
+        paymentPolicies: paymentPolicies.map((p) => ({
+          id: p['paymentPolicyId'] ?? '',
           name: p['name'] ?? '',
         })),
       });

@@ -317,6 +317,20 @@ export async function getFulfillmentPolicies(
   return response.body?.fulfillmentPolicies ?? [];
 }
 
+export async function getPaymentPolicies(
+  account: MarketplaceAccountRow,
+): Promise<Array<Record<string, unknown>>> {
+  const response = await apiRequest<{ paymentPolicies?: Array<Record<string, unknown>> }>({
+    marketplace: 'eBay',
+    method: 'GET',
+    url: url('/sell/account/v1/payment_policy'),
+    accessToken: bearer(account),
+    query: { marketplace_id: MARKETPLACE_ID },
+  });
+
+  return response.body?.paymentPolicies ?? [];
+}
+
 export async function getReturnPolicies(
   account: MarketplaceAccountRow,
 ): Promise<Array<Record<string, unknown>>> {

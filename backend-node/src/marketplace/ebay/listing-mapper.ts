@@ -1,6 +1,6 @@
 import type { ProductCondition, ProductRow } from '../../db/types.js';
 import { compareDecimal, parseDecimal } from '../../util/decimal.js';
-import type { PublishListingRequest } from '../types.js';
+import { PermanentMarketplaceError, type PublishListingRequest } from '../types.js';
 
 /**
  * Builds eBay Inventory API request bodies. Extracted from EbayConnector.
@@ -29,13 +29,42 @@ const MAX_IMAGE_URLS = 12;
 const VERY_LARGE_PACKAGE_OZ = parseDecimal('320');
 
 /**
- * The subset of eBay's PackageTypeEnum this mapper emits.
+ * eBay's PackageTypeEnum, in full.
  *
- * Typed as a union rather than a bare string so a typo becomes a compile error
- * instead of a 400 at publish time — which is exactly how VERY_LARGE_PACKAGE
- * survived: it reads correctly, and nothing checked it until eBay refused.
+ * Kept as a const set rather than a hand-picked union so the per-listing
+ * override can be validated against the real vocabulary. An unknown value is
+ * rejected here, with a message naming it — eBay's own answer is a bare 400
+ * saying "Could not serialize field [packageWeightAndSize.packageType]", which
+ * names neither the value nor the field that produced it.
+ *
+ * https://developer.ebay.com/api-docs/sell/inventory/types/slr:PackageTypeEnum
  */
-type PackageType = 'MAILING_BOX' | 'VERY_LARGE_PACK';
+const PACKAGE_TYPES = new Set([
+  'LETTER', 'BULKY_GOODS', 'CARAVAN', 'CARS', 'EUROPALLET', 'EXPANDABLE_TOUGH_BAGS',
+  'EXTRA_LARGE_PACK', 'FURNITURE', 'INDUSTRY_VEHICLES', 'LARGE_CANADA_POSTBOX',
+  'LARGE_CANADA_POST_BUBBLE_MAILER', 'LARGE_ENVELOPE', 'MAILING_BOX', 'MEDIUM_CANADA_POST_BOX',
+  'MEDIUM_CANADA_POST_BUBBLE_MAILER', 'MOTORBIKES', 'ONE_WAY_PALLET', 'PACKAGE_THICK_ENVELOPE',
+  'PADDED_BAGS', 'PARCEL_OR_PADDED_ENVELOPE', 'ROLL', 'SMALL_CANADA_POST_BOX',
+  'SMALL_CANADA_POST_BUBBLE_MAILER', 'TOUGH_BAGS', 'UPS_LETTER', 'USPS_FLAT_RATE_ENVELOPE',
+  'USPS_LARGE_PACK', 'VERY_LARGE_PACK', 'WINE_PAK',
+]);
+
+/**
+ * Default for EBAY_US.
+ *
+ * NOT MAILING_BOX. That value is oriented at the Australian site, and EBAY_US
+ * rejects it at publish with `25101 Invalid <ShippingPackage>` and the opaque
+ * parameter `err:216305|MailingBoxes`. PACKAGE_THICK_ENVELOPE is the value that
+ * is broadly accepted across US categories and carriers.
+ *
+ * Being wrong here is invisible until publish, and the error names the package
+ * type without saying what would be acceptable — so the per-listing override
+ * below exists for the cases where even this default is refused.
+ */
+const DEFAULT_PACKAGE_TYPE = 'PACKAGE_THICK_ENVELOPE';
+
+/** Weight above which the parcel defaults to eBay's freight-ish package type. */
+const HEAVY_PACKAGE_TYPE = 'VERY_LARGE_PACK';
 
 /**
  * ProductCondition → eBay Inventory API condition enum.
@@ -122,7 +151,7 @@ export function buildInventoryItemBody(
   const body: Record<string, unknown> = { product: productBlock };
 
   // ── condition ──────────────────────────────────────────────────────────────
-  body['condition'] = mapEbayCondition(product.condition);
+  body['condition'] = resolveEbayCondition(product, request);
 
   const conditionOverride = extra['ebay_condition_description'];
   const conditionDescription = nonEmpty(
@@ -156,30 +185,7 @@ export function buildInventoryItemBody(
         unit: 'INCH',
       };
 
-      /**
-       * packageType drives eBay's carrier eligibility checks. Calling a 30 lb
-       * guitar a MAILING_BOX produces wrong shipping quotes at checkout, so the
-       * threshold is applied on exact decimals rather than a float compare.
-       *
-       * Both values MUST come from eBay's PackageTypeEnum. It was previously
-       * 'VERY_LARGE_PACKAGE', which is not in the enum — the real value is
-       * VERY_LARGE_PACK. eBay does not reject an unknown value with a useful
-       * message; it answers a generic 400 whose only clue is
-       * "Could not serialize field [packageWeightAndSize.packageType]", and
-       * every heavy item failed to publish while every light one went through.
-       *
-       * https://developer.ebay.com/api-docs/sell/inventory/types/slr:PackageTypeEnum
-       */
-      let packageType: PackageType = 'MAILING_BOX';
-
-      if (shipping.weightOz !== null) {
-        const weight = parseDecimal(shipping.weightOz);
-        if (compareDecimal(weight, VERY_LARGE_PACKAGE_OZ) > 0) {
-          packageType = 'VERY_LARGE_PACK';
-        }
-      }
-
-      packageInfo['packageType'] = packageType;
+      packageInfo['packageType'] = resolvePackageType(request, shipping.weightOz);
     }
 
     if (Object.keys(packageInfo).length > 0) body['packageWeightAndSize'] = packageInfo;
@@ -191,6 +197,90 @@ export function buildInventoryItemBody(
   };
 
   return body;
+}
+
+/**
+ * eBay's ConditionEnum, in full.
+ *
+ * Needed to validate the per-listing override. eBay also restricts WHICH of
+ * these a given category accepts — a value can be perfectly valid and still be
+ * refused for an organ — so this checks the vocabulary, not the category rules,
+ * which only eBay knows.
+ */
+const EBAY_CONDITION_VALUES = new Set([
+  'NEW', 'LIKE_NEW', 'NEW_OTHER', 'NEW_WITH_DEFECTS', 'MANUFACTURER_REFURBISHED',
+  'CERTIFIED_REFURBISHED', 'EXCELLENT_REFURBISHED', 'VERY_GOOD_REFURBISHED', 'GOOD_REFURBISHED',
+  'SELLER_REFURBISHED', 'USED_EXCELLENT', 'USED_VERY_GOOD', 'USED_GOOD', 'USED_ACCEPTABLE',
+  'FOR_PARTS_OR_NOT_WORKING',
+]);
+
+/**
+ * The eBay condition for a listing: the override if set, else the product's.
+ *
+ * `condition_mapping` is the generic per-listing override — the same key the
+ * Reverb connector honours — and it was being ignored here, so a category that
+ * refuses the mapped condition had no way out short of changing the product.
+ */
+export function resolveEbayCondition(
+  product: ProductRow,
+  request: PublishListingRequest,
+): string {
+  const extra = request.extraParams ?? {};
+  const override = extra['ebay_condition'] ?? request.conditionMapping;
+
+  if (typeof override === 'string' && override.trim() !== '') {
+    const value = override.trim().toUpperCase();
+
+    if (!EBAY_CONDITION_VALUES.has(value)) {
+      throw new PermanentMarketplaceError(
+        `"${override}" is not an eBay condition. Valid values are listed at ` +
+          'https://developer.ebay.com/api-docs/sell/inventory/types/slr:ConditionEnum',
+      );
+    }
+
+    return value;
+  }
+
+  return mapEbayCondition(product.condition);
+}
+
+/**
+ * The package type for a listing: the override if set, else by weight.
+ *
+ * eBay decides whether a package type is acceptable using the listing's
+ * category, site and carrier services — rules gearline cannot see and should
+ * not try to model. Two attempts to infer it have now been rejected at publish,
+ * so the weight rule is only a starting point and `ebay_package_type` is the
+ * way out when eBay disagrees.
+ *
+ * The threshold comparison stays on exact decimals: calling a 30 lb organ a
+ * thick envelope produces wrong shipping quotes at checkout, which is worse
+ * than a failed publish because it is invisible until someone buys.
+ */
+export function resolvePackageType(
+  request: PublishListingRequest,
+  weightOz: string | null,
+): string {
+  const override = (request.extraParams ?? {})['ebay_package_type'];
+
+  if (typeof override === 'string' && override.trim() !== '') {
+    const value = override.trim().toUpperCase();
+
+    if (!PACKAGE_TYPES.has(value)) {
+      throw new PermanentMarketplaceError(
+        `"${override}" is not an eBay package type. Valid values are listed at ` +
+          'https://developer.ebay.com/api-docs/sell/inventory/types/slr:PackageTypeEnum',
+      );
+    }
+
+    return value;
+  }
+
+  if (weightOz !== null && compareDecimal(parseDecimal(weightOz), VERY_LARGE_PACKAGE_OZ) > 0) {
+    return HEAVY_PACKAGE_TYPE;
+  }
+
+  return DEFAULT_PACKAGE_TYPE;
 }
 
 /**

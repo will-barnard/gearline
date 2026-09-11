@@ -207,6 +207,7 @@ export function toMarketplaceAccountDto(
     ebayMerchantLocationKey: stringSetting(settings, 'ebay_merchant_location_key'),
     ebayFulfillmentPolicyId: stringSetting(settings, 'ebay_fulfillment_policy_id'),
     ebayReturnPolicyId: stringSetting(settings, 'ebay_return_policy_id'),
+    ebayPaymentPolicyId: stringSetting(settings, 'ebay_payment_policy_id'),
     // Always an object, never null — the settings form iterates it unguarded.
     reverbCategoryMap: categoryMapSetting(settings),
     reverbDefaultCategory: stringSetting(settings, 'reverb_default_category'),

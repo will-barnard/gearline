@@ -427,6 +427,50 @@
                       </p>
                     </div>
 
+                    <div>
+                      <label class="text-xs text-gray-500">Condition override</label>
+                      <select
+                        v-model="editOverrides[l.id].condition_mapping"
+                        class="input w-full mt-1 py-1 text-xs"
+                      >
+                        <option value="">From the product ({{ product?.condition || '—' }})</option>
+                        <option v-for="c in EBAY_CONDITIONS" :key="c" :value="c">{{ c }}</option>
+                      </select>
+                      <p class="mt-1 text-xs text-gray-600">
+                        eBay restricts which conditions each category accepts, so a valid value can
+                        still be refused. Set one here if the product's mapped condition is rejected.
+                      </p>
+                    </div>
+
+                    <div>
+                      <label class="text-xs text-gray-500">Payment policy override</label>
+                      <select
+                        v-model="editOverrides[l.id].ebay_payment_policy_id"
+                        class="input w-full mt-1 py-1 text-xs"
+                      >
+                        <option value="">Account default</option>
+                        <option v-for="p in ebayConfigFor(l.marketplaceAccountId).paymentPolicies || []" :key="p.id" :value="p.id">
+                          {{ p.name }}
+                        </option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label class="text-xs text-gray-500">Package type</label>
+                      <select
+                        v-model="editOverrides[l.id].ebay_package_type"
+                        class="input w-full mt-1 py-1 text-xs"
+                      >
+                        <option value="">Automatic (by weight)</option>
+                        <option v-for="pt in EBAY_PACKAGE_TYPES" :key="pt" :value="pt">{{ pt }}</option>
+                      </select>
+                      <p class="mt-1 text-xs text-gray-600">
+                        eBay decides which package types it allows from the category, site and
+                        carrier — rules gearline can't see. Set one here if a publish comes back
+                        with <span class="font-mono">Invalid &lt;ShippingPackage&gt;</span>.
+                      </p>
+                    </div>
+
                     <!-- ── Item specifics ──────────────────────────────────── -->
                     <div v-if="editOverrides[l.id].ebay_category_id">
                       <div class="flex items-center justify-between mb-1">
@@ -867,6 +911,23 @@ const ebayAspectsLoading = ref({})
 const ebayAspectsError = ref({})
 const ebayNewSpecific = ref({})       // { [listingId]: string } — free-form key being added
 
+/**
+ * The US-relevant slice of eBay's PackageTypeEnum. The full enum includes
+ * Canada Post and vehicle types that would only be noise here.
+ */
+/** eBay's ConditionEnum, for the per-listing override. */
+const EBAY_CONDITIONS = [
+  'NEW', 'LIKE_NEW', 'NEW_OTHER', 'NEW_WITH_DEFECTS', 'CERTIFIED_REFURBISHED',
+  'EXCELLENT_REFURBISHED', 'VERY_GOOD_REFURBISHED', 'GOOD_REFURBISHED', 'SELLER_REFURBISHED',
+  'USED_EXCELLENT', 'USED_VERY_GOOD', 'USED_GOOD', 'USED_ACCEPTABLE', 'FOR_PARTS_OR_NOT_WORKING',
+]
+
+const EBAY_PACKAGE_TYPES = [
+  'PACKAGE_THICK_ENVELOPE', 'MAILING_BOX', 'LARGE_ENVELOPE', 'PARCEL_OR_PADDED_ENVELOPE',
+  'PADDED_BAGS', 'LETTER', 'TOUGH_BAGS', 'ROLL', 'USPS_FLAT_RATE_ENVELOPE', 'USPS_LARGE_PACK',
+  'UPS_LETTER', 'EXTRA_LARGE_PACK', 'VERY_LARGE_PACK', 'BULKY_GOODS', 'FURNITURE',
+]
+
 // Video URL editor state
 const editingVideo = ref(false)
 const videoUrlDraft = ref('')
@@ -1163,6 +1224,9 @@ function toggleOverridesEditor(listingId) {
       loadReverbShippingProfiles(listing.marketplaceAccountId)
       loadReverbCategories(listing.marketplaceAccountId)
     }
+    if (listing.marketplaceType === 'EBAY') {
+      loadEbayConfigFor(listing.marketplaceAccountId)
+    }
   }
 }
 
@@ -1308,6 +1372,26 @@ async function searchEbayCategories(listing) {
  * eBay only validates required aspects at publish, and names one per attempt.
  * Pulling the list here turns a multi-round guessing game into a form.
  */
+/**
+ * eBay account config (policies, locations) cached per account, so the listing
+ * editor can offer the same payment policies the Marketplaces page does.
+ */
+const ebayConfigByAccount = ref({})
+
+function ebayConfigFor(accountId) {
+  return ebayConfigByAccount.value[accountId] || {}
+}
+
+async function loadEbayConfigFor(accountId) {
+  if (!accountId || ebayConfigByAccount.value[accountId]) return
+  try {
+    const res = await api.get(`/marketplace/accounts/${accountId}/ebay/config`)
+    if (!res.data?.error) ebayConfigByAccount.value[accountId] = res.data
+  } catch (e) {
+    console.error('Failed to load eBay config', e)
+  }
+}
+
 async function loadEbayAspects(listing) {
   const categoryId = editOverrides.value[listing.id]?.ebay_category_id
   if (!categoryId) return
@@ -1434,6 +1518,9 @@ function emptyPublishForm() {
     ebay_merchant_location_key: '',
     ebay_category_id: '',
     ebay_item_specifics: null,
+    ebay_package_type: '',
+    ebay_payment_policy_id: '',
+    condition_mapping: '',
     ebay_fulfillment_policy_id: '',
     ebay_return_policy_id: '',
   }
@@ -1453,6 +1540,9 @@ function buildOverrides(form) {
     ebay_merchant_location_key: 'ebay_merchant_location_key',
     ebay_category_id: 'ebay_category_id',
     ebay_item_specifics: 'ebay_item_specifics',
+    ebay_package_type: 'ebay_package_type',
+    ebay_payment_policy_id: 'ebay_payment_policy_id',
+    condition_mapping: 'condition_mapping',
     ebay_fulfillment_policy_id: 'ebay_fulfillment_policy_id',
     ebay_return_policy_id: 'ebay_return_policy_id',
   }
@@ -1477,6 +1567,9 @@ function flattenOverrides(listing) {
     ebay_merchant_location_key: o.ebay_merchant_location_key ?? '',
     ebay_category_id: o.ebay_category_id ?? '',
     ebay_item_specifics: o.ebay_item_specifics ?? null,
+    ebay_package_type: o.ebay_package_type ?? '',
+    ebay_payment_policy_id: o.ebay_payment_policy_id ?? '',
+    condition_mapping: o.condition_mapping ?? '',
     ebay_fulfillment_policy_id: o.ebay_fulfillment_policy_id ?? '',
     ebay_return_policy_id: o.ebay_return_policy_id ?? '',
   }

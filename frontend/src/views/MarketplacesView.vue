@@ -121,7 +121,7 @@
                         class="text-xs text-gray-500 hover:text-gray-300 underline underline-offset-2"
                       >Edit</button>
                     </div>
-                    <div class="grid grid-cols-3 gap-x-4 gap-y-1">
+                    <div class="grid grid-cols-2 gap-x-4 gap-y-1 sm:grid-cols-4">
                       <div>
                         <p class="text-xs text-gray-600">Location</p>
                         <p class="text-xs text-gray-400 font-mono truncate" :title="account.ebayMerchantLocationKey">
@@ -138,6 +138,18 @@
                         <p class="text-xs text-gray-600">Return policy</p>
                         <p class="text-xs text-gray-400 truncate" :title="account.ebayReturnPolicyId">
                           {{ ebayPolicyName(account.id, 'return', account.ebayReturnPolicyId) }}
+                        </p>
+                      </div>
+                      <div>
+                        <p class="text-xs text-gray-600">Payment policy</p>
+                        <p
+                          class="text-xs truncate"
+                          :class="account.ebayPaymentPolicyId ? 'text-gray-400' : 'text-amber-500/90'"
+                          :title="account.ebayPaymentPolicyId"
+                        >
+                          {{ account.ebayPaymentPolicyId
+                              ? ebayPolicyName(account.id, 'payment', account.ebayPaymentPolicyId)
+                              : 'not set — offers will be rejected' }}
                         </p>
                       </div>
                     </div>
@@ -604,6 +616,23 @@
               </option>
             </select>
           </div>
+
+          <!-- Payment policy -->
+          <div>
+            <label class="text-xs font-medium text-gray-300">Payment policy</label>
+            <p class="text-xs text-gray-500 mb-1.5">
+              Required. eBay rejects an offer published without one.
+            </p>
+            <select v-model="ebayDefaultsForm.paymentPolicyId" class="input w-full text-sm"
+              @focus="loadEbayConfig">
+              <option value="">
+                {{ ebayConfigLoading ? 'Loading…' : (ebayConfig?.paymentPolicies?.length ? '— Select policy —' : 'No policies found') }}
+              </option>
+              <option v-for="p in ebayConfig?.paymentPolicies || []" :key="p.id" :value="p.id">
+                {{ p.name }}
+              </option>
+            </select>
+          </div>
         </div>
 
         <div class="mt-6 flex gap-3 justify-end">
@@ -991,7 +1020,7 @@ const savingEbayDefaults = ref(false)
 const ebayConfig = ref(null)        // { locations, fulfillmentPolicies, returnPolicies }
 const ebayConfigLoading = ref(false)
 const ebayConfigError = ref(null)   // string | null — shown in modal if config fetch fails
-const ebayDefaultsForm = ref({ merchantLocationKey: '', fulfillmentPolicyId: '', returnPolicyId: '' })
+const ebayDefaultsForm = ref({ merchantLocationKey: '', fulfillmentPolicyId: '', returnPolicyId: '', paymentPolicyId: '' })
 
 // Create-location inline form
 const showCreateLocation = ref(false)
@@ -1010,6 +1039,7 @@ function openEbayDefaults(account) {
     merchantLocationKey: account.ebayMerchantLocationKey || '',
     fulfillmentPolicyId: account.ebayFulfillmentPolicyId || '',
     returnPolicyId:      account.ebayReturnPolicyId || '',
+    paymentPolicyId:     account.ebayPaymentPolicyId || '',
   }
   loadEbayConfig()
 }
@@ -1041,6 +1071,7 @@ async function saveEbayDefaults() {
       ebayMerchantLocationKey: ebayDefaultsForm.value.merchantLocationKey,
       ebayFulfillmentPolicyId: ebayDefaultsForm.value.fulfillmentPolicyId,
       ebayReturnPolicyId:      ebayDefaultsForm.value.returnPolicyId,
+      ebayPaymentPolicyId:     ebayDefaultsForm.value.paymentPolicyId,
     })
     editingEbayDefaults.value = null
     load()
@@ -1181,7 +1212,10 @@ async function createEbayLocation() {
 function ebayPolicyName(accountId, type, id) {
   if (!id) return '—'
   if (!ebayConfig.value) return id.substring(0, 8) + '…'
-  const list = type === 'fulfillment' ? ebayConfig.value.fulfillmentPolicies : ebayConfig.value.returnPolicies
+  const list =
+    type === 'fulfillment' ? ebayConfig.value.fulfillmentPolicies
+    : type === 'payment'   ? ebayConfig.value.paymentPolicies
+    : ebayConfig.value.returnPolicies
   const match = (list || []).find(p => p.id === id)
   return match ? match.name : id.substring(0, 8) + '…'
 }
