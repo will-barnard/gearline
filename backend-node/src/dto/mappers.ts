@@ -157,13 +157,21 @@ export function toSyncJobDto(j: SyncJobRow) {
 
 /** Reverb's Shopify-product-type -> category map, coerced to a flat string map. */
 function categoryMapSetting(settings: Record<string, unknown> | null): Record<string, string> {
-  const raw = settings?.['reverb_category_map'];
+  return stringMapSetting(settings, 'reverb_category_map');
+}
+
+/** Any sync_settings value that is a flat string->string map. */
+function stringMapSetting(
+  settings: Record<string, unknown> | null,
+  key: string,
+): Record<string, string> {
+  const raw = settings?.[key];
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
 
   const out: Record<string, string> = {};
 
-  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
-    if (typeof value === 'string' && value.trim() !== '') out[key] = value;
+  for (const [entryKey, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof value === 'string' && value.trim() !== '') out[entryKey] = value;
   }
 
   return out;
@@ -211,6 +219,9 @@ export function toMarketplaceAccountDto(
     // Always an object, never null — the settings form iterates it unguarded.
     reverbCategoryMap: categoryMapSetting(settings),
     reverbDefaultCategory: stringSetting(settings, 'reverb_default_category'),
+    // Always an object, never null — the settings form iterates it unguarded.
+    variantTitleTemplates: stringMapSetting(settings, 'variant_title_templates'),
+    variantTitleTemplate: stringSetting(settings, 'variant_title_template'),
   });
 }
 

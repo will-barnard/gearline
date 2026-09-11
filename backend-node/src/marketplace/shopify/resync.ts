@@ -4,6 +4,7 @@ import { db } from '../../db/index.js';
 import type { MarketplaceAccountRow, ProductRow } from '../../db/types.js';
 import { loggerFor } from '../../logger.js';
 import * as client from './client.js';
+import { titleTemplateFor, variantTitle } from './webhook-processor.js';
 
 const log = loggerFor('shopify-resync');
 
@@ -168,7 +169,12 @@ export async function resync(productId: string): Promise<ResyncResult> {
     }
   }
 
-  const patch = extractResyncFields(shopifyProduct, product.shopify_variant_id);
+  const titleTemplate = titleTemplateFor(
+    account.sync_settings ?? null,
+    str(shopifyProduct, 'product_type'),
+  );
+
+  const patch = extractResyncFields(shopifyProduct, product.shopify_variant_id, titleTemplate);
 
   // Metafields are best-effort — a failure here must not block the field repair.
   try {
@@ -450,6 +456,7 @@ export async function bulkResyncSkus(): Promise<BulkResyncResult> {
 function extractResyncFields(
   shopifyProduct: Record<string, unknown>,
   shopifyVariantId: string | null,
+  titleTemplate?: string,
 ): Record<string, unknown> {
   const patch: Record<string, unknown> = {};
 
@@ -495,17 +502,13 @@ function extractResyncFields(
     }
 
     /**
-     * The row is called what the variant is, matching the webhook processor.
-     * "Default Title" is Shopify's placeholder for the implicit variant of an
-     * option-less product, so those keep the product title.
+     * Titles go through the same template as the webhook processor, so the two
+     * ingestion paths cannot name the same row differently.
      */
     const productTitle = str(shopifyProduct, 'title');
-    const variantName = str(variant, 'title').trim();
 
-    if (variantName !== '' && variantName !== 'Default Title') {
-      patch['title'] = variantName;
-    } else if (productTitle !== '') {
-      patch['title'] = productTitle;
+    if (productTitle !== '' || str(variant, 'title') !== '') {
+      patch['title'] = variantTitle(productTitle, variant as Record<string, unknown>, titleTemplate);
     }
   }
 

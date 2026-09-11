@@ -90,29 +90,70 @@ function variantsOf(payload: Json): Json[] {
 const DEFAULT_VARIANT_TITLE = 'Default Title';
 
 /**
- * What this row is called: the variant's own name.
+ * What a variant row is called.
  *
- * Not the product title, and not the two concatenated. Concatenating produced
- * titles like "Rhodes Peterson Cable (4-Pin) — Peterson 4-Pin Square
- * (1970–1973)", where sibling rows share their first 29 characters and only
- * diverge at the tail — so in a table, or truncated in a listing picker, the two
- * variants are indistinguishable at a glance. The variant name is the part that
- * identifies the item, so it is the whole name.
+ * ── Why this is a template and not a rule ────────────────────────────────────
  *
- * products.title is also the Reverb listing title, and the same reasoning holds
- * there: the listing should be called what the variant is. Reverb carries
- * "Rhodes" separately in `make`.
+ * No single rule fits, because the variant names themselves differ in kind:
+ *
+ *   "Peterson 4-Pin Square (1970-1973)"  — self-describing; prefixing the
+ *                                          product title only repeats it
+ *   "S"                                  — meaningless alone; needs the product
+ *
+ * That is a property of the Shopify data, not something inferable without
+ * guessing, and a guess is invisible until a listing goes live under a nonsense
+ * name. So the shape is configured per Shopify product type on the Shopify
+ * account, and the default stays `{variant}` — the behaviour already live.
+ *
+ * Placeholders: {product} and {variant}.
  *
  * A product with no options still has one variant, titled "Default Title" —
- * Shopify's placeholder, never a real name. Those keep the product title, which
- * is every one-off instrument in the catalogue.
+ * Shopify's placeholder, never a real name. Those always keep the product
+ * title, whatever the template says, which is every one-off instrument in the
+ * catalogue.
  */
-function variantTitle(productTitle: string, variant: Json): string {
+export function variantTitle(productTitle: string, variant: Json, template?: string): string {
   const name = str(variant, 'title').trim();
 
   if (name === '' || name === DEFAULT_VARIANT_TITLE) return productTitle;
+  if (!template || template.trim() === '') return name;
 
-  return name;
+  const rendered = template
+    .replace(/\{product\}/g, productTitle)
+    .replace(/\{variant\}/g, name)
+    .trim();
+
+  // A template that renders to nothing would leave the row nameless.
+  return rendered === '' ? name : rendered;
+}
+
+/**
+ * The title template for a Shopify product type.
+ *
+ * Read from the Shopify account's sync_settings:
+ *
+ *   variant_title_templates: { "Apparel": "{product} - {variant}" }
+ *   variant_title_template:  "{variant}"      // optional catch-all
+ */
+export function titleTemplateFor(
+  settings: Record<string, unknown> | null,
+  productType: string,
+): string | undefined {
+  if (!settings) return undefined;
+
+  const map = settings['variant_title_templates'];
+
+  if (map && typeof map === 'object' && !Array.isArray(map) && productType.trim() !== '') {
+    const wanted = productType.trim().toLowerCase();
+
+    for (const [type, template] of Object.entries(map as Record<string, unknown>)) {
+      if (type.trim().toLowerCase() !== wanted) continue;
+      if (typeof template === 'string' && template.trim() !== '') return template;
+    }
+  }
+
+  const fallback = settings['variant_title_template'];
+  return typeof fallback === 'string' && fallback.trim() !== '' ? fallback : undefined;
 }
 
 /**
@@ -602,6 +643,22 @@ async function upsertVariantsFromPayload(
   const unkeyed = existingRows.filter((row) => !row.shopify_variant_id);
 
   const productTitle = str(payload, 'title', 'Untitled Product');
+
+  /**
+   * Title shape is configured per Shopify product type. Read once per upsert
+   * rather than per variant — every variant of a product shares a type.
+   */
+  const shopifyAccount = await db
+    .selectFrom('marketplace_accounts')
+    .select('sync_settings')
+    .where('external_account_id', '=', shopDomain)
+    .executeTakeFirst();
+
+  const titleTemplate = titleTemplateFor(
+    shopifyAccount?.sync_settings ?? null,
+    str(payload, 'product_type'),
+  );
+
   const saved: ProductRow[] = [];
 
   for (const [index, variant] of variants.entries()) {
@@ -613,7 +670,7 @@ async function upsertVariantsFromPayload(
     }
 
     const existing = byVariantId.get(variantId) ?? (index === 0 ? unkeyed[0] : undefined);
-    const fields = extractVariantFields(payload, variant, productTitle);
+    const fields = extractVariantFields(payload, variant, productTitle, titleTemplate);
 
     let row: ProductRow | undefined;
 
@@ -776,12 +833,13 @@ function extractVariantFields(
   payload: Json,
   variant: Json,
   productTitle: string,
+  titleTemplate?: string,
 ): ProductFieldPatch {
   const fields: ProductFieldPatch = {};
 
   // ── Product level ──────────────────────────────────────────────────────────
 
-  if (productTitle !== '') fields.title = variantTitle(productTitle, variant);
+  if (productTitle !== '') fields.title = variantTitle(productTitle, variant, titleTemplate);
 
   if ('body_html' in payload) fields.description = str(payload, 'body_html');
 

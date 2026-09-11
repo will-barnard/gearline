@@ -96,6 +96,40 @@
                   </div>
                 </div>
 
+                <!-- Listing titles for variants (Shopify is where products come from) -->
+                <template v-if="account.marketplaceType === 'SHOPIFY'">
+                  <div class="mt-3 border-t border-gray-800 pt-3 space-y-2">
+                    <div class="flex items-center justify-between">
+                      <p class="text-xs font-medium text-gray-400">Variant listing titles</p>
+                      <button
+                        @click="openTitleTemplates(account)"
+                        class="text-xs text-gray-500 hover:text-gray-300 underline underline-offset-2"
+                      >Edit</button>
+                    </div>
+                    <p class="text-xs text-gray-600">
+                      What a variant is called on Reverb and eBay. A size needs its product name;
+                      a variant already called "Peterson 4-Pin Square" does not.
+                    </p>
+                    <div v-if="Object.keys(account.variantTitleTemplates || {}).length" class="space-y-0.5">
+                      <div
+                        v-for="(template, type) in account.variantTitleTemplates"
+                        :key="type"
+                        class="flex items-center gap-2 text-xs"
+                      >
+                        <span class="text-gray-400 truncate max-w-[10rem]" :title="type">{{ type }}</span>
+                        <span class="text-gray-600">&rarr;</span>
+                        <span class="text-gray-400 font-mono truncate">{{ template }}</span>
+                      </div>
+                    </div>
+                    <div class="flex items-start gap-2">
+                      <span class="text-xs text-gray-600 shrink-0">Everything else:</span>
+                      <span class="text-xs text-gray-400 font-mono">
+                        {{ account.variantTitleTemplate || '{variant}' }}
+                      </span>
+                    </div>
+                  </div>
+                </template>
+
                 <!-- Description suffix (all marketplace types) -->
                 <div class="mt-2 flex items-start gap-2">
                   <span class="text-xs text-gray-500 shrink-0 mt-0.5">Description suffix:</span>
@@ -644,6 +678,69 @@
       </div>
     </div>
 
+    <!-- ── Variant title template modal ──────────────────────────────────── -->
+    <div v-if="editingTitleTemplates" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+      <div class="card w-full max-w-2xl p-6">
+        <h2 class="text-base font-semibold text-white mb-1">Variant Listing Titles</h2>
+        <p class="text-xs text-gray-500 mb-4">
+          Each Shopify variant becomes its own listing, and needs a name that identifies it on its
+          own. Use <span class="font-mono text-gray-400">{product}</span> and
+          <span class="font-mono text-gray-400">{variant}</span>.
+        </p>
+
+        <div class="rounded-lg bg-gray-800/60 border border-gray-700/50 px-3 py-2 mb-4 text-xs text-gray-400 space-y-1">
+          <p><span class="font-mono text-gray-300">{variant}</span> &rarr; Peterson 4-Pin Square (1970–1973)</p>
+          <p><span class="font-mono text-gray-300">{product} - {variant}</span> &rarr; Chicago Electric Piano Cream T-Shirt - S</p>
+          <p class="text-gray-600 pt-0.5">
+            Products with no options keep their own title regardless — Shopify's "Default Title"
+            placeholder is never a real name.
+          </p>
+        </div>
+
+        <div class="max-h-72 overflow-y-auto space-y-2 pr-1">
+          <div v-for="(row, i) in titleTemplateRows" :key="i" class="flex items-center gap-2">
+            <input v-model="row.productType" class="input flex-1 text-sm" placeholder="Shopify product type" />
+            <span class="text-gray-600 text-xs shrink-0">&rarr;</span>
+            <input v-model="row.template" class="input flex-1 text-sm font-mono" placeholder="{product} - {variant}" />
+            <button
+              @click="titleTemplateRows.splice(i, 1)"
+              class="text-xs text-gray-600 hover:text-red-400 shrink-0 px-1"
+              title="Remove"
+            >&times;</button>
+          </div>
+          <p v-if="!titleTemplateRows.length" class="text-xs text-gray-600 italic py-2">
+            No product types mapped — everything uses the fallback below.
+          </p>
+        </div>
+
+        <button
+          @click="titleTemplateRows.push({ productType: '', template: '{product} - {variant}' })"
+          class="mt-2 text-xs text-brand-400 hover:text-brand-300 underline underline-offset-2"
+        >+ Add product type</button>
+
+        <div class="mt-5 border-t border-gray-800 pt-4">
+          <label class="text-xs font-medium text-gray-300">Everything else</label>
+          <p class="text-xs text-gray-500 mb-1.5">
+            Applied to any product type not listed above. Leave blank for
+            <span class="font-mono">{variant}</span>.
+          </p>
+          <input v-model="titleTemplateDefault" class="input w-full text-sm font-mono" placeholder="{variant}" />
+        </div>
+
+        <p class="mt-4 text-xs text-gray-600">
+          Titles are written when products sync, so existing rows keep their current names until
+          the next Sync Products.
+        </p>
+
+        <div class="mt-5 flex gap-3 justify-end">
+          <button @click="editingTitleTemplates = null" class="btn-secondary px-4 py-2 text-sm">Cancel</button>
+          <button @click="saveTitleTemplates" :disabled="savingTitleTemplates" class="btn-primary px-4 py-2 text-sm">
+            {{ savingTitleTemplates ? 'Saving…' : 'Save' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- ── Reverb product type mapping modal ─────────────────────────────── -->
     <div v-if="editingReverbCategories" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
       <div class="card w-full max-w-2xl p-6">
@@ -1077,6 +1174,41 @@ async function saveEbayDefaults() {
     load()
   } finally {
     savingEbayDefaults.value = false
+  }
+}
+
+// ── Variant listing titles ───────────────────────────────────────────────────
+
+const editingTitleTemplates = ref(null)
+const savingTitleTemplates = ref(false)
+const titleTemplateRows = ref([])      // [{ productType, template }]
+const titleTemplateDefault = ref('')
+
+function openTitleTemplates(account) {
+  editingTitleTemplates.value = account
+  titleTemplateDefault.value = account.variantTitleTemplate || ''
+  titleTemplateRows.value = Object.entries(account.variantTitleTemplates || {})
+    .map(([productType, template]) => ({ productType, template }))
+}
+
+async function saveTitleTemplates() {
+  savingTitleTemplates.value = true
+  try {
+    const map = {}
+    for (const row of titleTemplateRows.value) {
+      const type = row.productType.trim()
+      const template = (row.template || '').trim()
+      if (type && template) map[type] = template
+    }
+
+    await api.patch(`/marketplace/accounts/${editingTitleTemplates.value.id}/settings`, {
+      variantTitleTemplates: map,
+      variantTitleTemplate: titleTemplateDefault.value,
+    })
+    editingTitleTemplates.value = null
+    load()
+  } finally {
+    savingTitleTemplates.value = false
   }
 }
 

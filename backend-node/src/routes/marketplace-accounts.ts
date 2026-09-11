@@ -184,6 +184,12 @@ const settingsSchema = z.object({
    */
   reverbCategoryMap: z.record(z.string(), z.string()).nullish(),
   reverbDefaultCategory: z.string().nullish(),
+  /**
+   * Shopify product type -> listing title template, with {product} and
+   * {variant} placeholders. Sent whole, like the Reverb category map.
+   */
+  variantTitleTemplates: z.record(z.string(), z.string()).nullish(),
+  variantTitleTemplate: z.string().nullish(),
 });
 
 /**
@@ -229,6 +235,19 @@ marketplaceAccountsRouter.patch(
      * The category map replaces wholesale. An empty object means "no mappings",
      * which is a removal — merging would strand rows the operator deleted.
      */
+    if (body.variantTitleTemplates != null) {
+      const cleaned: Record<string, string> = {};
+
+      for (const [type, template] of Object.entries(body.variantTitleTemplates)) {
+        const key = type.trim();
+        const value = template.trim();
+        if (key !== '' && value !== '') cleaned[key] = value;
+      }
+
+      if (Object.keys(cleaned).length === 0) removeKeys.push('variant_title_templates');
+      else merge['variant_title_templates'] = cleaned;
+    }
+
     if (body.reverbCategoryMap != null) {
       const cleaned: Record<string, string> = {};
 
@@ -249,6 +268,7 @@ marketplaceAccountsRouter.patch(
       [body.ebayReturnPolicyId, 'ebay_return_policy_id'],
       [body.ebayPaymentPolicyId, 'ebay_payment_policy_id'],
       [body.reverbDefaultCategory, 'reverb_default_category'],
+      [body.variantTitleTemplate, 'variant_title_template'],
     ];
 
     for (const [value, key] of stringSettings) {
