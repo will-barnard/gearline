@@ -259,6 +259,19 @@ const overridesSchema = z.object({ overrides: z.record(z.unknown()).nullish() })
  * Merge semantics, not replace — matches `listingOverrides.putAll(...)`.
  * The merge happens in SQL (jsonb ||) so two concurrent PATCHes setting
  * different keys cannot clobber one another.
+ *
+ * ── Saving an override on a LIVE listing now pushes it ───────────────────────
+ *
+ * This used to write to the database and stop, which meant an override only
+ * took effect the next time someone happened to publish. Change the shipping
+ * policy on a live listing and gearline would show the new value while eBay
+ * kept charging the old one — the same silent divergence the Shopify cascade
+ * already guards against by enqueuing LISTING_UPDATE whenever a product
+ * changes. An override is a change to the same listing; it gets the same
+ * treatment.
+ *
+ * Only ACTIVE listings are pushed. Anything not live has nothing to update, and
+ * picks the overrides up when it is eventually published.
  */
 listingsRouter.patch(
   '/:id/overrides',
@@ -284,6 +297,21 @@ listingsRouter.patch(
       .where('id', '=', saved.product_id)
       .executeTakeFirst();
 
-    res.json(toListingDto(saved, product));
+    const pushable = saved.listing_status === 'ACTIVE' && saved.marketplace_type !== 'SHOPIFY';
+
+    if (pushable) {
+      await enqueue({
+        jobType: 'LISTING_UPDATE',
+        marketplaceType: saved.marketplace_type,
+        marketplaceAccountId: saved.marketplace_account_id,
+        productId: saved.product_id,
+        listingId: saved.id,
+        // Keyed on the row's new updated_at so two saves in quick succession are
+        // two jobs, while a retry of one save is not.
+        idempotencyKey: `listing-overrides-${saved.id}-${saved.updated_at.toISOString()}`,
+      });
+    }
+
+    res.json({ ...toListingDto(saved, product), updateQueued: pushable });
   }),
 );

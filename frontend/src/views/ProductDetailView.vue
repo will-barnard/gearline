@@ -608,7 +608,16 @@
                     >
                       {{ savingOverridesId === l.id ? 'Saving…' : 'Save overrides' }}
                     </button>
-                    <span v-if="overridesSavedId === l.id" class="text-xs text-green-400">Saved</span>
+                    <span v-if="overridesSavedId === l.id" class="text-xs text-green-400">
+                      Saved — applies when published
+                    </span>
+                    <span
+                      v-else-if="overridesPushMessage[l.id]"
+                      class="text-xs"
+                      :class="overridesPushMessage[l.id].startsWith('Pushed') ? 'text-green-400'
+                             : overridesPushMessage[l.id].startsWith('Pushing') ? 'text-gray-400'
+                             : 'text-red-400'"
+                    >{{ overridesPushMessage[l.id] }}</span>
                   </div>
                 </div>
               </div>
@@ -939,6 +948,7 @@ const overridesOpen = ref(null)
 const editOverrides = ref({})
 const savingOverridesId = ref(null)
 const overridesSavedId = ref(null)
+const overridesPushMessage = ref({})   // { [listingId]: string | null }
 
 // Reverb shipping profiles — keyed by accountId, loaded on demand
 const reverbShippingProfiles = ref({}) // { [accountId]: [{id, name}, ...] }
@@ -1542,16 +1552,48 @@ function selectEbayCategory(listingId, cat) {
   ebayCategorySearch.value[listingId] = cat.categoryName
 }
 
+/**
+ * Saves overrides and, for a LIVE listing, waits for the marketplace update the
+ * backend queues.
+ *
+ * Saying "Saved" and stopping was misleading: the value was stored but the
+ * marketplace still had the old one, with nothing on screen to say so.
+ */
 async function saveOverrides(listing) {
   if (overrideValidationErrors(listing).length > 0) return
   savingOverridesId.value = listing.id
   overridesSavedId.value = null
+  overridesPushMessage.value[listing.id] = null
   try {
     const overrides = buildOverrides(editOverrides.value[listing.id])
-    await api.patch(`/listings/${listing.id}/overrides`, { overrides })
-    overridesSavedId.value = listing.id
-    setTimeout(() => { if (overridesSavedId.value === listing.id) overridesSavedId.value = null }, 2000)
-  } catch (e) { console.error(e) }
+    const res = await api.patch(`/listings/${listing.id}/overrides`, { overrides })
+
+    if (!res.data?.updateQueued) {
+      // Not live — the overrides apply when it is published.
+      overridesSavedId.value = listing.id
+      setTimeout(() => { if (overridesSavedId.value === listing.id) overridesSavedId.value = null }, 2000)
+      return
+    }
+
+    overridesPushMessage.value[listing.id] = `Pushing to ${listing.marketplaceType}…`
+    await refreshListings()
+    await pollUntilSettled(refreshListings, () => stillWorking(listing.id))
+
+    const updated = listings.value.find(l => l.id === listing.id)
+    overridesPushMessage.value[listing.id] =
+      updated?.listingStatus === 'FAILED'
+        ? `Update failed: ${updated.lastError || 'see the listing for details'}`
+        : `Pushed to ${listing.marketplaceType}`
+
+    setTimeout(() => {
+      if (overridesPushMessage.value[listing.id]?.startsWith('Pushed')) {
+        overridesPushMessage.value[listing.id] = null
+      }
+    }, 4000)
+  } catch (e) {
+    overridesPushMessage.value[listing.id] = e.response?.data?.message || e.message || 'Save failed'
+    console.error(e)
+  }
   finally { savingOverridesId.value = null }
 }
 
