@@ -79,8 +79,9 @@
         <StatCard label="Total Orders"      :value="stats.totalOrders"            color="blue"   :loading="loading" />
       </div>
 
-      <div class="grid grid-cols-1 gap-4 lg:grid-cols-3">
+      <div class="grid grid-cols-1 gap-4 lg:grid-cols-4">
         <StatCard label="Total Products"    :value="stats.totalProducts"          color="gray"   :loading="loading" />
+        <StatCard label="On Hold (0 qty)"   :value="stats.onHoldListings"         color="gray"   :loading="loading" />
         <StatCard label="In-Progress Jobs"  :value="stats.inProgressSyncJobs"     color="blue"   :loading="loading" />
         <StatCard label="Connected Accounts":value="stats.connectedAccounts"      color="green"  :loading="loading" />
       </div>
@@ -139,7 +140,7 @@ import { groupByProduct } from '@/lib/groupListings'
 
 const stats = ref({
   totalProducts: 0, activeListings: 0, failedListings: 0, pendingReviewListings: 0,
-  totalOrders: 0, failedSyncJobs: 0, inProgressSyncJobs: 0, connectedAccounts: 0
+  onHoldListings: 0, totalOrders: 0, failedSyncJobs: 0, inProgressSyncJobs: 0, connectedAccounts: 0
 })
 const loading = ref(true)
 const refreshedAt = ref('—')

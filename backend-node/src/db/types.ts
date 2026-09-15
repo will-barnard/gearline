@@ -100,7 +100,8 @@ export type ListingStatus =
   | 'SOLD'
   | 'DELISTED'
   | 'FAILED'
-  | 'NEEDS_REVIEW';
+  | 'NEEDS_REVIEW'
+  | 'ON_HOLD';
 
 export type OrderStatus =
   | 'IMPORTED'

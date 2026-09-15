@@ -183,7 +183,7 @@ dashboardRouter.get(
       db
         .selectFrom('marketplace_listings')
         .select(['listing_status', (eb) => eb.fn.countAll<string>().as('count')])
-        .where('listing_status', 'in', ['ACTIVE', 'FAILED', 'NEEDS_REVIEW'])
+        .where('listing_status', 'in', ['ACTIVE', 'FAILED', 'NEEDS_REVIEW', 'ON_HOLD'])
         .groupBy('listing_status')
         .execute(),
 
@@ -214,6 +214,7 @@ dashboardRouter.get(
       activeListings: listingBy.get('ACTIVE') ?? 0,
       failedListings: listingBy.get('FAILED') ?? 0,
       pendingReviewListings: listingBy.get('NEEDS_REVIEW') ?? 0,
+      onHoldListings: listingBy.get('ON_HOLD') ?? 0,
       totalOrders: Number(ordersRow?.count ?? 0),
       failedSyncJobs: jobBy.get('FAILED') ?? 0,
       inProgressSyncJobs: jobBy.get('IN_PROGRESS') ?? 0,

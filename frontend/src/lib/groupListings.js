@@ -71,6 +71,7 @@ export function groupByProduct(listings) {
       activeCount: count(['ACTIVE']),
       failedCount: count(['FAILED']),
       republishableCount: count(REPUBLISHABLE_STATUSES),
+      onHoldCount: count(['ON_HOLD']),
       /** Listing ids a single "publish all" action would act on. */
       readyListingIds: listings
         .filter((l) => READY_STATUSES.includes(l.listingStatus))
@@ -89,5 +90,6 @@ export function summarise(group) {
   if (group.workingCount) parts.push(`${group.workingCount} working`)
   if (group.activeCount) parts.push(`${group.activeCount} live`)
   if (group.failedCount) parts.push(`${group.failedCount} failed`)
+  if (group.onHoldCount) parts.push(`${group.onHoldCount} on hold (0 qty)`)
   return parts.join(' · ')
 }

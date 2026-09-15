@@ -71,7 +71,7 @@ const listings = ref([])
 const groups = computed(() => groupByProduct(listings.value))
 const loading = ref(true)
 const statusFilter = ref('')
-const statuses = ['PENDING','PUBLISHING','ACTIVE','INACTIVE','SOLD','DELISTED','FAILED','NEEDS_REVIEW']
+const statuses = ['PENDING','PUBLISHING','ACTIVE','INACTIVE','SOLD','DELISTED','FAILED','NEEDS_REVIEW','ON_HOLD']
 const needsReviewCount = ref(0)
 
 async function load() {

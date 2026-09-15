@@ -23,6 +23,7 @@ const LISTING_STATUSES: ListingStatus[] = [
   'DELISTED',
   'FAILED',
   'NEEDS_REVIEW',
+  'ON_HOLD',
 ];
 
 /**
@@ -196,6 +197,13 @@ function enqueueListingJob(jobType: 'LISTING_PUBLISH' | 'LISTING_DELIST') {
       .executeTakeFirst();
 
     if (!listing) throw new ResourceNotFoundError('Listing', id);
+
+    // ON_HOLD means the product is at 0 Shopify quantity — publishing it would
+    // put a listing live for something that isn't in stock. It becomes
+    // publishable again on its own once a Shopify sync restores quantity.
+    if (jobType === 'LISTING_PUBLISH' && listing.listing_status === 'ON_HOLD') {
+      throw new ConflictError('Listing is on hold — product has 0 quantity in Shopify');
+    }
 
     await enqueue({
       jobType,

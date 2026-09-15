@@ -1,7 +1,7 @@
 import type { Transaction } from 'kysely';
 
 import { db, sql } from '../db/index.js';
-import type { Database, MarketplaceAccountRow, ProductRow } from '../db/types.js';
+import type { Database, ListingStatus, MarketplaceAccountRow, ProductRow } from '../db/types.js';
 import { OptimisticLockError } from '../http/errors.js';
 import { loggerFor } from '../logger.js';
 import type { ImportedOrder } from '../marketplace/types.js';
@@ -21,6 +21,12 @@ const log = loggerFor('inventory-consistency');
  * Reaching 0 does NOT push a quantity update — it enqueues LISTING_DELIST. A
  * marketplace listing sitting at 0 stock stays visible and can still take an
  * order on some platforms; removing it is the only safe outcome.
+ *
+ * The same zero-quantity crossing also holds/releases anything still sitting
+ * in the pre-publish review queue (NEEDS_REVIEW ⇄ ON_HOLD) — see
+ * holdOrReleaseReviewListings below — so a variant with no stock never shows
+ * up as "ready to publish" on the dashboard, and comes back on its own once
+ * a Shopify sync reports quantity again.
  *
  * ── Shopify is always skipped ────────────────────────────────────────────────
  *
@@ -102,7 +108,45 @@ async function attemptPropagate(productId: string, newQuantity: number): Promise
     );
 
     await fanOutInventoryJobs(trx, updated, newQuantity);
+    await holdOrReleaseReviewListings(trx, updated, newQuantity);
   });
+}
+
+/**
+ * Toggles review-queue listings between NEEDS_REVIEW and ON_HOLD as quantity
+ * crosses zero, for changes that arrive through this propagation path
+ * (inventory_levels/update webhooks and order-driven deductions) rather than
+ * through a full Shopify product upsert — that path (upsertReviewListings in
+ * webhook-processor.ts) applies the same rule itself.
+ *
+ * Scoped to NEEDS_REVIEW/ON_HOLD only: ACTIVE listings are fanOutInventoryJobs'
+ * job, and PENDING/PUBLISHING/SOLD/terminal listings are left alone here, same
+ * as everywhere else in this file.
+ */
+async function holdOrReleaseReviewListings(
+  trx: Trx,
+  product: ProductRow,
+  newQuantity: number,
+): Promise<void> {
+  const targetStatus: ListingStatus = newQuantity > 0 ? 'NEEDS_REVIEW' : 'ON_HOLD';
+  const currentStatus: ListingStatus = targetStatus === 'NEEDS_REVIEW' ? 'ON_HOLD' : 'NEEDS_REVIEW';
+
+  const toggled = await trx
+    .updateTable('marketplace_listings')
+    .set({ listing_status: targetStatus, updated_at: new Date() })
+    .where('product_id', '=', product.id)
+    .where('listing_status', '=', currentStatus)
+    .returning('id')
+    .execute();
+
+  if (toggled.length > 0) {
+    log.info(
+      { sku: product.sku, count: toggled.length, to: targetStatus },
+      targetStatus === 'ON_HOLD'
+        ? 'Held review-queue listings — quantity reached 0'
+        : 'Released review-queue listings from hold — quantity restored',
+    );
+  }
 }
 
 /**

@@ -103,6 +103,11 @@
                 @click="$emit('delist', l.id)"
                 class="text-xs text-red-400 hover:text-red-300 transition-colors"
               >Delist</button>
+              <span
+                v-else-if="l.listingStatus === 'ON_HOLD'"
+                class="text-xs text-gray-500 italic"
+                title="Product has 0 quantity in Shopify — will resume once stock is back"
+              >Waiting for stock…</span>
               <template v-else>
                 <button
                   @click="$emit('publish', [l.id])"
@@ -153,6 +158,7 @@ function chipClass(status) {
     PUBLISHING:   'bg-gray-500/10 text-gray-400 border-gray-500/30',
     FAILED:       'bg-red-500/10 text-red-400 border-red-500/30',
     SOLD:         'bg-blue-500/10 text-blue-400 border-blue-500/30',
+    ON_HOLD:      'bg-gray-500/10 text-gray-500 border-gray-700',
   }
   return `${base} ${map[status] || 'bg-gray-500/10 text-gray-500 border-gray-700'}`
 }
@@ -172,6 +178,7 @@ function statusBadge(status) {
     DELISTED:     'badge-gray',
     INACTIVE:     'badge-gray',
     NEEDS_REVIEW: 'inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium bg-amber-500/20 text-amber-300',
+    ON_HOLD:      'inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium bg-gray-500/20 text-gray-400',
   }
   return map[status] || 'badge-gray'
 }

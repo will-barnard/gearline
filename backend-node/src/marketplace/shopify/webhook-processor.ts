@@ -308,17 +308,17 @@ async function processProductCreate(shopDomain: string, payload: Json): Promise<
     }
 
     if (tagExcluded) {
-      // Cancel NEEDS_REVIEW stubs that predate the tag being applied.
+      // Cancel review-queue stubs (NEEDS_REVIEW or ON_HOLD) that predate the tag being applied.
       const cancelled = await db
         .updateTable('marketplace_listings')
         .set({ listing_status: 'INACTIVE', updated_at: new Date() })
         .where('product_id', '=', product.id)
-        .where('listing_status', '=', 'NEEDS_REVIEW')
+        .where('listing_status', 'in', ['NEEDS_REVIEW', 'ON_HOLD'])
         .returning('id')
         .execute();
 
       if (cancelled.length > 0) {
-        log.info({ sku: product.sku, count: cancelled.length }, 'Cancelled NEEDS_REVIEW listings for tag-excluded product');
+        log.info({ sku: product.sku, count: cancelled.length }, 'Cancelled review-queue listings for tag-excluded product');
       }
 
       log.info({ sku: product.sku }, 'Product not queued for listings — matches an excluded tag');
@@ -419,11 +419,22 @@ async function processProductUpdate(shopDomain: string, payload: Json): Promise<
     }
 
     /**
+     * Routine updates carry inline variant quantity (variants[].inventory_quantity),
+     * which upsertVariantsFromPayload already wrote to product.quantity above — so
+     * this is the hold/release sync for that path, mirroring what the
+     * inventory_levels/update webhook does via inventory-consistency.ts. Skipped for
+     * tag-excluded products, whose review listings are meant to stay cancelled.
+     */
+    if (!tagExcluded) {
+      await upsertReviewListings(product);
+    }
+
+    /**
      * Push changes to listings that are already live. Shopify is the source of
      * truth, so a price or title change there should cascade without review.
      *
-     * NEEDS_REVIEW / PENDING / FAILED listings are left alone — they pick up
-     * current product data when they are eventually published.
+     * NEEDS_REVIEW / ON_HOLD / PENDING / FAILED listings are left alone here —
+     * they pick up current product data when they are eventually published.
      */
     const activeListings = await db
       .selectFrom('marketplace_listings')
@@ -1033,23 +1044,43 @@ export function parseCondition(raw: string): ProductCondition | null {
 // ── Listing helpers ──────────────────────────────────────────────────────────
 
 /** Statuses meaning "in flight or live" — leave these alone. */
-const LIVE_STATUSES: ListingStatus[] = ['ACTIVE', 'NEEDS_REVIEW', 'PENDING', 'PUBLISHING'];
+const LIVE_STATUSES: ListingStatus[] = ['ACTIVE', 'PENDING', 'PUBLISHING'];
+
+/** The two "awaiting a human" statuses that upsertReviewListings toggles between. */
+const REVIEW_STATUSES: ListingStatus[] = ['NEEDS_REVIEW', 'ON_HOLD'];
 
 /**
- * Ensures a NEEDS_REVIEW listing exists for every connected non-Shopify account.
+ * Ensures a review-queue listing exists for every connected non-Shopify
+ * account, and keeps it in the correct one of the two review states based on
+ * whether the product currently has any Shopify quantity.
+ *
+ * A product with quantity <= 0 is put ON_HOLD instead of NEEDS_REVIEW so it is
+ * excluded from the dashboard's "ready to publish" queue (which only surfaces
+ * NEEDS_REVIEW) until a Shopify sync reports stock again — at which point the
+ * next call to this function (or the propagation path in
+ * inventory-consistency.ts, for inventory_levels/update and order-driven
+ * changes) releases it back to NEEDS_REVIEW. This is decided per PRODUCT ROW
+ * — i.e. per Shopify variant — never by sibling variants of the same parent
+ * product, since each row/listing stands on its own quantity.
  *
  * Rules, per account:
- *   live (ACTIVE/NEEDS_REVIEW/PENDING/PUBLISHING) → leave alone
+ *   live (ACTIVE/PENDING/PUBLISHING)              → leave alone
  *   SOLD                                          → leave alone, it is history
- *   terminal (INACTIVE/DELISTED/FAILED)           → reset to NEEDS_REVIEW and
- *                                                   CLEAR the stale external ID
- *   none                                          → create one
+ *   already NEEDS_REVIEW or ON_HOLD               → toggle to match quantity
+ *                                                    if it doesn't already
+ *   terminal (INACTIVE/DELISTED/FAILED)           → reset to the correct
+ *                                                    review status and CLEAR
+ *                                                    the stale external ID
+ *   none                                          → create one, in the correct
+ *                                                    review status
  *
- * Clearing external_listing_id on reset matters: the old marketplace listing is
- * gone, and keeping its ID would make a later publish try to update a listing
- * that no longer exists.
+ * Clearing external_listing_id on a terminal reset matters: the old marketplace
+ * listing is gone, and keeping its ID would make a later publish try to update
+ * a listing that no longer exists.
  */
 async function upsertReviewListings(product: ProductRow): Promise<void> {
+  const targetReviewStatus: ListingStatus = product.quantity > 0 ? 'NEEDS_REVIEW' : 'ON_HOLD';
+
   const accounts = await db
     .selectFrom('marketplace_accounts')
     .selectAll()
@@ -1070,10 +1101,29 @@ async function upsertReviewListings(product: ProductRow): Promise<void> {
         continue;
       }
 
+      if (REVIEW_STATUSES.includes(existing.listing_status)) {
+        if (existing.listing_status === targetReviewStatus) continue;
+
+        await db
+          .updateTable('marketplace_listings')
+          .set({ listing_status: targetReviewStatus, updated_at: new Date() })
+          .where('id', '=', existing.id)
+          .execute();
+
+        log.info(
+          { marketplace: account.marketplace_type, listingId: existing.id, sku: product.sku },
+          targetReviewStatus === 'ON_HOLD'
+            ? 'Held listing — product out of stock'
+            : 'Released listing from hold — product back in stock',
+        );
+        continue;
+      }
+
+      // Terminal (INACTIVE/DELISTED/FAILED) → reset.
       await db
         .updateTable('marketplace_listings')
         .set({
-          listing_status: 'NEEDS_REVIEW',
+          listing_status: targetReviewStatus,
           external_listing_id: null,
           updated_at: new Date(),
         })
@@ -1082,7 +1132,7 @@ async function upsertReviewListings(product: ProductRow): Promise<void> {
 
       log.info(
         { marketplace: account.marketplace_type, listingId: existing.id, sku: product.sku },
-        'Reset listing to NEEDS_REVIEW',
+        `Reset listing to ${targetReviewStatus}`,
       );
       continue;
     }
@@ -1095,7 +1145,7 @@ async function upsertReviewListings(product: ProductRow): Promise<void> {
         product_id: product.id,
         marketplace_account_id: account.id,
         marketplace_type: account.marketplace_type,
-        listing_status: 'NEEDS_REVIEW',
+        listing_status: targetReviewStatus,
         listing_overrides: toJson({}),
         marketplace_metadata: toJson({}),
       })
@@ -1104,7 +1154,7 @@ async function upsertReviewListings(product: ProductRow): Promise<void> {
 
     log.info(
       { marketplace: account.marketplace_type, accountId: account.id, sku: product.sku },
-      'Created NEEDS_REVIEW listing',
+      `Created ${targetReviewStatus} listing`,
     );
   }
 }

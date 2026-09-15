@@ -20,6 +20,7 @@ const log = loggerFor('product-exclusion');
  *                 stays up forever with nothing in Gearline tracking it.
  *   PENDING /
  *   NEEDS_REVIEW /
+ *   ON_HOLD /
  *   FAILED /
  *   INACTIVE /
  *   DELISTED    → never published (or already off-market); delete the stub.
@@ -126,6 +127,7 @@ async function applyExclusionSideEffects(trx: Trx, productId: string, sku: strin
       }
 
       case 'NEEDS_REVIEW':
+      case 'ON_HOLD':
       case 'PENDING':
       case 'FAILED':
       case 'INACTIVE':

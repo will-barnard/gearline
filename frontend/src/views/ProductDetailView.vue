@@ -100,6 +100,11 @@
                   Not yet published. Review and click Publish when ready.
                 </div>
 
+                <!-- On hold: product is out of stock in Shopify -->
+                <div v-else-if="l.listingStatus === 'ON_HOLD'" class="mt-1.5 text-xs text-gray-500">
+                  On hold — product has 0 quantity in Shopify. Will become publishable automatically once stock is back.
+                </div>
+
                 <!-- Failed -->
                 <div v-if="l.lastError" class="mt-1.5 text-xs text-red-400 break-words" :title="l.lastError">{{ l.lastError }}</div>
 
@@ -115,7 +120,7 @@
                 <div class="mt-2.5 flex items-center gap-3">
                   <!-- Publish / Republish -->
                   <button
-                    v-if="l.listingStatus !== 'ACTIVE' && l.listingStatus !== 'PENDING' && l.listingStatus !== 'PUBLISHING' && l.listingStatus !== 'SOLD'"
+                    v-if="l.listingStatus !== 'ACTIVE' && l.listingStatus !== 'PENDING' && l.listingStatus !== 'PUBLISHING' && l.listingStatus !== 'SOLD' && l.listingStatus !== 'ON_HOLD'"
                     @click="publishListing(l)"
                     :disabled="publishingId === l.id || hasOverrideErrors(l)"
                     class="text-xs font-medium text-brand-400 hover:text-brand-300 disabled:opacity-40"
@@ -1744,6 +1749,7 @@ function listingStatusLabel(s) {
     PENDING:      'Queued',
     PUBLISHING:   'Publishing',
     NEEDS_REVIEW: 'Not published',
+    ON_HOLD:      'On hold (0 qty)',
     DELISTED:     'Delisted',
     INACTIVE:     'Inactive',
     SOLD:         'Sold',
@@ -1757,6 +1763,7 @@ function listingBadge(s) {
     PENDING:      'badge-yellow',
     PUBLISHING:   'badge-yellow',
     NEEDS_REVIEW: 'badge-gray',
+    ON_HOLD:      'badge-gray',
     DELISTED:     'badge-gray',
     INACTIVE:     'badge-gray',
     SOLD:         'badge-blue',
@@ -1771,6 +1778,7 @@ function listingDot(s) {
     PENDING:      'bg-yellow-400',
     PUBLISHING:   'bg-yellow-400',
     NEEDS_REVIEW: 'bg-gray-600',
+    ON_HOLD:      'bg-gray-600',
     DELISTED:     'bg-gray-600',
     INACTIVE:     'bg-gray-600',
     SOLD:         'bg-blue-400',
@@ -1785,6 +1793,7 @@ function listingCardClass(l) {
     PENDING:      'border-yellow-800/40',
     PUBLISHING:   'border-yellow-800/40',
     NEEDS_REVIEW: 'border-gray-800',
+    ON_HOLD:      'border-gray-800 opacity-75',
     DELISTED:     'border-gray-800 opacity-75',
     INACTIVE:     'border-gray-800 opacity-75',
     SOLD:         'border-gray-800 opacity-75',
