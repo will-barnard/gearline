@@ -954,10 +954,6 @@ const ebayAspectsLoading = ref({})
 const ebayAspectsError = ref({})
 const ebayNewSpecific = ref({})       // { [listingId]: string } — free-form key being added
 
-/**
- * The US-relevant slice of eBay's PackageTypeEnum. The full enum includes
- * Canada Post and vehicle types that would only be noise here.
- */
 /** eBay's ConditionEnum, for the per-listing override. */
 const EBAY_CONDITIONS = [
   'NEW', 'LIKE_NEW', 'NEW_OTHER', 'NEW_WITH_DEFECTS', 'CERTIFIED_REFURBISHED',
@@ -965,8 +961,18 @@ const EBAY_CONDITIONS = [
   'USED_EXCELLENT', 'USED_VERY_GOOD', 'USED_GOOD', 'USED_ACCEPTABLE', 'FOR_PARTS_OR_NOT_WORKING',
 ]
 
+/**
+ * The US-relevant slice of eBay's PackageTypeEnum. The full enum includes
+ * Canada Post and vehicle types that would only be noise here.
+ *
+ * MAILING_BOX is deliberately left out, not just unlisted by omission — it's
+ * an Australia-site value that EBAY_US always rejects at publish with
+ * `25101 Invalid <ShippingPackage>`, so offering it here would just be a
+ * trap. The backend's PACKAGE_TYPES vocabulary (listing-mapper.ts) excludes
+ * it too, so this isn't only a UI-level filter.
+ */
 const EBAY_PACKAGE_TYPES = [
-  'PACKAGE_THICK_ENVELOPE', 'MAILING_BOX', 'LARGE_ENVELOPE', 'PARCEL_OR_PADDED_ENVELOPE',
+  'PACKAGE_THICK_ENVELOPE', 'LARGE_ENVELOPE', 'PARCEL_OR_PADDED_ENVELOPE',
   'PADDED_BAGS', 'LETTER', 'TOUGH_BAGS', 'ROLL', 'USPS_FLAT_RATE_ENVELOPE', 'USPS_LARGE_PACK',
   'UPS_LETTER', 'EXTRA_LARGE_PACK', 'VERY_LARGE_PACK', 'BULKY_GOODS', 'FURNITURE',
 ]

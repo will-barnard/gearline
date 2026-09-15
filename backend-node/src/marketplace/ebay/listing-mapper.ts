@@ -29,7 +29,7 @@ const MAX_IMAGE_URLS = 12;
 const VERY_LARGE_PACKAGE_OZ = parseDecimal('320');
 
 /**
- * eBay's PackageTypeEnum, in full.
+ * eBay's PackageTypeEnum, minus MAILING_BOX.
  *
  * Kept as a const set rather than a hand-picked union so the per-listing
  * override can be validated against the real vocabulary. An unknown value is
@@ -37,12 +37,18 @@ const VERY_LARGE_PACKAGE_OZ = parseDecimal('320');
  * saying "Could not serialize field [packageWeightAndSize.packageType]", which
  * names neither the value nor the field that produced it.
  *
+ * MAILING_BOX is deliberately excluded, not just avoided as a default (see
+ * DEFAULT_PACKAGE_TYPE below): MARKETPLACE_ID is hardcoded to EBAY_US, where
+ * that value always fails at publish, so there is no listing this connector
+ * will ever send it for. Leaving it selectable just means someone eventually
+ * picks it and hits `25101 Invalid <ShippingPackage>` for no visible reason.
+ *
  * https://developer.ebay.com/api-docs/sell/inventory/types/slr:PackageTypeEnum
  */
 const PACKAGE_TYPES = new Set([
   'LETTER', 'BULKY_GOODS', 'CARAVAN', 'CARS', 'EUROPALLET', 'EXPANDABLE_TOUGH_BAGS',
   'EXTRA_LARGE_PACK', 'FURNITURE', 'INDUSTRY_VEHICLES', 'LARGE_CANADA_POSTBOX',
-  'LARGE_CANADA_POST_BUBBLE_MAILER', 'LARGE_ENVELOPE', 'MAILING_BOX', 'MEDIUM_CANADA_POST_BOX',
+  'LARGE_CANADA_POST_BUBBLE_MAILER', 'LARGE_ENVELOPE', 'MEDIUM_CANADA_POST_BOX',
   'MEDIUM_CANADA_POST_BUBBLE_MAILER', 'MOTORBIKES', 'ONE_WAY_PALLET', 'PACKAGE_THICK_ENVELOPE',
   'PADDED_BAGS', 'PARCEL_OR_PADDED_ENVELOPE', 'ROLL', 'SMALL_CANADA_POST_BOX',
   'SMALL_CANADA_POST_BUBBLE_MAILER', 'TOUGH_BAGS', 'UPS_LETTER', 'USPS_FLAT_RATE_ENVELOPE',
@@ -52,10 +58,11 @@ const PACKAGE_TYPES = new Set([
 /**
  * Default for EBAY_US.
  *
- * NOT MAILING_BOX. That value is oriented at the Australian site, and EBAY_US
- * rejects it at publish with `25101 Invalid <ShippingPackage>` and the opaque
- * parameter `err:216305|MailingBoxes`. PACKAGE_THICK_ENVELOPE is the value that
- * is broadly accepted across US categories and carriers.
+ * Not MAILING_BOX — that value is oriented at the Australian site and is no
+ * longer even in PACKAGE_TYPES above, since EBAY_US rejects it at publish with
+ * `25101 Invalid <ShippingPackage>` and the opaque parameter
+ * `err:216305|MailingBoxes`. PACKAGE_THICK_ENVELOPE is the value that is
+ * broadly accepted across US categories and carriers.
  *
  * Being wrong here is invisible until publish, and the error names the package
  * type without saying what would be acceptable — so the per-listing override
@@ -184,9 +191,17 @@ export function buildInventoryItemBody(
         height: shipping.heightIn,
         unit: 'INCH',
       };
-
-      packageInfo['packageType'] = resolvePackageType(request, shipping.weightOz);
     }
+
+    // packageType used to live inside the `hasDimensions` branch, which meant
+    // it was silently dropped from the request for any product without
+    // Shopify's dim_length_in/dim_width_in/dim_height_in metafields filled in
+    // — true of most non-instrument items, shirts included. The listing's
+    // Package Type override (or the weight-based default) would appear to do
+    // nothing no matter what was picked, because it never reached eBay:
+    // packageType classifies the package independently of whether precise
+    // dimensions are known, so it does not belong behind that gate.
+    packageInfo['packageType'] = resolvePackageType(request, shipping.weightOz);
 
     if (Object.keys(packageInfo).length > 0) body['packageWeightAndSize'] = packageInfo;
   }
