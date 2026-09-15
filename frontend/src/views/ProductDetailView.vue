@@ -33,106 +33,8 @@
 
       <div class="grid grid-cols-1 gap-6 lg:grid-cols-3">
 
-        <!-- Product info -->
-        <div class="lg:col-span-2 space-y-6">
-          <div class="card">
-            <h2 class="mb-4 text-sm font-semibold uppercase tracking-wider text-gray-500">Product Details</h2>
-            <dl class="grid grid-cols-2 gap-4">
-              <div><dt class="text-xs text-gray-500">SKU</dt><dd class="mt-1 font-mono text-sm text-gray-200">{{ product.sku }}</dd></div>
-              <div><dt class="text-xs text-gray-500">Brand</dt><dd class="mt-1 text-sm text-gray-200">{{ product.brand || '—' }}</dd></div>
-              <div><dt class="text-xs text-gray-500">Category</dt><dd class="mt-1 text-sm text-gray-200">{{ product.category || '—' }}</dd></div>
-              <div><dt class="text-xs text-gray-500">Condition</dt><dd class="mt-1"><span class="badge-gray">{{ product.condition }}</span></dd></div>
-              <div><dt class="text-xs text-gray-500">Price</dt><dd class="mt-1 text-lg font-bold text-white">${{ product.price }}</dd></div>
-              <div><dt class="text-xs text-gray-500">Quantity</dt><dd class="mt-1 text-lg font-bold" :class="product.quantity === 0 ? 'text-red-400' : 'text-white'">{{ product.quantity }}</dd></div>
-              <div v-if="product.serialNumber"><dt class="text-xs text-gray-500">Serial Number</dt><dd class="mt-1 font-mono text-sm text-gray-200">{{ product.serialNumber }}</dd></div>
-              <div v-if="product.shopifyProductId"><dt class="text-xs text-gray-500">Shopify ID</dt><dd class="mt-1 font-mono text-xs text-gray-400">{{ product.shopifyProductId }}</dd></div>
-            </dl>
-          </div>
-
-          <!-- Shipping dimensions card -->
-          <div class="card">
-            <h2 class="mb-1 text-sm font-semibold uppercase tracking-wider text-gray-500">Shipping</h2>
-            <p class="text-xs text-gray-600 mb-4">Used for calculated shipping on eBay and Reverb. Weight syncs from Shopify automatically. Dimensions come from Shopify metafields — see below for setup instructions.</p>
-            <dl class="grid grid-cols-2 gap-4">
-              <div>
-                <dt class="text-xs text-gray-500">Weight</dt>
-                <dd class="mt-1 text-sm" :class="product.weightKg ? 'text-gray-200' : 'text-yellow-500'">
-                  <template v-if="product.weightKg">
-                    {{ kgToOz(product.weightKg) }} oz
-                    <span class="text-gray-500 text-xs ml-1">({{ product.weightKg }} kg)</span>
-                  </template>
-                  <template v-else>Not set — calculated shipping unavailable</template>
-                </dd>
-              </div>
-              <div>
-                <dt class="text-xs text-gray-500">Package dimensions</dt>
-                <dd class="mt-1 text-sm" :class="hasDimensions ? 'text-gray-200' : 'text-yellow-500'">
-                  <template v-if="hasDimensions">
-                    {{ product.dimLengthIn }}" × {{ product.dimWidthIn }}" × {{ product.dimHeightIn }}"
-                    <span class="text-gray-500 text-xs">(L × W × H)</span>
-                  </template>
-                  <template v-else>Not set</template>
-                </dd>
-              </div>
-            </dl>
-            <div v-if="!hasDimensions" class="mt-4 rounded-lg bg-gray-800/60 border border-gray-700/50 px-3 py-2.5 text-xs text-gray-400 space-y-1.5">
-              <p class="font-medium text-gray-300">How to add dimensions in Shopify</p>
-              <ol class="list-decimal list-inside space-y-1 text-gray-500">
-                <li>In Shopify admin, go to <strong class="text-gray-400">Settings → Custom data → Products</strong> and add three metafield definitions with these exact keys:
-                  <ul class="ml-4 mt-1 space-y-0.5 font-mono text-gray-500">
-                    <li><code>custom.dim_length_in</code> — type: Decimal number</li>
-                    <li><code>custom.dim_width_in</code> — type: Decimal number</li>
-                    <li><code>custom.dim_height_in</code> — type: Decimal number</li>
-                  </ul>
-                </li>
-                <li>Edit each product and fill in the dimensions in inches (longest side as length).</li>
-                <li>Save the product — Gearline will pick up the values on the next sync.</li>
-              </ol>
-            </div>
-          </div>
-
-          <div v-if="product.description" class="card">
-            <h2 class="mb-3 text-sm font-semibold uppercase tracking-wider text-gray-500">Description</h2>
-            <p class="text-sm text-gray-300 leading-relaxed">{{ product.description }}</p>
-          </div>
-
-          <!-- Video URL -->
-          <div class="card">
-            <h2 class="mb-3 text-sm font-semibold uppercase tracking-wider text-gray-500">Demo Video</h2>
-            <div v-if="product.videoUrl && !editingVideo" class="space-y-3">
-              <div class="aspect-video w-full overflow-hidden rounded-lg bg-gray-900">
-                <iframe
-                  :src="youtubeEmbedUrl(product.videoUrl)"
-                  class="h-full w-full"
-                  frameborder="0"
-                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                  allowfullscreen
-                ></iframe>
-              </div>
-              <div class="flex items-center gap-2">
-                <a :href="product.videoUrl" target="_blank" class="truncate text-xs text-brand-400 hover:text-brand-300">{{ product.videoUrl }}</a>
-                <button @click="editingVideo = true; videoUrlDraft = product.videoUrl" class="ml-auto shrink-0 text-xs text-gray-500 hover:text-gray-300">Edit</button>
-                <button @click="saveVideoUrl(null)" class="shrink-0 text-xs text-red-500 hover:text-red-400">Remove</button>
-              </div>
-            </div>
-            <div v-else-if="editingVideo || !product.videoUrl" class="space-y-2">
-              <input
-                v-model="videoUrlDraft"
-                type="url"
-                placeholder="https://www.youtube.com/watch?v=..."
-                class="input w-full text-sm"
-              />
-              <p class="text-xs text-gray-500">Paste a YouTube URL. It will sync automatically to Reverb listings.</p>
-              <div class="flex gap-2">
-                <button @click="saveVideoUrl(videoUrlDraft)" class="btn-primary px-3 py-1.5 text-xs">Save</button>
-                <button v-if="editingVideo" @click="editingVideo = false" class="btn-secondary px-3 py-1.5 text-xs">Cancel</button>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Listings sidebar -->
-        <div class="space-y-4">
+        <!-- Marketplace listings -->
+        <div class="lg:col-span-2 space-y-4">
 
           <!-- Exclude from marketplaces card -->
           <div class="card" v-if="!product.marketplaceExcluded">
@@ -241,12 +143,12 @@
                     @click="toggleOverridesEditor(l.id)"
                     class="text-xs text-gray-500 hover:text-gray-300 ml-auto"
                   >
-                    {{ overridesOpen === l.id ? 'Hide overrides ▲' : 'Edit overrides ▼' }}
+                    {{ overridesOpen[l.id] ? 'Hide overrides ▲' : 'Edit overrides ▼' }}
                   </button>
                 </div>
 
                 <!-- Overrides editor (inline expand) -->
-                <div v-if="overridesOpen === l.id" class="mt-3 border-t border-gray-800 pt-3 space-y-3">
+                <div v-if="overridesOpen[l.id]" class="mt-3 border-t border-gray-800 pt-3 space-y-3">
                   <p class="text-xs text-gray-500">
                     Override specific fields for this channel. Leave blank to use product defaults.
                   </p>
@@ -319,23 +221,13 @@
                       </div>
                       <div>
                         <label class="text-xs text-gray-500">Product type</label>
-                        <select
+                        <ReverbProductTypeSelect
                           v-model="editOverrides[l.id].category_id"
-                          class="input w-full mt-1 py-1 text-xs"
-                        >
-                          <option value="">
-                            {{ reverbCategoriesLoading[l.marketplaceAccountId]
-                                ? 'Loading…'
-                                : (reverbCategoryFallback(l.marketplaceAccountId)
-                                    ? 'Use account mapping'
-                                    : '— Select product type —') }}
-                          </option>
-                          <option
-                            v-for="c in reverbCategoriesFor(l.marketplaceAccountId)"
-                            :key="c.uuid"
-                            :value="c.uuid"
-                          >{{ c.name }}</option>
-                        </select>
+                          :account-id="l.marketplaceAccountId"
+                          :categories="reverbCategoriesFor(l.marketplaceAccountId)"
+                          :loading="!!reverbCategoriesLoading[l.marketplaceAccountId]"
+                          :placeholder="reverbCategoryFallback(l.marketplaceAccountId) ? 'Use account mapping' : '— Select product type —'"
+                        />
                         <p
                           v-if="!editOverrides[l.id].category_id"
                           class="mt-1 text-xs"
@@ -624,6 +516,104 @@
             </div>
           </div>
         </div>
+
+        <!-- Product info -->
+        <div class="space-y-6">
+          <div class="card">
+            <h2 class="mb-4 text-sm font-semibold uppercase tracking-wider text-gray-500">Product Details</h2>
+            <dl class="grid grid-cols-2 gap-4">
+              <div><dt class="text-xs text-gray-500">SKU</dt><dd class="mt-1 font-mono text-sm text-gray-200">{{ product.sku }}</dd></div>
+              <div><dt class="text-xs text-gray-500">Brand</dt><dd class="mt-1 text-sm text-gray-200">{{ product.brand || '—' }}</dd></div>
+              <div><dt class="text-xs text-gray-500">Category</dt><dd class="mt-1 text-sm text-gray-200">{{ product.category || '—' }}</dd></div>
+              <div><dt class="text-xs text-gray-500">Condition</dt><dd class="mt-1"><span class="badge-gray">{{ product.condition }}</span></dd></div>
+              <div><dt class="text-xs text-gray-500">Price</dt><dd class="mt-1 text-lg font-bold text-white">${{ product.price }}</dd></div>
+              <div><dt class="text-xs text-gray-500">Quantity</dt><dd class="mt-1 text-lg font-bold" :class="product.quantity === 0 ? 'text-red-400' : 'text-white'">{{ product.quantity }}</dd></div>
+              <div v-if="product.serialNumber"><dt class="text-xs text-gray-500">Serial Number</dt><dd class="mt-1 font-mono text-sm text-gray-200">{{ product.serialNumber }}</dd></div>
+              <div v-if="product.shopifyProductId"><dt class="text-xs text-gray-500">Shopify ID</dt><dd class="mt-1 font-mono text-xs text-gray-400">{{ product.shopifyProductId }}</dd></div>
+            </dl>
+          </div>
+
+          <!-- Shipping dimensions card -->
+          <div class="card">
+            <h2 class="mb-1 text-sm font-semibold uppercase tracking-wider text-gray-500">Shipping</h2>
+            <p class="text-xs text-gray-600 mb-4">Used for calculated shipping on eBay and Reverb. Weight syncs from Shopify automatically. Dimensions come from Shopify metafields — see below for setup instructions.</p>
+            <dl class="grid grid-cols-2 gap-4">
+              <div>
+                <dt class="text-xs text-gray-500">Weight</dt>
+                <dd class="mt-1 text-sm" :class="product.weightKg ? 'text-gray-200' : 'text-yellow-500'">
+                  <template v-if="product.weightKg">
+                    {{ kgToOz(product.weightKg) }} oz
+                    <span class="text-gray-500 text-xs ml-1">({{ product.weightKg }} kg)</span>
+                  </template>
+                  <template v-else>Not set — calculated shipping unavailable</template>
+                </dd>
+              </div>
+              <div>
+                <dt class="text-xs text-gray-500">Package dimensions</dt>
+                <dd class="mt-1 text-sm" :class="hasDimensions ? 'text-gray-200' : 'text-yellow-500'">
+                  <template v-if="hasDimensions">
+                    {{ product.dimLengthIn }}" × {{ product.dimWidthIn }}" × {{ product.dimHeightIn }}"
+                    <span class="text-gray-500 text-xs">(L × W × H)</span>
+                  </template>
+                  <template v-else>Not set</template>
+                </dd>
+              </div>
+            </dl>
+            <div v-if="!hasDimensions" class="mt-4 rounded-lg bg-gray-800/60 border border-gray-700/50 px-3 py-2.5 text-xs text-gray-400 space-y-1.5">
+              <p class="font-medium text-gray-300">How to add dimensions in Shopify</p>
+              <ol class="list-decimal list-inside space-y-1 text-gray-500">
+                <li>In Shopify admin, go to <strong class="text-gray-400">Settings → Custom data → Products</strong> and add three metafield definitions with these exact keys:
+                  <ul class="ml-4 mt-1 space-y-0.5 font-mono text-gray-500">
+                    <li><code>custom.dim_length_in</code> — type: Decimal number</li>
+                    <li><code>custom.dim_width_in</code> — type: Decimal number</li>
+                    <li><code>custom.dim_height_in</code> — type: Decimal number</li>
+                  </ul>
+                </li>
+                <li>Edit each product and fill in the dimensions in inches (longest side as length).</li>
+                <li>Save the product — Gearline will pick up the values on the next sync.</li>
+              </ol>
+            </div>
+          </div>
+
+          <div v-if="product.description" class="card">
+            <h2 class="mb-3 text-sm font-semibold uppercase tracking-wider text-gray-500">Description</h2>
+            <p class="text-sm text-gray-300 leading-relaxed">{{ product.description }}</p>
+          </div>
+
+          <!-- Video URL -->
+          <div class="card">
+            <h2 class="mb-3 text-sm font-semibold uppercase tracking-wider text-gray-500">Demo Video</h2>
+            <div v-if="product.videoUrl && !editingVideo" class="space-y-3">
+              <div class="aspect-video w-full overflow-hidden rounded-lg bg-gray-900">
+                <iframe
+                  :src="youtubeEmbedUrl(product.videoUrl)"
+                  class="h-full w-full"
+                  frameborder="0"
+                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                  allowfullscreen
+                ></iframe>
+              </div>
+              <div class="flex items-center gap-2">
+                <a :href="product.videoUrl" target="_blank" class="truncate text-xs text-brand-400 hover:text-brand-300">{{ product.videoUrl }}</a>
+                <button @click="editingVideo = true; videoUrlDraft = product.videoUrl" class="ml-auto shrink-0 text-xs text-gray-500 hover:text-gray-300">Edit</button>
+                <button @click="saveVideoUrl(null)" class="shrink-0 text-xs text-red-500 hover:text-red-400">Remove</button>
+              </div>
+            </div>
+            <div v-else-if="editingVideo || !product.videoUrl" class="space-y-2">
+              <input
+                v-model="videoUrlDraft"
+                type="url"
+                placeholder="https://www.youtube.com/watch?v=..."
+                class="input w-full text-sm"
+              />
+              <p class="text-xs text-gray-500">Paste a YouTube URL. It will sync automatically to Reverb listings.</p>
+              <div class="flex gap-2">
+                <button @click="saveVideoUrl(videoUrlDraft)" class="btn-primary px-3 py-1.5 text-xs">Save</button>
+                <button v-if="editingVideo" @click="editingVideo = false" class="btn-secondary px-3 py-1.5 text-xs">Cancel</button>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -717,23 +707,14 @@
                 </div>
                 <div>
                   <label class="block text-xs font-medium text-gray-400 mb-1">Product type</label>
-                  <select
+                  <ReverbProductTypeSelect
                     v-model="publishForm.category_id"
-                    class="input w-full py-1.5 text-sm"
-                  >
-                    <option value="">
-                      {{ reverbCategoriesLoading[publishForm.accountId]
-                          ? 'Loading…'
-                          : (reverbCategoryFallback(publishForm.accountId)
-                              ? 'Use account mapping'
-                              : '— Select product type —') }}
-                    </option>
-                    <option
-                      v-for="c in reverbCategoriesFor(publishForm.accountId)"
-                      :key="c.uuid"
-                      :value="c.uuid"
-                    >{{ c.name }}</option>
-                  </select>
+                    :account-id="publishForm.accountId"
+                    :categories="reverbCategoriesFor(publishForm.accountId)"
+                    :loading="!!reverbCategoriesLoading[publishForm.accountId]"
+                    size="sm"
+                    :placeholder="reverbCategoryFallback(publishForm.accountId) ? 'Use account mapping' : '— Select product type —'"
+                  />
                   <p
                     v-if="!publishForm.category_id"
                     class="mt-1 text-xs"
@@ -821,6 +802,7 @@
 
 <script setup>
 import { ref, computed, onMounted, watch, defineComponent, h } from 'vue'
+import ReverbProductTypeSelect from '@/components/products/ReverbProductTypeSelect.vue'
 import { useRoute } from 'vue-router'
 import api from '@/lib/api'
 import { isTransientStatus, pollUntilSettled } from '@/lib/listingStatus'
@@ -944,7 +926,9 @@ const publishingId = ref(null)
 const delistingId = ref(null)
 
 // Overrides editor state
-const overridesOpen = ref(null)
+const overridesOpen = ref({})  // { [listingId]: boolean } — which listings show the overrides editor.
+                                // Defaults to open for any not-yet-live listing (set in load()); the
+                                // user's own toggling after that is left alone.
 const editOverrides = ref({})
 const savingOverridesId = ref(null)
 const overridesSavedId = ref(null)
@@ -1164,6 +1148,23 @@ async function load() {
     l.data.forEach(listing => {
       editOverrides.value[listing.id] = flattenOverrides(listing)
     })
+
+    // Default to showing the overrides editor for any listing that isn't live
+    // yet, so required fields (like Reverb's product type) are visible right
+    // away instead of behind an extra click. Once a listing is ACTIVE, it
+    // starts collapsed to keep the page from being a wall of fields for
+    // listings that don't need attention.
+    l.data.forEach(listing => {
+      if (listing.listingStatus !== 'ACTIVE') {
+        overridesOpen.value[listing.id] = true
+        if (listing.marketplaceType === 'REVERB') {
+          loadReverbShippingProfiles(listing.marketplaceAccountId)
+          loadReverbCategories(listing.marketplaceAccountId)
+        } else if (listing.marketplaceType === 'EBAY') {
+          loadEbayConfigFor(listing.marketplaceAccountId)
+        }
+      }
+    })
   } catch (e) {
     console.error(e)
   } finally {
@@ -1269,9 +1270,10 @@ async function delistListing(listing) {
 // ── Overrides editor ──────────────────────────────────────────────────────────
 
 function toggleOverridesEditor(listingId) {
-  overridesOpen.value = overridesOpen.value === listingId ? null : listingId
+  const opening = !overridesOpen.value[listingId]
+  overridesOpen.value[listingId] = opening
   // Eagerly load Reverb shipping profiles if opening a Reverb listing
-  if (overridesOpen.value) {
+  if (opening) {
     const listing = listings.value.find(l => l.id === listingId)
     if (listing?.marketplaceType === 'REVERB') {
       loadReverbShippingProfiles(listing.marketplaceAccountId)
