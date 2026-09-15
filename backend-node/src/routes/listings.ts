@@ -251,6 +251,82 @@ listingsRouter.delete(
   }),
 );
 
+// ── GET /:id/siblings — other-size listings for the same parent product ─────
+
+/**
+ * "Siblings" are listings on the SAME marketplace account as this listing,
+ * for products that share this product's shopify_product_id — i.e. other
+ * Shopify variants of the same parent product (a t-shirt's other sizes,
+ * for example; gearline models one product per Shopify variant, so each
+ * size is its own product with its own listing per marketplace).
+ *
+ * Scoped to the same account, not just the same marketplace type, because
+ * listing_overrides can carry account-scoped identifiers — a Reverb shipping
+ * profile name, an eBay policy ID, a Reverb product type — that only resolve
+ * against that one account's config.
+ *
+ * Only listings with at least one override set are returned; an empty listing
+ * has nothing worth copying and would just be noise in the picker. Powers the
+ * "copy overrides from another size" action, so filling out Reverb/eBay setup
+ * happens once per product instead of once per size.
+ */
+listingsRouter.get(
+  '/:id/siblings',
+  asyncHandler(async (req, res) => {
+    const id = uuidSchema.parse(req.params.id);
+
+    const listing = await db
+      .selectFrom('marketplace_listings')
+      .selectAll()
+      .where('id', '=', id)
+      .executeTakeFirst();
+
+    if (!listing) throw new ResourceNotFoundError('Listing', id);
+
+    const product = await db
+      .selectFrom('products')
+      .selectAll()
+      .where('id', '=', listing.product_id)
+      .executeTakeFirst();
+
+    if (!product?.shopify_product_id) {
+      res.json([]);
+      return;
+    }
+
+    const siblingProducts = await db
+      .selectFrom('products')
+      .selectAll()
+      .where('shopify_product_id', '=', product.shopify_product_id)
+      .where('id', '!=', product.id)
+      .execute();
+
+    if (siblingProducts.length === 0) {
+      res.json([]);
+      return;
+    }
+
+    const siblingListings = await db
+      .selectFrom('marketplace_listings')
+      .selectAll()
+      .where('marketplace_account_id', '=', listing.marketplace_account_id)
+      .where(
+        'product_id',
+        'in',
+        siblingProducts.map((p) => p.id),
+      )
+      .execute();
+
+    const productById = new Map(siblingProducts.map((p) => [p.id, p]));
+
+    const withOverrides = siblingListings
+      .map((l) => toListingDto(l, productById.get(l.product_id)))
+      .filter((l) => l.listingOverrides && Object.keys(l.listingOverrides).length > 0);
+
+    res.json(withOverrides);
+  }),
+);
+
 // ── PATCH /:id/overrides ─────────────────────────────────────────────────────
 
 const overridesSchema = z.object({ overrides: z.record(z.unknown()).nullish() });

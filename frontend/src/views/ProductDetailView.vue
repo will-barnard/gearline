@@ -149,9 +149,13 @@
 
                 <!-- Overrides editor (inline expand) -->
                 <div v-if="overridesOpen[l.id]" class="mt-3 border-t border-gray-800 pt-3 space-y-3">
-                  <p class="text-xs text-gray-500">
-                    Override specific fields for this channel. Leave blank to use product defaults.
-                  </p>
+                  <div class="flex items-start justify-between gap-3">
+                    <p class="text-xs text-gray-500">
+                      Override specific fields for this channel. Leave blank to use product defaults.
+                    </p>
+                    <CopyOverridesPicker :listing-id="l.id" class="shrink-0" @apply="(sibling) => applySiblingOverrides(l, sibling)" />
+                  </div>
+                  <p v-if="overridesCopiedMessage[l.id]" class="text-xs text-green-400">{{ overridesCopiedMessage[l.id] }}</p>
 
                   <!-- Product title warning if it exceeds the marketplace limit -->
                   <div
@@ -803,6 +807,7 @@
 <script setup>
 import { ref, computed, onMounted, watch, defineComponent, h } from 'vue'
 import ReverbProductTypeSelect from '@/components/products/ReverbProductTypeSelect.vue'
+import CopyOverridesPicker from '@/components/products/CopyOverridesPicker.vue'
 import { useRoute } from 'vue-router'
 import api from '@/lib/api'
 import { isTransientStatus, pollUntilSettled } from '@/lib/listingStatus'
@@ -933,6 +938,7 @@ const editOverrides = ref({})
 const savingOverridesId = ref(null)
 const overridesSavedId = ref(null)
 const overridesPushMessage = ref({})   // { [listingId]: string | null }
+const overridesCopiedMessage = ref({}) // { [listingId]: string | null } — feedback for "Copy from another size"
 
 // Reverb shipping profiles — keyed by accountId, loaded on demand
 const reverbShippingProfiles = ref({}) // { [accountId]: [{id, name}, ...] }
@@ -1552,6 +1558,54 @@ function selectEbayCategory(listingId, cat) {
   ebayAspectsError.value[listingId] = null
   ebayCategoryResults.value[listingId] = null
   ebayCategorySearch.value[listingId] = cat.categoryName
+}
+
+// ── Copy overrides from another size ──────────────────────────────────────────
+
+/**
+ * Applies a sibling listing's overrides (another Shopify variant of the same
+ * parent product — another size of the same shirt — on the same marketplace
+ * account) onto this listing's edit form.
+ *
+ * price and title are deliberately skipped: those are exactly the two fields
+ * that legitimately differ between sizes (a title usually names the size, and
+ * a price can too), while everything else — Reverb's product type, model,
+ * finish, shipping profile; eBay's category, condition, policies, package
+ * type, item specifics — is normally identical across sizes of the same
+ * product. This only fills the form; nothing is sent to the backend until
+ * "Save overrides" is clicked, so it is easy to review or undo before saving.
+ */
+function applySiblingOverrides(listing, sibling) {
+  const source = sibling.listingOverrides || {}
+  const target = editOverrides.value[listing.id]
+  if (!target) return
+
+  const SKIPPED_FIELDS = new Set(['price', 'title'])
+  let copiedCount = 0
+
+  for (const [key, value] of Object.entries(source)) {
+    if (SKIPPED_FIELDS.has(key)) continue
+    target[key] = value
+    copiedCount++
+  }
+
+  const label = sibling.productSku || sibling.productTitle || 'that listing'
+  overridesCopiedMessage.value[listing.id] = copiedCount > 0
+    ? `Copied ${copiedCount} field${copiedCount === 1 ? '' : 's'} from ${label} — review below, then Save overrides.`
+    : `${label} only had price/title set — nothing to copy.`
+
+  // Refresh whatever the copied fields need in order to render as names
+  // rather than raw IDs (a Reverb category uuid, an eBay policy ID).
+  if (listing.marketplaceType === 'REVERB') {
+    loadReverbShippingProfiles(listing.marketplaceAccountId)
+    loadReverbCategories(listing.marketplaceAccountId)
+  } else if (listing.marketplaceType === 'EBAY') {
+    loadEbayConfigFor(listing.marketplaceAccountId)
+    if (target.ebay_category_id) {
+      ebayCategoryResults.value[listing.id] = null
+      loadEbayAspects(listing)
+    }
+  }
 }
 
 /**
