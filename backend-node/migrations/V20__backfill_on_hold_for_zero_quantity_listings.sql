@@ -1,4 +1,4 @@
--- One-time backfill for the ON_HOLD status introduced in V18.
+-- One-time backfill for the ON_HOLD status introduced in V19.
 --
 -- The hold/release logic that keeps NEEDS_REVIEW and ON_HOLD in sync with
 -- stock only runs when a Shopify webhook or inventory propagation touches a
@@ -14,7 +14,7 @@
 -- everywhere it is written) is moved to ON_HOLD immediately, matching what
 -- upsertReviewListings would have set had it run for that product today.
 --
--- No reverse direction is needed: ON_HOLD did not exist before V18, so there
+-- No reverse direction is needed: ON_HOLD did not exist before V19, so there
 -- is nothing already ON_HOLD to release back.
 
 UPDATE marketplace_listings ml
