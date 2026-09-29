@@ -12,6 +12,9 @@
         <button @click="showConnectModal = 'reverb'" class="btn-secondary px-3 py-1.5 text-sm">
           + Connect Reverb
         </button>
+        <button @click="showConnectModal = 'gearExchange'" class="btn-secondary px-3 py-1.5 text-sm">
+          + Connect Gear Exchange
+        </button>
       </div>
     </header>
 
@@ -226,6 +229,82 @@
                     </div>
                   </div>
                 </template>
+
+                <!-- Gear Exchange listing defaults + webhooks -->
+                <template v-if="account.marketplaceType === 'GEAR_EXCHANGE'">
+                  <div class="mt-3 border-t border-gray-800 pt-3 space-y-2">
+                    <div class="flex items-center justify-between">
+                      <p class="text-xs font-medium text-gray-400">Gear Exchange listing defaults</p>
+                      <button
+                        @click="openGxSettings(account)"
+                        class="text-xs text-gray-500 hover:text-gray-300 underline underline-offset-2"
+                      >Edit</button>
+                    </div>
+                    <p class="text-xs text-gray-600">
+                      Gear Exchange has no shipping or return profiles — every listing carries its own, taken from here
+                      unless a listing overrides it.
+                    </p>
+                    <div class="grid grid-cols-2 gap-x-4 gap-y-0.5 text-xs">
+                      <span class="text-gray-600">Categories mapped</span>
+                      <span :class="Object.keys(account.gxCategoryMap || {}).length || account.gxDefaultCategory ? 'text-gray-400' : 'text-yellow-500/80 italic'">
+                        {{ Object.keys(account.gxCategoryMap || {}).length }}{{ account.gxDefaultCategory ? ' + fallback' : '' }}
+                      </span>
+                      <span class="text-gray-600">Shipping cost</span>
+                      <span :class="account.gxShippingCost ? 'text-gray-400' : 'text-yellow-500/80 italic'">
+                        {{ account.gxShippingCost ? '$' + account.gxShippingCost : 'not set — required' }}
+                      </span>
+                      <span class="text-gray-600">Return window</span>
+                      <span :class="account.gxReturnPolicyDays ? 'text-gray-400' : 'text-yellow-500/80 italic'">
+                        {{ account.gxReturnPolicyDays ? account.gxReturnPolicyDays + ' days' : 'not set — required' }}
+                      </span>
+                      <span class="text-gray-600">Offers</span>
+                      <span class="text-gray-400">{{ account.gxAcceptsOffers === 'true' ? 'accepted' : 'off' }}</span>
+                      <span class="text-gray-600">Payout</span>
+                      <span class="text-gray-400">{{ account.gxPayoutMethod || 'Gear Exchange default' }}</span>
+                    </div>
+
+                    <div class="flex items-center gap-3 pt-1">
+                      <span class="text-xs text-gray-600">Webhooks:</span>
+                      <button
+                        @click="registerGxWebhook(account)"
+                        :disabled="gxWebhookBusy[account.id]"
+                        class="text-xs text-gray-500 hover:text-gray-300 underline underline-offset-2"
+                      >{{ gxWebhookBusy[account.id] ? 'Registering…' : 'Register automatically' }}</button>
+                      <button
+                        @click="showGxWebhook(account)"
+                        class="text-xs text-gray-500 hover:text-gray-300 underline underline-offset-2"
+                      >Show URL &amp; token</button>
+                    </div>
+                    <p v-if="gxWebhookMessage[account.id]" class="text-xs break-all"
+                       :class="gxWebhookMessage[account.id].ok ? 'text-green-400' : 'text-red-400'">
+                      {{ gxWebhookMessage[account.id].text }}
+                    </p>
+                    <div v-if="gxWebhookInfo[account.id]" class="rounded bg-gray-800/60 px-3 py-2 space-y-1 text-xs">
+                      <p class="text-gray-500">Paste these into Gear Exchange → API Settings → Set up webhooks:</p>
+                      <p><span class="text-gray-500">URL</span> <span class="font-mono text-gray-300 break-all">{{ gxWebhookInfo[account.id].url }}</span></p>
+                      <p><span class="text-gray-500">Bearer token</span> <span class="font-mono text-gray-300 break-all">{{ gxWebhookInfo[account.id].token || '(none — reconnect this account)' }}</span></p>
+                    </div>
+                  </div>
+                </template>
+
+                <!-- Product types this account never lists (all destination marketplaces) -->
+                <div v-if="account.marketplaceType !== 'SHOPIFY'" class="mt-2 flex items-start gap-2">
+                  <span class="text-xs text-gray-500 shrink-0 mt-0.5">Never list types:</span>
+                  <template v-if="(account.excludedProductTypes || []).length">
+                    <span class="flex flex-wrap gap-1">
+                      <span
+                        v-for="t in account.excludedProductTypes"
+                        :key="t"
+                        class="inline-flex items-center rounded px-1.5 py-0.5 text-xs bg-gray-700 text-gray-300"
+                      >{{ t }}</span>
+                    </span>
+                  </template>
+                  <span v-else class="text-xs text-gray-600 italic">none</span>
+                  <button
+                    @click="openExcludedTypes(account)"
+                    class="text-xs text-gray-500 hover:text-gray-300 underline underline-offset-2 shrink-0"
+                  >Edit</button>
+                </div>
               </div>
               <div class="flex items-center gap-2">
                 <button
@@ -847,6 +926,173 @@
         </div>
       </div>
     </div>
+
+    <!-- ── Connect Gear Exchange modal ───────────────────────────────────── -->
+    <div v-if="showConnectModal === 'gearExchange'" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+      <div class="card w-full max-w-md p-6">
+        <h2 class="text-base font-semibold text-white mb-4">Connect Gear Exchange Account</h2>
+
+        <p class="text-sm text-gray-400 mb-4">
+          Generate a token on Gear Exchange under
+          <a href="https://www.sweetwater.com/used/account/listings/api-settings" target="_blank" rel="noopener" class="text-brand-400 hover:underline">
+            Sold Items → API Settings
+          </a>. Give it the read and write permissions for listings and orders, plus
+          <span class="font-mono text-gray-300">write_user</span> if you want Gearline to register webhooks for you.
+        </p>
+
+        <div class="space-y-4">
+          <div>
+            <label class="block text-xs font-medium text-gray-400 mb-1">Display name</label>
+            <input v-model="gxDisplayName" type="text" placeholder="Gear Exchange" class="w-full rounded-lg bg-gray-800 border border-gray-700 focus:border-brand-500 px-3 py-2 text-sm text-white placeholder-gray-600 outline-none" />
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-gray-400 mb-1">API token</label>
+            <input
+              v-model="gxToken"
+              type="password"
+              placeholder="••••••••••••••••"
+              class="w-full rounded-lg bg-gray-800 border border-gray-700 focus:border-brand-500 px-3 py-2 text-sm text-white placeholder-gray-600 outline-none font-mono"
+              @keydown.enter="connectGearExchange"
+            />
+          </div>
+          <p v-if="gxError" class="text-xs text-red-400">{{ gxError }}</p>
+        </div>
+
+        <div class="mt-6 flex gap-3 justify-end">
+          <button @click="closeConnectModal" class="btn-secondary px-4 py-2 text-sm">Cancel</button>
+          <button @click="connectGearExchange" :disabled="connecting" class="btn-primary px-4 py-2 text-sm">
+            {{ connecting ? 'Checking…' : 'Connect' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Gear Exchange settings modal ──────────────────────────────────── -->
+    <div v-if="editingGx" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+      <div class="card w-full max-w-2xl p-6 max-h-[90vh] overflow-auto">
+        <h2 class="text-base font-semibold text-white mb-1">Gear Exchange Listing Defaults</h2>
+        <p class="text-xs text-gray-500 mb-4">
+          Applied to every Gear Exchange listing unless the listing overrides them. Shipping cost and return
+          window are required — Gear Exchange will not publish without them.
+        </p>
+
+        <div v-if="gxConfigError" class="rounded-lg bg-red-900/30 border border-red-700/50 px-4 py-3 mb-4 text-xs text-red-300 space-y-2">
+          <p class="font-medium text-red-200">Could not load Gear Exchange options</p>
+          <p class="break-all font-mono">{{ gxConfigError }}</p>
+          <p>Check that the token is valid and has read_listings, then reopen this dialog.</p>
+        </div>
+
+        <p class="text-xs font-medium text-gray-400 mb-2">Categories by Shopify product type</p>
+        <div class="space-y-2 mb-2">
+          <div v-for="(row, i) in gxCategoryRows" :key="i" class="flex items-center gap-2">
+            <input v-model="row.productType" placeholder="Shopify product type" class="input w-1/3 text-sm" />
+            <span class="text-gray-600">&rarr;</span>
+            <select v-model="row.category" class="input flex-1 text-sm">
+              <option value="">{{ gxConfigLoading ? 'Loading…' : '— Select category —' }}</option>
+              <option v-for="c in gxConfig?.categories || []" :key="c.id" :value="c.id">{{ c.name }}</option>
+            </select>
+            <button @click="gxCategoryRows.splice(i, 1)" class="text-xs text-red-500 hover:text-red-400">Remove</button>
+          </div>
+        </div>
+        <button @click="gxCategoryRows.push({ productType: '', category: '' })" class="text-xs text-gray-500 hover:text-gray-300 underline underline-offset-2 mb-4">
+          + Add mapping
+        </button>
+
+        <div class="grid grid-cols-2 gap-3">
+          <div class="col-span-2">
+            <label class="block text-xs font-medium text-gray-400 mb-1">Fallback category</label>
+            <select v-model="gxForm.gxDefaultCategory" class="input w-full text-sm">
+              <option value="">None — unmapped types fail to publish</option>
+              <option v-for="c in gxConfig?.categories || []" :key="c.id" :value="c.id">{{ c.name }}</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-gray-400 mb-1">Shipping cost (USD) *</label>
+            <input v-model="gxForm.gxShippingCost" type="number" step="0.01" min="0" class="input w-full text-sm" />
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-gray-400 mb-1">Return window *</label>
+            <select v-if="(gxConfig?.returnPolicies || []).length" v-model="gxForm.gxReturnPolicyDays" class="input w-full text-sm">
+              <option value="">— Select —</option>
+              <option v-for="r in gxConfig.returnPolicies" :key="r.id" :value="r.id">{{ r.name }}</option>
+            </select>
+            <input v-else v-model="gxForm.gxReturnPolicyDays" type="number" min="0" placeholder="days" class="input w-full text-sm" />
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-gray-400 mb-1">Payout method</label>
+            <select v-model="gxForm.gxPayoutMethod" class="input w-full text-sm">
+              <option value="">Gear Exchange default</option>
+              <option v-for="o in gxConfig?.payoutOptions || []" :key="o.id" :value="o.id">{{ o.name }}</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-gray-400 mb-1">Accept offers</label>
+            <select v-model="gxForm.gxAcceptsOffers" class="input w-full text-sm">
+              <option value="false">No</option>
+              <option value="true">Yes</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-gray-400 mb-1">Include in GX sale events</label>
+            <select v-model="gxForm.gxOptedInToSales" class="input w-full text-sm">
+              <option value="false">No</option>
+              <option value="true">Yes</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-gray-400 mb-1">Local pickup</label>
+            <select v-model="gxForm.gxLocalPickup" class="input w-full text-sm">
+              <option value="false">No</option>
+              <option value="true">Yes</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-gray-400 mb-1">On publish</label>
+            <select v-model="gxForm.gxPublishImmediately" class="input w-full text-sm">
+              <option value="true">Go live immediately</option>
+              <option value="false">Leave as a draft on Gear Exchange</option>
+            </select>
+          </div>
+        </div>
+
+        <p v-if="gxSaveError" class="mt-3 text-xs text-red-400">{{ gxSaveError }}</p>
+
+        <div class="mt-6 flex gap-3 justify-end">
+          <button @click="editingGx = null" class="btn-secondary px-4 py-2 text-sm">Cancel</button>
+          <button @click="saveGxSettings" :disabled="savingGx" class="btn-primary px-4 py-2 text-sm">
+            {{ savingGx ? 'Saving…' : 'Save' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Excluded product types modal ──────────────────────────────────── -->
+    <div v-if="editingExcludedTypes" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+      <div class="card w-full max-w-md p-6">
+        <h2 class="text-base font-semibold text-white mb-1">Never list these product types</h2>
+        <p class="text-xs text-gray-500 mb-4">
+          Shopify product types that should never go to {{ editingExcludedTypes.displayName }} — for example
+          T-Shirt on Gear Exchange, which does not allow clothing. One per line; matching ignores case.
+          Existing review-queue listings of these types are removed the next time the product syncs.
+        </p>
+        <textarea v-model="excludedTypesText" rows="6" class="input w-full text-sm font-mono" placeholder="T-Shirt"></textarea>
+        <div v-if="excludedTypesCatalogue.length" class="mt-2 flex flex-wrap gap-1">
+          <span class="text-xs text-gray-600 mr-1">In your catalogue:</span>
+          <button
+            v-for="t in excludedTypesCatalogue"
+            :key="t"
+            @click="addExcludedType(t)"
+            class="rounded px-1.5 py-0.5 text-xs bg-gray-800 text-gray-400 hover:text-gray-200"
+          >+ {{ t }}</button>
+        </div>
+        <div class="mt-6 flex gap-3 justify-end">
+          <button @click="editingExcludedTypes = null" class="btn-secondary px-4 py-2 text-sm">Cancel</button>
+          <button @click="saveExcludedTypes" :disabled="savingExcludedTypes" class="btn-primary px-4 py-2 text-sm">
+            {{ savingExcludedTypes ? 'Saving…' : 'Save' }}
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -862,7 +1108,7 @@ const accounts = ref([])
 const loading = ref(true)
 const checking = ref({})
 const syncing = ref({})
-const showConnectModal = ref(null) // 'shopify' | 'reverb' | null
+const showConnectModal = ref(null) // 'shopify' | 'reverb' | 'gearExchange' | null
 
 // Shopify fields
 const shopDomain = ref('')
@@ -872,6 +1118,11 @@ const domainError = ref('')
 const reverbDisplayName = ref('')
 const reverbToken = ref('')
 const reverbError = ref('')
+
+// Gear Exchange fields
+const gxDisplayName = ref('')
+const gxToken = ref('')
+const gxError = ref('')
 
 const connecting = ref(false)
 
@@ -995,7 +1246,41 @@ async function connectReverb() {
   }
 }
 
+/**
+ * Creates the account, then runs a health check straight away so a mistyped or
+ * under-scoped token shows up here rather than on the first failed publish.
+ */
+async function connectGearExchange() {
+  gxError.value = ''
+  const name = gxDisplayName.value.trim() || 'Gear Exchange'
+  const token = gxToken.value.trim()
+  if (!token) { gxError.value = 'Please paste your Gear Exchange API token.'; return }
+  connecting.value = true
+  try {
+    const res = await api.post('/marketplace/accounts', {
+      marketplaceType: 'GEAR_EXCHANGE',
+      displayName: name,
+      credentials: { access_token: token },
+    })
+    const health = await api.post(`/marketplace/accounts/${res.data.id}/health-check`)
+    if (!health.data?.healthy) {
+      gxError.value = `Account saved, but Gear Exchange rejected the token: ${health.data?.message || 'unknown error'}`
+      load()
+      return
+    }
+    closeConnectModal()
+    load()
+  } catch (e) {
+    gxError.value = e.response?.data?.message || e.response?.data?.detail || 'Failed to save account. Please try again.'
+  } finally {
+    connecting.value = false
+  }
+}
+
 function closeConnectModal() {
+  gxDisplayName.value = ''
+  gxToken.value = ''
+  gxError.value = ''
   showConnectModal.value = null
   shopDomain.value = ''
   domainError.value = ''
@@ -1397,4 +1682,157 @@ onMounted(() => {
   load()
   loadProfiles()
 })
+// ── Gear Exchange settings ───────────────────────────────────────────────────
+
+const editingGx = ref(null)
+const gxConfig = ref(null)            // { categories, conditions, returnPolicies, payoutOptions, productTypes }
+const gxConfigLoading = ref(false)
+const gxConfigError = ref(null)
+const gxCategoryRows = ref([])        // [{ productType, category }]
+const gxForm = ref({})
+const savingGx = ref(false)
+const gxSaveError = ref('')
+
+function openGxSettings(account) {
+  editingGx.value = account
+  gxConfig.value = null
+  gxConfigError.value = null
+  gxSaveError.value = ''
+  gxCategoryRows.value = Object.entries(account.gxCategoryMap || {})
+    .map(([productType, category]) => ({ productType, category }))
+  gxForm.value = {
+    gxDefaultCategory: account.gxDefaultCategory || '',
+    gxShippingCost: account.gxShippingCost || '',
+    gxReturnPolicyDays: account.gxReturnPolicyDays || '',
+    gxPayoutMethod: account.gxPayoutMethod || '',
+    gxAcceptsOffers: account.gxAcceptsOffers || 'false',
+    gxOptedInToSales: account.gxOptedInToSales || 'false',
+    gxLocalPickup: account.gxLocalPickup || 'false',
+    gxPublishImmediately: account.gxPublishImmediately || 'true',
+  }
+  loadGxConfig()
+}
+
+async function loadGxConfig() {
+  if (!editingGx.value) return
+  gxConfigLoading.value = true
+  try {
+    const res = await api.get(`/marketplace/accounts/${editingGx.value.id}/gear-exchange/config`)
+    gxConfig.value = res.data
+    // One row per catalogue product type not yet mapped, like the Reverb screen.
+    const known = new Set(gxCategoryRows.value.map(r => r.productType.trim().toLowerCase()))
+    for (const productType of res.data.productTypes || []) {
+      if (known.has(productType.trim().toLowerCase())) continue
+      gxCategoryRows.value.push({ productType, category: '' })
+      known.add(productType.trim().toLowerCase())
+    }
+  } catch (e) {
+    gxConfigError.value = e.response?.data?.error || e.message || 'Failed to load Gear Exchange options'
+  } finally {
+    gxConfigLoading.value = false
+  }
+}
+
+async function saveGxSettings() {
+  savingGx.value = true
+  gxSaveError.value = ''
+  try {
+    const map = {}
+    for (const row of gxCategoryRows.value) {
+      const type = row.productType.trim()
+      if (type && row.category) map[type] = String(row.category)
+    }
+    // Blank strings are sent deliberately: the settings endpoint treats a
+    // present-but-blank value as "remove this setting".
+    await api.patch(`/marketplace/accounts/${editingGx.value.id}/settings`, {
+      gxCategoryMap: map,
+      ...Object.fromEntries(Object.entries(gxForm.value).map(([k, v]) => [k, v == null ? '' : String(v)])),
+    })
+    editingGx.value = null
+    load()
+  } catch (e) {
+    gxSaveError.value = e.response?.data?.detail || e.response?.data?.message || 'Failed to save settings.'
+  } finally {
+    savingGx.value = false
+  }
+}
+
+// ── Gear Exchange webhooks ───────────────────────────────────────────────────
+
+const gxWebhookBusy = ref({})
+const gxWebhookMessage = ref({})
+const gxWebhookInfo = ref({})
+
+async function registerGxWebhook(account) {
+  gxWebhookBusy.value[account.id] = true
+  gxWebhookMessage.value[account.id] = null
+  try {
+    const res = await api.post(`/marketplace/accounts/${account.id}/gear-exchange/webhook/register`)
+    gxWebhookMessage.value[account.id] = { ok: true, text: `Registered — Gear Exchange will notify ${res.data.url}` }
+  } catch (e) {
+    const reason = e.response?.data?.error || e.message
+    gxWebhookMessage.value[account.id] = {
+      ok: false,
+      text: `Could not register automatically (${reason}). Use "Show URL & token" and paste them into Gear Exchange instead.`,
+    }
+  } finally {
+    gxWebhookBusy.value[account.id] = false
+  }
+}
+
+async function showGxWebhook(account) {
+  if (gxWebhookInfo.value[account.id]) {
+    gxWebhookInfo.value[account.id] = null
+    return
+  }
+  try {
+    const res = await api.get(`/marketplace/accounts/${account.id}/gear-exchange/webhook`)
+    gxWebhookInfo.value[account.id] = res.data
+  } catch (e) {
+    gxWebhookMessage.value[account.id] = { ok: false, text: e.response?.data?.detail || 'Could not load webhook details.' }
+  }
+}
+
+// ── Excluded product types (any destination account) ─────────────────────────
+
+const editingExcludedTypes = ref(null)
+const excludedTypesText = ref('')
+const excludedTypesCatalogue = ref([])
+const savingExcludedTypes = ref(false)
+
+async function openExcludedTypes(account) {
+  editingExcludedTypes.value = account
+  excludedTypesText.value = (account.excludedProductTypes || []).join('\n')
+  excludedTypesCatalogue.value = []
+  // The catalogue's product types, as clickable suggestions. Best effort — the
+  // dialog works without them.
+  try {
+    const res = await api.get('/products/categories')
+    excludedTypesCatalogue.value = Array.isArray(res.data) ? res.data : []
+  } catch {
+    excludedTypesCatalogue.value = []
+  }
+}
+
+function addExcludedType(type) {
+  const lines = excludedTypesText.value.split('\n').map(l => l.trim()).filter(Boolean)
+  if (!lines.some(l => l.toLowerCase() === type.toLowerCase())) lines.push(type)
+  excludedTypesText.value = lines.join('\n')
+}
+
+async function saveExcludedTypes() {
+  savingExcludedTypes.value = true
+  try {
+    const types = excludedTypesText.value.split('\n').map(l => l.trim()).filter(Boolean)
+    await api.patch(`/marketplace/accounts/${editingExcludedTypes.value.id}/settings`, {
+      excludedProductTypes: types,
+    })
+    editingExcludedTypes.value = null
+    load()
+  } catch (e) {
+    alert(e.response?.data?.detail || 'Failed to save excluded product types.')
+  } finally {
+    savingExcludedTypes.value = false
+  }
+}
 </script>

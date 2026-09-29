@@ -2,6 +2,7 @@ import { db } from '../db/index.js';
 import { toJson } from '../db/json.js';
 import type { MarketplaceAccountRow } from '../db/types.js';
 import { loggerFor } from '../logger.js';
+import { isEligible } from './marketplace-eligibility.js';
 
 const log = loggerFor('listing-backfill');
 
@@ -17,6 +18,9 @@ const PAGE_SIZE = 100;
  *
  * Eligibility matches ProductRepository.findAvailableForListing exactly:
  *   status = ACTIVE AND quantity > 0 AND marketplace_excluded = false
+ * plus the per-marketplace rules in marketplace-eligibility.ts (a product
+ * excluded from this marketplace type, or whose product type this account
+ * excludes, gets no stub).
  *
  * Those criteria are the same ones the webhook processor uses, so a product
  * backfilled here and one created by a webhook end up in identical states.
@@ -36,7 +40,7 @@ export async function backfillListingsForNewAccount(
   for (;;) {
     const products = await db
       .selectFrom('products')
-      .select('id')
+      .select(['id', 'category', 'marketplace_excluded', 'excluded_marketplaces'])
       .where('status', '=', 'ACTIVE')
       .where('quantity', '>', 0)
       .where('marketplace_excluded', '=', false)
@@ -50,6 +54,11 @@ export async function backfillListingsForNewAccount(
     if (products.length === 0) break;
 
     for (const product of products) {
+      if (!isEligible(product, account)) {
+        skipped++;
+        continue;
+      }
+
       /**
        * ON CONFLICT rather than a check-then-insert. The unique constraint on
        * (product_id, marketplace_account_id) is the real guard, and a

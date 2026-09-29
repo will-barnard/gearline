@@ -24,7 +24,7 @@ export const READY_STATUSES = ['NEEDS_REVIEW']
 /** Been somewhere and come back; can be published again. */
 export const REPUBLISHABLE_STATUSES = ['FAILED', 'INACTIVE', 'DELISTED']
 
-const MARKETPLACE_ORDER = ['REVERB', 'EBAY', 'SHOPIFY']
+const MARKETPLACE_ORDER = ['REVERB', 'EBAY', 'GEAR_EXCHANGE', 'SHOPIFY']
 
 /**
  * Stable channel ordering, so a product's chips don't reshuffle between

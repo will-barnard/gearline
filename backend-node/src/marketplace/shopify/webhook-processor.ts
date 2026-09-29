@@ -8,6 +8,7 @@ import type {
 } from '../../db/types.js';
 import { loggerFor } from '../../logger.js';
 import { notifyMarketplace } from '../../services/fulfillment-notification.js';
+import { checkEligibility } from '../../services/marketplace-eligibility.js';
 import { propagateInventoryChange } from '../../services/inventory-consistency.js';
 import { enqueue } from '../../queue/sync-job-producer.js';
 import { divideHalfUp, decimalToString } from '../../util/decimal.js';
@@ -1095,6 +1096,28 @@ async function upsertReviewListings(product: ProductRow): Promise<void> {
       .where('product_id', '=', product.id)
       .where('marketplace_account_id', '=', account.id)
       .executeTakeFirst();
+
+    /**
+     * Per-marketplace exclusion and account-level excluded product types.
+     *
+     * An ineligible product gets no stub, and a review-queue stub that predates
+     * the exclusion (a product type added to the account's exclusion list after
+     * the fact) is removed so it stops showing as "ready to publish". Live and
+     * sold listings are NOT touched here — taking a live listing down is the
+     * exclusion endpoint's job, where it is an explicit operator action.
+     */
+    const eligibility = checkEligibility(product, account);
+
+    if (!eligibility.eligible) {
+      if (existing && REVIEW_STATUSES.includes(existing.listing_status)) {
+        await db.deleteFrom('marketplace_listings').where('id', '=', existing.id).execute();
+        log.info(
+          { marketplace: account.marketplace_type, listingId: existing.id, sku: product.sku, reason: eligibility.reason },
+          'Removed review-queue listing — product not eligible for this account',
+        );
+      }
+      continue;
+    }
 
     if (existing) {
       if (LIVE_STATUSES.includes(existing.listing_status) || existing.listing_status === 'SOLD') {

@@ -20,8 +20,11 @@ import {
 } from '../marketplace/reverb/client.js';
 import * as ebayClient from '../marketplace/ebay/client.js';
 import { ebayAuthProvider } from '../marketplace/ebay/auth-provider.js';
+import * as gxClient from '../marketplace/gear-exchange/client.js';
+import { config } from '../config.js';
+import { randomBytes } from 'node:crypto';
 import { backfillListingsForNewAccount } from '../services/listing-backfill.js';
-import { encrypt } from '../security/credential-encryptor.js';
+import { encrypt, readCredentials } from '../security/credential-encryptor.js';
 
 const log = loggerFor('marketplace-accounts');
 
@@ -190,6 +193,22 @@ const settingsSchema = z.object({
    */
   variantTitleTemplates: z.record(z.string(), z.string()).nullish(),
   variantTitleTemplate: z.string().nullish(),
+  /**
+   * Shopify product types this ACCOUNT never lists (e.g. "T-Shirt" on Gear
+   * Exchange, which bans clothing). Sent whole; empty removes the setting.
+   */
+  excludedProductTypes: z.array(z.string()).nullish(),
+  // ── Gear Exchange ──
+  /** Shopify product type -> GX category id. Sent whole, like the Reverb map. */
+  gxCategoryMap: z.record(z.string(), z.string()).nullish(),
+  gxDefaultCategory: z.string().nullish(),
+  gxShippingCost: z.string().nullish(),
+  gxReturnPolicyDays: z.string().nullish(),
+  gxPayoutMethod: z.string().nullish(),
+  gxAcceptsOffers: z.string().nullish(),
+  gxOptedInToSales: z.string().nullish(),
+  gxLocalPickup: z.string().nullish(),
+  gxPublishImmediately: z.string().nullish(),
 });
 
 /**
@@ -248,6 +267,27 @@ marketplaceAccountsRouter.patch(
       else merge['variant_title_templates'] = cleaned;
     }
 
+    if (body.excludedProductTypes != null) {
+      // Matching is case-insensitive downstream (marketplace-eligibility.ts);
+      // the operator's spelling is kept for display.
+      const cleaned = [...new Set(body.excludedProductTypes.map((t) => t.trim()).filter((t) => t !== ''))];
+      if (cleaned.length === 0) removeKeys.push('excluded_product_types');
+      else merge['excluded_product_types'] = cleaned;
+    }
+
+    if (body.gxCategoryMap != null) {
+      const cleaned: Record<string, string> = {};
+
+      for (const [type, category] of Object.entries(body.gxCategoryMap)) {
+        const key = type.trim();
+        const value = category.trim();
+        if (key !== '' && value !== '') cleaned[key] = value;
+      }
+
+      if (Object.keys(cleaned).length === 0) removeKeys.push('gx_category_map');
+      else merge['gx_category_map'] = cleaned;
+    }
+
     if (body.reverbCategoryMap != null) {
       const cleaned: Record<string, string> = {};
 
@@ -269,6 +309,14 @@ marketplaceAccountsRouter.patch(
       [body.ebayPaymentPolicyId, 'ebay_payment_policy_id'],
       [body.reverbDefaultCategory, 'reverb_default_category'],
       [body.variantTitleTemplate, 'variant_title_template'],
+      [body.gxDefaultCategory, 'gx_default_category'],
+      [body.gxShippingCost, 'gx_shipping_cost'],
+      [body.gxReturnPolicyDays, 'gx_return_policy_days'],
+      [body.gxPayoutMethod, 'gx_payout_method'],
+      [body.gxAcceptsOffers, 'gx_accepts_offers'],
+      [body.gxOptedInToSales, 'gx_opted_in_to_sales'],
+      [body.gxLocalPickup, 'gx_local_pickup'],
+      [body.gxPublishImmediately, 'gx_publish_immediately'],
     ];
 
     for (const [value, key] of stringSettings) {
@@ -737,10 +785,117 @@ marketplaceAccountsRouter.post(
   }),
 );
 
+// ── Gear Exchange configuration ──────────────────────────────────────────────
+
+async function requireGxAccount(id: string) {
+  const account = await db
+    .selectFrom('marketplace_accounts')
+    .selectAll()
+    .where('id', '=', id)
+    .executeTakeFirst();
+
+  if (!account) throw new ResourceNotFoundError('MarketplaceAccount', id);
+  if (account.marketplace_type !== 'GEAR_EXCHANGE') {
+    throw new ApiError(400, 'Wrong marketplace', 'This endpoint is for Gear Exchange accounts only');
+  }
+  return account;
+}
+
+/**
+ * Everything the Gear Exchange settings screen needs in one call: GX's own
+ * option lists plus the Shopify product types in this catalogue, so the
+ * category map renders one row per type the operator actually has.
+ */
+marketplaceAccountsRouter.get(
+  '/:id/gear-exchange/config',
+  asyncHandler(async (req, res) => {
+    const account = await requireGxAccount(uuidSchema.parse(req.params.id));
+
+    try {
+      const [categories, conditions, returnPolicies, payoutOptions, productTypes] = await Promise.all([
+        gxClient.getCategories(account),
+        gxClient.getConditions(account),
+        gxClient.getReturnPolicies(account),
+        gxClient.getPayoutOptions(account),
+        db
+          .selectFrom('products')
+          .select('category')
+          .distinct()
+          .where('category', 'is not', null)
+          .orderBy('category')
+          .execute(),
+      ]);
+
+      res.json({
+        categories,
+        conditions,
+        returnPolicies,
+        payoutOptions,
+        productTypes: productTypes
+          .map((row) => row.category)
+          .filter((c): c is string => typeof c === 'string' && c.trim() !== ''),
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      log.warn({ err, accountId: account.id }, 'Gear Exchange config fetch failed');
+      res.status(502).json({ error: message });
+    }
+  }),
+);
+
+function gxWebhookUrl(): string {
+  return `${config.app.baseUrl.replace(/\/+$/, '')}/webhooks/gear-exchange`;
+}
+
+/**
+ * The URL and bearer token to enter in Gear Exchange's "Set up webhooks" form.
+ *
+ * Returning the token to an authenticated operator is deliberate: GX has no
+ * other way to learn it, and it only authorises GX to TELL Gearline something
+ * changed — every webhook is re-verified against the API before anything is
+ * imported.
+ */
+marketplaceAccountsRouter.get(
+  '/:id/gear-exchange/webhook',
+  asyncHandler(async (req, res) => {
+    const account = await requireGxAccount(uuidSchema.parse(req.params.id));
+    const token = readCredentials(account.encrypted_credentials)['webhook_token'] ?? null;
+    res.json({ url: gxWebhookUrl(), token });
+  }),
+);
+
+/**
+ * Registers the webhook with GX through the API (needs the write_user scope).
+ * On a 403 the UI falls back to showing the URL and token for manual entry.
+ */
+marketplaceAccountsRouter.post(
+  '/:id/gear-exchange/webhook/register',
+  asyncHandler(async (req, res) => {
+    const account = await requireGxAccount(uuidSchema.parse(req.params.id));
+    const token = readCredentials(account.encrypted_credentials)['webhook_token'];
+
+    if (!token) {
+      res.status(409).json({
+        error: 'This account has no webhook token. Reconnect it to generate one.',
+      });
+      return;
+    }
+
+    try {
+      await gxClient.setWebhookConfig(account, gxWebhookUrl(), token);
+      res.json({ registered: true, url: gxWebhookUrl() });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      log.warn({ err, accountId: account.id }, 'Gear Exchange webhook registration failed');
+      res.status(502).json({ error: message });
+    }
+  }),
+);
+
 // ── POST / — manual account creation ─────────────────────────────────────────
 
 const createAccountSchema = z.object({
-  marketplaceType: z.enum(['SHOPIFY', 'EBAY', 'REVERB']),
+  marketplaceType: z.enum(['SHOPIFY', 'EBAY', 'REVERB', 'GEAR_EXCHANGE']),
   displayName: z.string().min(1, 'must not be blank'),
   credentials: z.record(z.string()).nullish(),
 });
@@ -757,12 +912,23 @@ marketplaceAccountsRouter.post(
   asyncHandler(async (req, res) => {
     const body = createAccountSchema.parse(req.body);
 
+    const credentials: Record<string, string> = { ...(body.credentials ?? {}) };
+
+    /**
+     * Gear Exchange webhooks authenticate with a bearer token WE choose and GX
+     * echoes back (see services/gear-exchange-webhooks.ts). Generated here so
+     * every GX account has one from the start; the Marketplaces page shows it.
+     */
+    if (body.marketplaceType === 'GEAR_EXCHANGE' && !credentials['webhook_token']) {
+      credentials['webhook_token'] = randomBytes(32).toString('base64url');
+    }
+
     const account = await db
       .insertInto('marketplace_accounts')
       .values({
         marketplace_type: body.marketplaceType,
         display_name: body.displayName,
-        encrypted_credentials: encrypt(body.credentials ?? {}),
+        encrypted_credentials: encrypt(credentials),
         connection_status: 'CONNECTED',
         active: true,
         sync_settings: toJson({}),

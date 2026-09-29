@@ -3,6 +3,8 @@ import type { OrderRow } from '../db/types.js';
 import { loggerFor } from '../logger.js';
 import * as reverbClient from '../marketplace/reverb/client.js';
 import * as ebayClient from '../marketplace/ebay/client.js';
+import * as gxClient from '../marketplace/gear-exchange/client.js';
+import type { GxOption } from '../marketplace/gear-exchange/types.js';
 import * as audit from './audit.js';
 
 const log = loggerFor('fulfillment-notification');
@@ -139,6 +141,27 @@ export async function notifyMarketplace(details: FulfillmentDetails): Promise<vo
         break;
       }
 
+      case 'GEAR_EXCHANGE': {
+        if (!trackingNumber) {
+          // GX's tracking endpoint requires at least one number, and a
+          // fulfilment with none (local pickup, hand delivery) has nothing to
+          // send. Throwing keeps the order unshipped so it is visibly pending.
+          throw new Error('Gear Exchange needs a tracking number — mark it shipped on Gear Exchange directly');
+        }
+
+        const provider = gxProviderFor(await gxClient.getShippingProviders(account), trackingCarrier);
+
+        log.info(
+          { orderId: order.external_order_id, provider, trackingNumber },
+          'Notifying Gear Exchange of shipment',
+        );
+
+        // Multi-box shipments arrive from Shopify as one comma-separated field.
+        const numbers = trackingNumber.split(',').map((n) => n.trim()).filter((n) => n !== '');
+        await gxClient.addTracking(account, order.external_order_id, provider, numbers);
+        break;
+      }
+
       default:
         log.warn({ marketplaceType: order.marketplace_type }, 'No fulfilment handler for marketplace');
         return;
@@ -222,4 +245,35 @@ async function saveTrackingOnly(order: OrderRow, details: FulfillmentDetails): P
     })
     .where('id', '=', order.id)
     .execute();
+}
+
+/**
+ * Maps Shopify's free-text carrier ("UPS", "FedEx Ground", "USPS") onto one of
+ * Gear Exchange's shipping provider ids ("ups", "fedex", ...).
+ *
+ * Exact id/name match first, then containment either way, so "FedEx Ground"
+ * finds "fedex". An unmapped carrier throws rather than guessing: a wrong
+ * carrier gives the buyer a tracking link that never resolves.
+ */
+export function gxProviderFor(providers: GxOption[], carrier: string | null): string {
+  const wanted = (carrier ?? '').trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+
+  if (wanted !== '') {
+    const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const exact = providers.find((p) => norm(p.id) === wanted || norm(p.name) === wanted);
+    if (exact) return exact.id;
+
+    const partial = providers.find((p) => {
+      const id = norm(p.id);
+      const name = norm(p.name);
+      return (id !== '' && (wanted.includes(id) || id.includes(wanted))) || (name !== '' && wanted.includes(name));
+    });
+    if (partial) return partial.id;
+  }
+
+  const offered = providers.map((p) => p.id).join(', ') || '(none returned)';
+  throw new Error(
+    `Carrier "${carrier ?? ''}" does not match a Gear Exchange shipping provider (offered: ${offered}). ` +
+      'Add the tracking on Gear Exchange directly.',
+  );
 }

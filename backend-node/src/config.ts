@@ -142,6 +142,17 @@ export const config = {
     notificationVerificationToken: env('EBAY_NOTIFICATION_VERIFICATION_TOKEN'),
   },
 
+  /**
+   * Sweetwater Gear Exchange. Auth is a per-account bearer token stored in the
+   * account's encrypted credentials (like Reverb's PAT), so only the base URL
+   * lives here — overridable to point at the sandbox Gear Exchange support
+   * hands out on request.
+   */
+  gearExchange: {
+    // `||` not a default argument: compose passes a blank value through as ''.
+    apiBaseUrl: env('GX_API_BASE_URL') || 'https://www.sweetwater.com/used/public-api/v1',
+  },
+
   sync: {
     maxRetryAttempts: intEnv('SYNC_MAX_RETRY_ATTEMPTS', 5),
     initialRetryDelayMs: intEnv('SYNC_INITIAL_RETRY_DELAY_MS', 1_000),

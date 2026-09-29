@@ -70,6 +70,8 @@ export function toProductDto(p: ProductRow) {
     // Primitive boolean in Java — always present even when false, so it must
     // survive stripNulls. false is not null, so it does.
     marketplaceExcluded: p.marketplace_excluded,
+    // Always an array, never null — the product screen iterates it unguarded.
+    excludedMarketplaces: p.excluded_marketplaces ?? [],
     shopifyProductId: p.shopify_product_id,
     createdAt: iso(p.created_at),
     updatedAt: iso(p.updated_at),
@@ -222,6 +224,20 @@ export function toMarketplaceAccountDto(
     // Always an object, never null — the settings form iterates it unguarded.
     variantTitleTemplates: stringMapSetting(settings, 'variant_title_templates'),
     variantTitleTemplate: stringSetting(settings, 'variant_title_template'),
+    // Always an array, never null — the settings form iterates it unguarded.
+    excludedProductTypes: Array.isArray(settings['excluded_product_types'])
+      ? (settings['excluded_product_types'] as unknown[]).map((t) => String(t))
+      : [],
+    // Always an object, never null — the settings form iterates it unguarded.
+    gxCategoryMap: stringMapSetting(settings, 'gx_category_map'),
+    gxDefaultCategory: stringSetting(settings, 'gx_default_category'),
+    gxShippingCost: stringSetting(settings, 'gx_shipping_cost'),
+    gxReturnPolicyDays: stringSetting(settings, 'gx_return_policy_days'),
+    gxPayoutMethod: stringSetting(settings, 'gx_payout_method'),
+    gxAcceptsOffers: stringSetting(settings, 'gx_accepts_offers'),
+    gxOptedInToSales: stringSetting(settings, 'gx_opted_in_to_sales'),
+    gxLocalPickup: stringSetting(settings, 'gx_local_pickup'),
+    gxPublishImmediately: stringSetting(settings, 'gx_publish_immediately'),
   });
 }
 

@@ -18,7 +18,7 @@
         <div class="flex-1 min-w-0">
           <p class="text-sm font-semibold text-orange-200">Excluded from all marketplaces</p>
           <p class="mt-0.5 text-xs text-orange-400">
-            This product will not appear in the eBay or Reverb review queue and no listings will be created for it,
+            This product will not appear in any marketplace review queue and no listings will be created for it,
             even if its status changes in Shopify. The Shopify listing is unaffected.
           </p>
         </div>
@@ -50,6 +50,31 @@
             >
               {{ togglingExclusion ? 'Updating…' : '✕ Exclude from all marketplaces' }}
             </button>
+          </div>
+
+          <!-- Per-marketplace exclusion -->
+          <div class="card" v-if="!product.marketplaceExcluded">
+            <h2 class="mb-2 text-sm font-semibold uppercase tracking-wider text-gray-500">Keep off specific marketplaces</h2>
+            <p class="text-xs text-gray-500 mb-3">
+              For items one marketplace doesn't allow — Gear Exchange bans clothing, for example.
+              Ticking one takes down any live listing there and stops new ones being created.
+            </p>
+            <div class="flex flex-wrap gap-4">
+              <label
+                v-for="type in EXCLUDABLE_MARKETPLACES"
+                :key="type"
+                class="flex items-center gap-2 text-xs text-gray-300 cursor-pointer"
+              >
+                <input
+                  type="checkbox"
+                  :checked="isExcludedFrom(type)"
+                  :disabled="savingMarketplaceExclusions"
+                  @change="toggleMarketplaceExclusion(type)"
+                  class="rounded border-gray-600 bg-gray-800"
+                />
+                Keep off {{ marketplaceName(type) }}
+              </label>
+            </div>
           </div>
 
           <div class="card">
@@ -252,6 +277,62 @@
                         </p>
                       </div>
                     </div>
+                  </template>
+
+                  <!-- Gear Exchange-specific -->
+                  <template v-if="l.marketplaceType === 'GEAR_EXCHANGE'">
+                    <p
+                      v-if="l.marketplaceMetadata?.images_processing"
+                      class="text-xs text-gray-500"
+                    >Gear Exchange is importing the photos — the listing goes live when that finishes.</p>
+                    <p class="text-xs font-medium text-gray-400">Gear Exchange</p>
+                    <div
+                      v-if="gxPriceTooLow(editOverrides[l.id].price)"
+                      class="rounded-lg bg-yellow-900/30 border border-yellow-700/50 px-3 py-2 text-xs text-yellow-300"
+                    >
+                      ⚠ Gear Exchange only accepts prices above $25. Set a higher price override, or keep this
+                      product off Gear Exchange (see "Keep off specific marketplaces").
+                    </div>
+                    <div class="grid grid-cols-2 gap-2">
+                      <div>
+                        <label class="text-xs text-gray-500">Shipping cost</label>
+                        <input v-model="editOverrides[l.id].gx_shipping_cost" type="number" step="0.01" min="0"
+                          :placeholder="gxAccountDefault(l.marketplaceAccountId, 'gxShippingCost', 'Account default')"
+                          class="input w-full mt-1 py-1 text-xs" />
+                      </div>
+                      <div>
+                        <label class="text-xs text-gray-500">Return window (days)</label>
+                        <input v-model="editOverrides[l.id].gx_return_policy_days" type="number" step="1" min="0"
+                          :placeholder="gxAccountDefault(l.marketplaceAccountId, 'gxReturnPolicyDays', 'Account default')"
+                          class="input w-full mt-1 py-1 text-xs" />
+                      </div>
+                      <div>
+                        <label class="text-xs text-gray-500">Accept offers</label>
+                        <select v-model="editOverrides[l.id].gx_accepts_offers" class="input w-full mt-1 py-1 text-xs">
+                          <option value="">Account default</option>
+                          <option value="true">Yes</option>
+                          <option value="false">No</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label class="text-xs text-gray-500">Minimum offer</label>
+                        <input v-model="editOverrides[l.id].gx_min_offer" type="number" step="0.01" min="0" placeholder="None"
+                          class="input w-full mt-1 py-1 text-xs" />
+                      </div>
+                      <div>
+                        <label class="text-xs text-gray-500">Brand override</label>
+                        <input v-model="editOverrides[l.id].gx_brand" :placeholder="product.brand || 'Required — product has no brand'"
+                          class="input w-full mt-1 py-1 text-xs" />
+                      </div>
+                      <div>
+                        <label class="text-xs text-gray-500">Category ID</label>
+                        <input v-model="editOverrides[l.id].category_id" placeholder="Use account mapping" class="input w-full mt-1 py-1 text-xs" />
+                      </div>
+                    </div>
+                    <p class="text-xs text-gray-600">
+                      Gear Exchange sells one unit per listing. With more stock, Gearline lists the next unit
+                      automatically after each sale.
+                    </p>
                   </template>
 
                   <!-- eBay-specific -->
@@ -742,6 +823,58 @@
               </div>
             </template>
 
+            <!-- Gear Exchange fields -->
+            <template v-if="selectedAccountType === 'GEAR_EXCHANGE'">
+              <p class="text-xs font-medium text-gray-400">Gear Exchange</p>
+                    <div
+                      v-if="gxPriceTooLow(publishForm.price)"
+                      class="rounded-lg bg-yellow-900/30 border border-yellow-700/50 px-3 py-2 text-xs text-yellow-300"
+                    >
+                      ⚠ Gear Exchange only accepts prices above $25. Set a higher price override, or keep this
+                      product off Gear Exchange (see "Keep off specific marketplaces").
+                    </div>
+                    <div class="grid grid-cols-2 gap-2">
+                      <div>
+                        <label class="block text-xs font-medium text-gray-400 mb-1">Shipping cost</label>
+                        <input v-model="publishForm.gx_shipping_cost" type="number" step="0.01" min="0"
+                          :placeholder="gxAccountDefault(publishForm.accountId, 'gxShippingCost', 'Account default')"
+                          class="input w-full py-1.5 text-sm" />
+                      </div>
+                      <div>
+                        <label class="block text-xs font-medium text-gray-400 mb-1">Return window (days)</label>
+                        <input v-model="publishForm.gx_return_policy_days" type="number" step="1" min="0"
+                          :placeholder="gxAccountDefault(publishForm.accountId, 'gxReturnPolicyDays', 'Account default')"
+                          class="input w-full py-1.5 text-sm" />
+                      </div>
+                      <div>
+                        <label class="block text-xs font-medium text-gray-400 mb-1">Accept offers</label>
+                        <select v-model="publishForm.gx_accepts_offers" class="input w-full py-1.5 text-sm">
+                          <option value="">Account default</option>
+                          <option value="true">Yes</option>
+                          <option value="false">No</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label class="block text-xs font-medium text-gray-400 mb-1">Minimum offer</label>
+                        <input v-model="publishForm.gx_min_offer" type="number" step="0.01" min="0" placeholder="None"
+                          class="input w-full py-1.5 text-sm" />
+                      </div>
+                      <div>
+                        <label class="block text-xs font-medium text-gray-400 mb-1">Brand override</label>
+                        <input v-model="publishForm.gx_brand" :placeholder="product.brand || 'Required — product has no brand'"
+                          class="input w-full py-1.5 text-sm" />
+                      </div>
+                      <div>
+                        <label class="block text-xs font-medium text-gray-400 mb-1">Category ID</label>
+                        <input v-model="publishForm.category_id" placeholder="Use account mapping" class="input w-full py-1.5 text-sm" />
+                      </div>
+                    </div>
+                    <p class="text-xs text-gray-600">
+                      Gear Exchange sells one unit per listing. With more stock, Gearline lists the next unit
+                      automatically after each sale.
+                    </p>
+            </template>
+
             <!-- eBay fields -->
             <template v-if="selectedAccountType === 'EBAY'">
               <p class="text-xs font-semibold text-gray-500 uppercase tracking-wider">eBay</p>
@@ -1012,7 +1145,12 @@ const existingAccountIds = computed(() =>
   new Set(listings.value.map(l => l.marketplaceAccountId))
 )
 const availableAccounts = computed(() =>
-  accounts.value.filter(a => a.active && !existingAccountIds.value.has(a.id))
+  accounts.value.filter(a =>
+    a.active &&
+    a.marketplaceType !== 'SHOPIFY' &&
+    !existingAccountIds.value.has(a.id) &&
+    accountAllowsProduct(a)
+  )
 )
 const selectedAccountType = computed(() => {
   const a = accounts.value.find(a => a.id === publishForm.value.accountId)
@@ -1690,6 +1828,11 @@ function emptyPublishForm() {
     condition_mapping: '',
     ebay_fulfillment_policy_id: '',
     ebay_return_policy_id: '',
+    gx_shipping_cost: '',
+    gx_return_policy_days: '',
+    gx_accepts_offers: '',
+    gx_min_offer: '',
+    gx_brand: '',
   }
 }
 
@@ -1712,6 +1855,11 @@ function buildOverrides(form) {
     condition_mapping: 'condition_mapping',
     ebay_fulfillment_policy_id: 'ebay_fulfillment_policy_id',
     ebay_return_policy_id: 'ebay_return_policy_id',
+    gx_shipping_cost: 'gx_shipping_cost',
+    gx_return_policy_days: 'gx_return_policy_days',
+    gx_accepts_offers: 'gx_accepts_offers',
+    gx_min_offer: 'gx_min_offer',
+    gx_brand: 'gx_brand',
   }
   for (const [formKey, overrideKey] of Object.entries(map)) {
     const val = form[formKey]
@@ -1739,6 +1887,11 @@ function flattenOverrides(listing) {
     condition_mapping: o.condition_mapping ?? '',
     ebay_fulfillment_policy_id: o.ebay_fulfillment_policy_id ?? '',
     ebay_return_policy_id: o.ebay_return_policy_id ?? '',
+    gx_shipping_cost: o.gx_shipping_cost ?? '',
+    gx_return_policy_days: o.gx_return_policy_days ?? '',
+    gx_accepts_offers: o.gx_accepts_offers ?? '',
+    gx_min_offer: o.gx_min_offer ?? '',
+    gx_brand: o.gx_brand ?? '',
   }
 }
 
@@ -1801,7 +1954,66 @@ function listingCardClass(l) {
 }
 
 function marketplaceName(type) {
-  return { REVERB: 'Reverb', EBAY: 'eBay', SHOPIFY: 'Shopify' }[type] || type
+  return { REVERB: 'Reverb', EBAY: 'eBay', SHOPIFY: 'Shopify', GEAR_EXCHANGE: 'Gear Exchange' }[type] || type
+}
+
+// ── Gear Exchange helpers ─────────────────────────────────────────────────────
+
+/** GX rejects prices at or below $25; warn before the publish does. */
+function gxPriceTooLow(priceOverride) {
+  const effective = Number(priceOverride !== '' && priceOverride != null ? priceOverride : product.value?.price)
+  return Number.isFinite(effective) && effective <= 25
+}
+
+/** Placeholder text showing the account-level value a blank override falls back to. */
+function gxAccountDefault(accountId, key, fallback) {
+  const value = accounts.value.find(a => a.id === accountId)?.[key]
+  return value ? `Account: ${value}` : fallback
+}
+
+// ── Per-marketplace exclusion ─────────────────────────────────────────────────
+
+const EXCLUDABLE_MARKETPLACES = ['REVERB', 'EBAY', 'GEAR_EXCHANGE']
+const savingMarketplaceExclusions = ref(false)
+
+function isExcludedFrom(type) {
+  return (product.value?.excludedMarketplaces || []).includes(type)
+}
+
+async function toggleMarketplaceExclusion(type) {
+  const current = new Set(product.value?.excludedMarketplaces || [])
+  if (current.has(type)) current.delete(type)
+  else current.add(type)
+
+  savingMarketplaceExclusions.value = true
+  try {
+    const res = await api.patch(`/products/${route.params.id}/excluded-marketplaces`, {
+      marketplaces: [...current],
+    })
+    product.value = res.data
+    // Excluding delists or removes that marketplace's listing server-side.
+    const l = await api.get(`/listings/product/${route.params.id}`)
+    listings.value = l.data
+    l.data.forEach(listing => {
+      if (!editOverrides.value[listing.id]) editOverrides.value[listing.id] = flattenOverrides(listing)
+    })
+  } catch (e) {
+    alert(e.response?.data?.detail || 'Failed to update marketplace exclusions.')
+  } finally {
+    savingMarketplaceExclusions.value = false
+  }
+}
+
+/**
+ * Mirrors services/marketplace-eligibility.ts so the "+ New Listing" picker
+ * does not offer an account the server would refuse.
+ */
+function accountAllowsProduct(account) {
+  if (!product.value) return true
+  if ((product.value.excludedMarketplaces || []).includes(account.marketplaceType)) return false
+  const type = (product.value.category || '').trim().toLowerCase()
+  if (!type) return true
+  return !(account.excludedProductTypes || []).some(t => t.trim().toLowerCase() === type)
 }
 
 // ── Video URL helpers ─────────────────────────────────────────────────────────

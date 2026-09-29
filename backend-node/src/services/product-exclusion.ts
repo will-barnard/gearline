@@ -1,7 +1,7 @@
 import type { Transaction } from 'kysely';
 
 import { db } from '../db/index.js';
-import type { Database, ProductRow } from '../db/types.js';
+import type { Database, MarketplaceType, ProductRow } from '../db/types.js';
 import { ApiError, ResourceNotFoundError } from '../http/errors.js';
 import { loggerFor } from '../logger.js';
 import { enqueue } from '../queue/sync-job-producer.js';
@@ -93,9 +93,76 @@ export async function bulkSetExcluded(productIds: string[], excluded: boolean): 
   });
 }
 
+/** Marketplace types a product can be excluded from. Shopify is the source, never a destination. */
+export const EXCLUDABLE_MARKETPLACES: MarketplaceType[] = ['EBAY', 'REVERB', 'GEAR_EXCHANGE'];
+
+/**
+ * Replaces the set of marketplaces a product is kept off.
+ *
+ * Whole-set replacement rather than add/remove calls: the product screen shows
+ * one checkbox per marketplace and sends the resulting set, so there is no
+ * sequence of partial updates to get out of order.
+ *
+ * Newly excluded marketplaces get the same side effects as a full exclusion,
+ * scoped to that marketplace — a live listing is delisted, review stubs are
+ * removed. A marketplace REMOVED from the set gets nothing: its stubs come back
+ * the next time a Shopify webhook touches the product, exactly as they do when
+ * marketplace_excluded is cleared.
+ */
+export async function setExcludedMarketplaces(
+  productId: string,
+  marketplaces: MarketplaceType[],
+): Promise<ProductRow> {
+  const next = [...new Set(marketplaces)].filter((m) => EXCLUDABLE_MARKETPLACES.includes(m)).sort();
+
+  return db.transaction().execute(async (trx) => {
+    const product = await trx
+      .selectFrom('products')
+      .selectAll()
+      .where('id', '=', productId)
+      .forUpdate()
+      .executeTakeFirst();
+
+    if (!product) throw new ResourceNotFoundError('Product', productId);
+
+    const previous = new Set(product.excluded_marketplaces ?? []);
+    const added = next.filter((m) => !previous.has(m));
+    const unchanged = next.length === previous.size && added.length === 0;
+
+    if (unchanged) return product;
+
+    const updated = await trx
+      .updateTable('products')
+      .set({ excluded_marketplaces: next, updated_at: new Date() })
+      .where('id', '=', productId)
+      .returningAll()
+      .executeTakeFirstOrThrow();
+
+    if (added.length > 0) {
+      await applyExclusionSideEffects(trx, productId, product.sku, added);
+    }
+
+    log.info(
+      { sku: product.sku, productId, excludedMarketplaces: next, newlyExcluded: added },
+      'Product per-marketplace exclusions updated',
+    );
+
+    return updated;
+  });
+}
+
 type Trx = Transaction<Database>;
 
-async function applyExclusionSideEffects(trx: Trx, productId: string, sku: string): Promise<void> {
+/**
+ * `onlyTypes` scopes the side effects to particular marketplaces, for a
+ * per-marketplace exclusion. Omitted, every marketplace is affected.
+ */
+async function applyExclusionSideEffects(
+  trx: Trx,
+  productId: string,
+  sku: string,
+  onlyTypes?: MarketplaceType[],
+): Promise<void> {
   const listings = await trx
     .selectFrom('marketplace_listings')
     .selectAll()
@@ -104,6 +171,7 @@ async function applyExclusionSideEffects(trx: Trx, productId: string, sku: strin
 
   for (const listing of listings) {
     if (listing.marketplace_type === 'SHOPIFY') continue;
+    if (onlyTypes && !onlyTypes.includes(listing.marketplace_type)) continue;
 
     switch (listing.listing_status) {
       case 'ACTIVE': {
@@ -115,7 +183,11 @@ async function applyExclusionSideEffects(trx: Trx, productId: string, sku: strin
             productId,
             listingId: listing.id,
             payload: { reason: 'marketplace_excluded' },
-            idempotencyKey: `exclude-delist-${listing.id}`,
+            // Keyed on the listing's updated_at as well as its id. The id alone
+            // suppressed the delist forever after the first one: exclude,
+            // re-include, republish, exclude again — and the second delist was
+            // silently deduplicated against the first, leaving the item live.
+            idempotencyKey: `exclude-delist-${listing.id}-${listing.updated_at.getTime()}`,
           },
           trx,
         );

@@ -8,6 +8,7 @@ import type { ListingStatus, ProductRow } from '../db/types.js';
 import { toListingDto } from '../dto/mappers.js';
 import { asyncHandler, ConflictError, ResourceNotFoundError } from '../http/errors.js';
 import { enqueue } from '../queue/sync-job-producer.js';
+import { checkEligibility } from '../services/marketplace-eligibility.js';
 
 /** Port of ListingController. Mounted at /api/v1/listings. */
 export const listingsRouter: Router = Router();
@@ -151,6 +152,9 @@ listingsRouter.post(
     if (!product) throw new ResourceNotFoundError('Product', body.productId);
     if (!account) throw new ResourceNotFoundError('MarketplaceAccount', body.marketplaceAccountId);
 
+    const eligibility = checkEligibility(product, account);
+    if (!eligibility.eligible) throw new ConflictError(eligibility.reason ?? 'Product cannot be listed here');
+
     // uq_listing_product_account enforces this at the DB level too; checking
     // here lets us return the friendly message the UI expects rather than a
     // generic integrity-violation 409.
@@ -203,6 +207,33 @@ function enqueueListingJob(jobType: 'LISTING_PUBLISH' | 'LISTING_DELIST') {
     // publishable again on its own once a Shopify sync restores quantity.
     if (jobType === 'LISTING_PUBLISH' && listing.listing_status === 'ON_HOLD') {
       throw new ConflictError('Listing is on hold — product has 0 quantity in Shopify');
+    }
+
+    /**
+     * The same eligibility rules that stop a stub being created also stop a
+     * publish. A stub can predate an exclusion — or be created by hand — and
+     * the publish button is the last point where a banned item (a shirt on
+     * Gear Exchange) can be caught before the marketplace sees it.
+     *
+     * Delist is never blocked: taking an ineligible listing down is exactly
+     * what should be allowed.
+     */
+    if (jobType === 'LISTING_PUBLISH') {
+      const [product, account] = await Promise.all([
+        db.selectFrom('products').selectAll().where('id', '=', listing.product_id).executeTakeFirst(),
+        db
+          .selectFrom('marketplace_accounts')
+          .selectAll()
+          .where('id', '=', listing.marketplace_account_id)
+          .executeTakeFirst(),
+      ]);
+
+      if (product && account) {
+        const eligibility = checkEligibility(product, account);
+        if (!eligibility.eligible) {
+          throw new ConflictError(eligibility.reason ?? 'Product cannot be listed here');
+        }
+      }
     }
 
     await enqueue({

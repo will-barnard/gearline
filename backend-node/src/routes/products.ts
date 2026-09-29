@@ -10,7 +10,12 @@ import { asyncHandler, ConflictError, ResourceNotFoundError } from '../http/erro
 import { bulkResyncSkus, resync as resyncFromShopify } from '../marketplace/shopify/resync.js';
 import { currentUser } from '../security/auth-middleware.js';
 import * as audit from '../services/audit.js';
-import { setExcluded, bulkSetExcluded } from '../services/product-exclusion.js';
+import {
+  EXCLUDABLE_MARKETPLACES,
+  setExcluded,
+  bulkSetExcluded,
+  setExcludedMarketplaces,
+} from '../services/product-exclusion.js';
 
 /** Port of ProductController. Mounted at /api/v1/products. */
 export const productsRouter: Router = Router();
@@ -263,6 +268,34 @@ productsRouter.post(
   }),
 );
 
+// ── GET /categories ──────────────────────────────────────────────────────────
+
+/**
+ * Distinct Shopify product types in the catalogue. Feeds the "never list these
+ * product types" editor on the Marketplaces page, so the operator picks the
+ * exact spelling instead of recalling it.
+ *
+ * Declared before /:id so "categories" is not captured as an id.
+ */
+productsRouter.get(
+  '/categories',
+  asyncHandler(async (_req, res) => {
+    const rows = await db
+      .selectFrom('products')
+      .select('category')
+      .distinct()
+      .where('category', 'is not', null)
+      .orderBy('category')
+      .execute();
+
+    res.json(
+      rows
+        .map((r) => r.category)
+        .filter((c): c is string => typeof c === 'string' && c.trim() !== ''),
+    );
+  }),
+);
+
 // ── GET /:id ─────────────────────────────────────────────────────────────────
 
 productsRouter.get(
@@ -445,6 +478,40 @@ productsRouter.patch(
       entityType: 'Product',
       entityId: id,
       metadata: { marketplaceExcluded: String(excluded) },
+    });
+
+    res.json(toProductDto(updated));
+  }),
+);
+
+// ── PATCH /:id/excluded-marketplaces ─────────────────────────────────────────
+
+const excludedMarketplacesSchema = z.object({
+  marketplaces: z.array(z.enum(EXCLUDABLE_MARKETPLACES as [string, ...string[]])),
+});
+
+/**
+ * Sets the marketplaces this product is kept off, as a whole set. See
+ * setExcludedMarketplaces for the side effects on existing listings.
+ */
+productsRouter.patch(
+  '/:id/excluded-marketplaces',
+  asyncHandler(async (req, res) => {
+    const user = currentUser(req);
+    const id = uuidSchema.parse(req.params.id);
+    const { marketplaces } = excludedMarketplacesSchema.parse(req.body);
+
+    const updated = await setExcludedMarketplaces(
+      id,
+      marketplaces as (typeof EXCLUDABLE_MARKETPLACES)[number][],
+    );
+
+    audit.record({
+      type: 'PRODUCT_UPDATED',
+      actorId: user.id,
+      entityType: 'Product',
+      entityId: id,
+      metadata: { excludedMarketplaces: updated.excluded_marketplaces.join(',') },
     });
 
     res.json(toProductDto(updated));

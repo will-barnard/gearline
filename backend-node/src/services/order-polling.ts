@@ -19,7 +19,12 @@ const log = loggerFor('order-polling');
  * webhook-delivered order.
  */
 
-const POLLED_TYPES: MarketplaceType[] = ['REVERB', 'EBAY'];
+/**
+ * Gear Exchange DOES push order webhooks, but they are treated as a fast path
+ * only (see services/gear-exchange-webhooks.ts): polling stays on so a missed
+ * or failed delivery costs one interval rather than a lost sale.
+ */
+const POLLED_TYPES: MarketplaceType[] = ['REVERB', 'EBAY', 'GEAR_EXCHANGE'];
 
 /**
  * Lookback cap for accounts that have been polled before.

@@ -3,6 +3,7 @@ import { registerConnector, registeredTypes } from './registry.js';
 import { reverbConnector } from './reverb/connector.js';
 import { shopifyConnector } from './shopify/connector.js';
 import { ebayConnector } from './ebay/connector.js';
+import { gearExchangeConnector } from './gear-exchange/connector.js';
 
 const log = loggerFor('marketplace');
 
@@ -15,7 +16,8 @@ const log = loggerFor('marketplace');
  *
  * ── Current state of the port ────────────────────────────────────────────────
  *
- * ALL THREE connectors are registered. The partial-port guard in
+ * ALL connectors are registered (Gear Exchange was added natively in Node —
+ * it never had a Java counterpart). The partial-port guard in
  * sync-job-consumer.ts is now dead code — harmless, and worth keeping until
  * Java is fully retired in case a connector has to be rolled back.
  *
@@ -27,6 +29,7 @@ export function registerConnectors(): void {
   registerConnector(reverbConnector);
   registerConnector(shopifyConnector);
   registerConnector(ebayConnector);
+  registerConnector(gearExchangeConnector);
 
   const types = registeredTypes();
 

@@ -8,6 +8,11 @@ import {
   isValidSignature,
 } from '../marketplace/shopify/webhook-validator.js';
 import * as audit from '../services/audit.js';
+import {
+  accountForWebhookToken,
+  processWebhook as processGearExchangeWebhook,
+} from '../services/gear-exchange-webhooks.js';
+import type { GxWebhookEvent } from '../marketplace/gear-exchange/types.js';
 
 const log = loggerFor('shopify-webhooks');
 
@@ -231,3 +236,46 @@ function handleFlowEvent(req: Request, res: Response): void {
 // Shopify Flows can be configured to post to the bare path or a named action.
 webhooksRouter.post('/shopify/flows', handleFlowEvent);
 webhooksRouter.post('/shopify/flows/:action', handleFlowEvent);
+
+// ── Sweetwater Gear Exchange ─────────────────────────────────────────────────
+
+/**
+ * Gear Exchange listing and order status webhooks.
+ *
+ * Authenticated by the bearer token Gearline generated for the account (GX
+ * does not sign payloads) — see services/gear-exchange-webhooks.ts. The token
+ * also identifies WHICH account the event is for, since the payload does not.
+ *
+ * Same acknowledge-then-process shape as Shopify: GX retries any non-2xx up to
+ * eight times over roughly an hour, and nothing about retrying would make a
+ * processing error go away.
+ */
+webhooksRouter.post('/gear-exchange', (req, res) => {
+  void (async () => {
+    const account = await accountForWebhookToken(req.header('authorization'));
+
+    if (!account) {
+      log.warn('Gear Exchange webhook with a missing or unknown bearer token');
+      audit.recordMarketplaceEvent(
+        'WEBHOOK_SIGNATURE_INVALID',
+        'GEAR_EXCHANGE',
+        null,
+        'Webhook',
+        'gear-exchange',
+        false,
+        'Missing or unknown bearer token',
+        {},
+      );
+      res.status(401).end();
+      return;
+    }
+
+    const event = (req.body ?? {}) as GxWebhookEvent;
+    res.status(200).end();
+
+    await processGearExchangeWebhook(account, event);
+  })().catch((err: unknown) => {
+    log.error({ err }, 'Unhandled error in Gear Exchange webhook');
+    if (!res.headersSent) res.status(500).end();
+  });
+});

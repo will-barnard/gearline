@@ -35,6 +35,7 @@ const log = loggerFor('shopify-order-mapper');
 /** Display name for the source channel. Shopify shows this in its UI. */
 function displayName(sourceType: MarketplaceType): string {
   if (sourceType === 'EBAY') return 'eBay'; // not "Ebay"
+  if (sourceType === 'GEAR_EXCHANGE') return 'Gear Exchange'; // not "Gear_exchange"
   return sourceType.charAt(0) + sourceType.slice(1).toLowerCase();
 }
 

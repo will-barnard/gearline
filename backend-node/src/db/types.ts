@@ -1,5 +1,5 @@
 /**
- * Kysely table definitions mirroring the Flyway schema at V17.
+ * Kysely table definitions mirroring the Flyway schema at V21.
  *
  * IMPORTANT: this file describes tables it does not own. Flyway (running in the
  * Java service) remains the single source of truth for schema. Do not add
@@ -83,7 +83,7 @@ export type ProductCondition =
   | 'USED'
   | 'FOR_PARTS';
 
-export type MarketplaceType = 'SHOPIFY' | 'EBAY' | 'REVERB';
+export type MarketplaceType = 'SHOPIFY' | 'EBAY' | 'REVERB' | 'GEAR_EXCHANGE';
 
 export type ConnectionStatus =
   | 'CONNECTED'
@@ -252,6 +252,12 @@ export interface ProductsTable {
   finish: string | null;
   condition_notes: string | null;
   marketplace_excluded: GeneratedBool;
+  /**
+   * TEXT[] since V21 — marketplace types this product must never be listed on.
+   * Narrower than marketplace_excluded, which still wins when set. See
+   * services/marketplace-eligibility.ts for the one place both are evaluated.
+   */
+  excluded_marketplaces: ColumnType<MarketplaceType[], MarketplaceType[] | undefined, MarketplaceType[]>;
 }
 
 export interface MarketplaceAccountsTable {
