@@ -12,10 +12,28 @@ const log = loggerFor('shopify-order-mapper');
  *
  * ── The flags that matter ────────────────────────────────────────────────────
  *
- * inventory_behaviour: "bypass"
- *     CRITICAL. Without it Shopify deducts stock when this order is created,
- *     double-counting against the deduction InventoryConsistencyService has
- *     already applied. The item would go to zero after a single sale of one.
+ * inventory_behaviour: "decrement_ignoring_policy"
+ *     CRITICAL, and it used to be "bypass" — which was wrong.
+ *
+ *     The old reasoning was that Gearline had already deducted stock, so Shopify
+ *     deducting too would double-count. But Gearline's deduction never reaches
+ *     Shopify: inventory-consistency.ts skips Shopify and the Shopify connector's
+ *     syncInventory is a no-op. With "bypass", a Reverb/eBay/Gear Exchange sale
+ *     left Shopify's stock untouched, so:
+ *       - the item stayed buyable on the Shopify storefront (oversell), and
+ *       - the next products/update webhook wrote Shopify's stale quantity back
+ *         into Gearline, undoing the deduction and relisting a sold item.
+ *
+ *     Letting Shopify decrement is what keeps the two in step. Shopify then fires
+ *     inventory_levels/update with the new figure, which matches what Gearline
+ *     already holds, so propagation is a harmless no-op rather than a double
+ *     count. "ignoring_policy" rather than "obeying": the sale already happened
+ *     on the marketplace, and refusing to record it in Shopify because Shopify
+ *     thinks stock is short would just lose the order. Going negative is the
+ *     honest signal of an oversell.
+ *
+ *     Only line items linked by variant_id decrement. A custom line item (SKU not
+ *     found) cannot, which is logged below.
  *
  * financial_status: "paid"
  *     The buyer already paid on Reverb/eBay. Anything else leaves a phantom
@@ -77,6 +95,13 @@ function buildLineItems(
     const li: Record<string, unknown> = {};
 
     const variantId = item.sku ? variantIds.get(item.sku) : undefined;
+
+    if (!variantId) {
+      log.warn(
+        { sku: item.sku, source },
+        'No Shopify variant for this SKU — mirrored as a custom line item, Shopify stock will NOT be decremented',
+      );
+    }
 
     if (variantId) {
       const numeric = Number(variantId);
@@ -160,7 +185,11 @@ export async function toShopifyOrderBody(
     if (buyer.firstName) customer['first_name'] = buyer.firstName;
     if (buyer.lastName) customer['last_name'] = buyer.lastName;
     if (buyer.email) customer['email'] = buyer.email;
-    if (Object.keys(customer).length > 0) order['customer'] = customer;
+    // Only attach a customer when there is an email. Gear Exchange never shares
+    // the buyer's email, and a name-only customer either fails validation or
+    // creates a nameless duplicate customer per order. The buyer's name still
+    // appears on the order via the shipping address below.
+    if (buyer.email) order['customer'] = customer;
   }
 
   // ── Shipping address ───────────────────────────────────────────────────────
@@ -221,7 +250,7 @@ export async function toShopifyOrderBody(
 
   // ── Behaviour flags ────────────────────────────────────────────────────────
 
-  order['inventory_behaviour'] = 'bypass';
+  order['inventory_behaviour'] = 'decrement_ignoring_policy';
   order['send_receipt'] = false;
   order['send_fulfillment_receipt'] = false;
 
