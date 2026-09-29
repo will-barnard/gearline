@@ -892,6 +892,80 @@ marketplaceAccountsRouter.post(
   }),
 );
 
+// ── DELETE /:id — remove an account ──────────────────────────────────────────
+
+/**
+ * Removes a marketplace account and its not-yet-live listing rows (the FK on
+ * marketplace_listings cascades). Admin-only via requireAdminForDelete.
+ *
+ * Refused while anything would be orphaned:
+ *   - a live or in-flight listing — still for sale on the marketplace, and
+ *     Gearline would lose the only record that it exists. Delist first.
+ *   - any imported order — orders reference the account without a cascade,
+ *     and sales history should not disappear. Disable the account instead.
+ *
+ * Added for the case of a mis-connected account (wrong token, duplicate
+ * connect), which previously needed hand-written SQL to undo.
+ */
+marketplaceAccountsRouter.delete(
+  '/:id',
+  asyncHandler(async (req, res) => {
+    const id = uuidSchema.parse(req.params.id);
+
+    const account = await db
+      .selectFrom('marketplace_accounts')
+      .select(['id', 'marketplace_type', 'display_name'])
+      .where('id', '=', id)
+      .executeTakeFirst();
+
+    if (!account) throw new ResourceNotFoundError('MarketplaceAccount', id);
+
+    const [live, orders] = await Promise.all([
+      db
+        .selectFrom('marketplace_listings')
+        .select((eb) => eb.fn.countAll<string>().as('count'))
+        .where('marketplace_account_id', '=', id)
+        .where('listing_status', 'in', ['ACTIVE', 'PENDING', 'PUBLISHING'])
+        .executeTakeFirst(),
+      db
+        .selectFrom('orders')
+        .select((eb) => eb.fn.countAll<string>().as('count'))
+        .where('marketplace_account_id', '=', id)
+        .executeTakeFirst(),
+    ]);
+
+    const liveCount = Number(live?.count ?? 0);
+    const orderCount = Number(orders?.count ?? 0);
+
+    if (liveCount > 0) {
+      throw new ApiError(
+        409,
+        'Account has live listings',
+        `${liveCount} listing(s) on this account are live or publishing. Delist them first, ` +
+          'or they would stay for sale with nothing in Gearline tracking them.',
+      );
+    }
+
+    if (orderCount > 0) {
+      throw new ApiError(
+        409,
+        'Account has order history',
+        `${orderCount} order(s) were imported from this account. Disable it instead of removing it, ` +
+          'so that sales history is kept.',
+      );
+    }
+
+    await db.deleteFrom('marketplace_accounts').where('id', '=', id).execute();
+
+    log.info(
+      { accountId: id, marketplace: account.marketplace_type, displayName: account.display_name },
+      'Marketplace account removed',
+    );
+
+    res.status(204).end();
+  }),
+);
+
 // ── POST / — manual account creation ─────────────────────────────────────────
 
 const createAccountSchema = z.object({

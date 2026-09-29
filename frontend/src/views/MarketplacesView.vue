@@ -330,6 +330,15 @@
                 >
                   {{ account.active ? 'Disable' : 'Enable' }}
                 </button>
+                <button
+                  v-if="account.marketplaceType !== 'SHOPIFY'"
+                  @click="removeAccount(account)"
+                  :disabled="removing[account.id]"
+                  class="btn-secondary px-3 py-1.5 text-xs text-red-400"
+                  title="Remove this account and its unpublished listings"
+                >
+                  {{ removing[account.id] ? 'Removing…' : 'Remove' }}
+                </button>
               </div>
             </div>
           </div>
@@ -943,13 +952,20 @@
         <div class="space-y-4">
           <div>
             <label class="block text-xs font-medium text-gray-400 mb-1">Display name</label>
-            <input v-model="gxDisplayName" type="text" placeholder="Gear Exchange" class="w-full rounded-lg bg-gray-800 border border-gray-700 focus:border-brand-500 px-3 py-2 text-sm text-white placeholder-gray-600 outline-none" />
+            <!-- autocomplete off + a non-login field name: a text box followed by a
+                 password box reads as a login form, and Chrome autofilled the
+                 Sweetwater username and password into it. -->
+            <input v-model="gxDisplayName" type="text" name="gx-display-name" autocomplete="off" data-1p-ignore data-lpignore="true" placeholder="Gear Exchange" class="w-full rounded-lg bg-gray-800 border border-gray-700 focus:border-brand-500 px-3 py-2 text-sm text-white placeholder-gray-600 outline-none" />
           </div>
           <div>
-            <label class="block text-xs font-medium text-gray-400 mb-1">API token</label>
+            <label class="block text-xs font-medium text-gray-400 mb-1">API token (not your Sweetwater password)</label>
             <input
               v-model="gxToken"
               type="password"
+              name="gx-api-token"
+              autocomplete="new-password"
+              data-1p-ignore
+              data-lpignore="true"
               placeholder="••••••••••••••••"
               class="w-full rounded-lg bg-gray-800 border border-gray-700 focus:border-brand-500 px-3 py-2 text-sm text-white placeholder-gray-600 outline-none font-mono"
               @keydown.enter="connectGearExchange"
@@ -1833,6 +1849,33 @@ async function saveExcludedTypes() {
     alert(e.response?.data?.detail || 'Failed to save excluded product types.')
   } finally {
     savingExcludedTypes.value = false
+  }
+}
+
+// ── Remove account ───────────────────────────────────────────────────────────
+
+const removing = ref({})
+
+/**
+ * The server refuses when the account has live listings or order history and
+ * says why; that message is shown as-is. Shopify is not offered — it is the
+ * product source, and removing it would strand the whole catalogue.
+ */
+async function removeAccount(account) {
+  const ok = confirm(
+    `Remove "${account.displayName}" (${account.marketplaceType})?\n\n` +
+    'Its unpublished listings are deleted with it. Accounts with live listings or order history cannot be removed.'
+  )
+  if (!ok) return
+
+  removing.value[account.id] = true
+  try {
+    await api.delete(`/marketplace/accounts/${account.id}`)
+    load()
+  } catch (e) {
+    alert(e.response?.data?.detail || e.response?.data?.message || 'Failed to remove the account.')
+  } finally {
+    removing.value[account.id] = false
   }
 }
 </script>
