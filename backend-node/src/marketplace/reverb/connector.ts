@@ -648,6 +648,16 @@ export const reverbConnector: MarketplaceConnector = {
       return null;
     }
 
-    return toImportedOrder(dto);
+    const mapped = toImportedOrder(dto);
+
+    if (mapped && mapped.lineItems.length === 0) {
+      // Field NAMES only (no values) — enough to see where the item data lives.
+      log.warn(
+        { externalOrderId, fields: Object.keys(dto), listingFields: Object.keys(dto.listing ?? {}) },
+        'Reverb order detail carries no recognisable item data — logging its field names',
+      );
+    }
+
+    return mapped;
   },
 };

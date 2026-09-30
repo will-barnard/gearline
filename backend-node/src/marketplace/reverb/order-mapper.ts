@@ -75,6 +75,9 @@ function mapLineItems(dto: ReverbOrderDto, resolvedOrderId: string): OrderLineIt
   const listing = dto.listing;
 
   if (!listing) {
+    const flat = flatLineItem(dto);
+    if (flat) return [flat];
+
     /**
      * DEBUG, not WARN — this is the normal case, not an anomaly.
      *
@@ -107,6 +110,43 @@ function mapLineItems(dto: ReverbOrderDto, resolvedOrderId: string): OrderLineIt
       lineTotal: null,
     },
   ];
+}
+
+/**
+ * Fallback line item built from the item fields Reverb documents directly on
+ * the order (`sku`, `title`, `product_id`, `_links.listing`).
+ *
+ * Returns null unless there is a non-blank SKU: the SKU is how inventory is
+ * matched, and an item without one would import "successfully" yet never
+ * deduct stock. Better to return no line items and let the connector skip the
+ * order loudly.
+ */
+function flatLineItem(dto: ReverbOrderDto): OrderLineItemJson | null {
+  const sku = typeof dto.sku === 'string' ? dto.sku.trim() : '';
+  if (sku === '') return null;
+
+  const quantity = dto.quantity !== undefined && dto.quantity > 0 ? dto.quantity : 1;
+
+  let listingId: string | null = null;
+  if (dto.product_id !== undefined && dto.product_id !== null && String(dto.product_id).trim() !== '') {
+    listingId = String(dto.product_id);
+  } else {
+    const href = dto._links?.listing?.href;
+    if (href) {
+      const last = (href.split('?')[0] ?? '').replace(/\/+$/, '').split('/').pop();
+      listingId = last ? last : null;
+    }
+  }
+
+  return {
+    productId: null,
+    externalListingId: listingId,
+    sku,
+    title: dto.title ?? null,
+    quantity,
+    unitPrice: parseMoney(dto.amount_product),
+    lineTotal: null,
+  };
 }
 
 /**

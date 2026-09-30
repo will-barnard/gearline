@@ -22,6 +22,7 @@ export interface ReverbLinks {
   self?: ReverbLink;
   web?: ReverbLink;
   manage_url?: ReverbLink;
+  listing?: ReverbLink;
 }
 
 export interface ReverbListingDto {
@@ -83,6 +84,15 @@ export interface ReverbOrderDto {
   /** Reverb orders are single-item; the sold listing lives here. */
   listing?: ReverbOrderListing;
   quantity?: number;
+  /**
+   * Item fields as Reverb documents them on an order: flat on the order itself
+   * rather than nested under `listing`. Used as a fallback when `listing` is
+   * absent from the order detail (seen on a local-pickup order).
+   */
+  sku?: string;
+  title?: string;
+  product_id?: string | number;
+  local_pickup?: boolean;
 }
 
 export interface ReverbOrdersResponse {
