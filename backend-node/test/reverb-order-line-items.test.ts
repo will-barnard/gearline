@@ -48,3 +48,42 @@ describe('Reverb order line items', () => {
     expect(toImportedOrder(base)?.lineItems).toEqual([]);
   });
 });
+
+describe('Reverb order money', () => {
+  const money = (amount: string) => ({ amount, currency: 'USD' });
+
+  it('reads the list-style amount_* fields', () => {
+    const r = toImportedOrder({
+      ...base,
+      amount_product: money('3675.00'),
+      amount_shipping: money('50.00'),
+      amount_tax: money('10.00'),
+      amount_total: money('3735.00'),
+    });
+    expect([r?.subtotal, r?.shippingTotal, r?.taxTotal, r?.totalAmount]).toEqual([
+      '3675.00', '50.00', '10.00', '3735.00',
+    ]);
+  });
+
+  it('reads the single-order total and shipping fields (was importing as $0.00)', () => {
+    const r = toImportedOrder({
+      ...base,
+      amount_product: money('3675.00'),
+      shipping: money('0.00'),
+      amount_tax: money('0.00'),
+      total: money('3675.00'),
+    });
+    expect(r?.totalAmount).toBe('3675.00');
+    expect(r?.shippingTotal).toBe('0.00');
+  });
+
+  it('computes the total from its parts when Reverb gives none', () => {
+    const r = toImportedOrder({
+      ...base,
+      amount_product: money('3675.00'),
+      amount_shipping: money('50.00'),
+      amount_tax: money('10.25'),
+    });
+    expect(r?.totalAmount).toBe('3735.25');
+  });
+});

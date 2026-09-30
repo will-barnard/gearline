@@ -1,3 +1,4 @@
+import { addDecimal, decimalToString, parseDecimal } from '../../util/decimal.js';
 import type { BuyerInfoJson, OrderLineItemJson, ShippingAddressJson } from '../../db/types.js';
 import { loggerFor } from '../../logger.js';
 import type { ImportedOrder } from '../types.js';
@@ -21,14 +22,18 @@ export function toImportedOrder(dto: ReverbOrderDto): ImportedOrder | null {
     return null;
   }
 
+  const subtotal = productAmount(dto);
+  const shippingTotal = firstMoney(dto.amount_shipping, dto.shipping) ?? '0';
+  const taxTotal = parseMoney(dto.amount_tax);
+
   return {
     externalOrderId: orderId,
     marketplaceOrderUrl: orderUrl,
     lineItems: mapLineItems(dto, orderId),
-    subtotal: parseMoney(dto.amount_product),
-    shippingTotal: parseMoney(dto.amount_shipping),
-    taxTotal: parseMoney(dto.amount_tax),
-    totalAmount: parseMoney(dto.amount_total),
+    subtotal,
+    shippingTotal,
+    taxTotal,
+    totalAmount: firstMoney(dto.amount_total, dto.total) ?? sumMoney(subtotal, shippingTotal, taxTotal),
     currency: 'USD',
     buyerInfo: mapBuyerInfo(dto),
     shippingAddress: mapShippingAddress(dto.shipping_address),
@@ -97,7 +102,7 @@ function mapLineItems(dto: ReverbOrderDto, resolvedOrderId: string): OrderLineIt
   }
 
   const quantity = dto.quantity !== undefined && dto.quantity > 0 ? dto.quantity : 1;
-  const unitPrice = parseMoney(dto.amount_product);
+  const unitPrice = productAmount(dto);
 
   return [
     {
@@ -144,7 +149,7 @@ function flatLineItem(dto: ReverbOrderDto): OrderLineItemJson | null {
     sku,
     title: dto.title ?? null,
     quantity,
-    unitPrice: parseMoney(dto.amount_product),
+    unitPrice: productAmount(dto),
     lineTotal: null,
   };
 }
@@ -190,6 +195,32 @@ function mapShippingAddress(addr: ReverbShippingAddressDto | undefined): Shippin
     postalCode: addr.postal_code ?? null,
     country: addr.country_code ?? null,
   };
+}
+
+/**
+ * The first price that carries a well-formed amount, or null.
+ *
+ * The list and single-order endpoints name their money fields differently
+ * (`amount_total` vs `total`, `amount_shipping` vs `shipping`), so each value
+ * is read from whichever is present. A missing total previously imported as
+ * $0.00 (order 26545736).
+ */
+function firstMoney(...prices: Array<ReverbPrice | undefined>): string | null {
+  for (const price of prices) {
+    if (price?.amount && /^-?\d+(\.\d+)?$/.test(price.amount)) return price.amount;
+  }
+  return null;
+}
+
+function productAmount(dto: ReverbOrderDto): string {
+  return firstMoney(dto.amount_product, dto.amount_product_subtotal) ?? '0';
+}
+
+/** Used only when Reverb supplies no total at all: subtotal + shipping + tax. */
+function sumMoney(...amounts: string[]): string {
+  return decimalToString(
+    amounts.map((a) => parseDecimal(a)).reduce((acc, d) => addDecimal(acc, d)),
+  );
 }
 
 /** Money as a decimal STRING. Defaults to "0" when absent, matching BigDecimal.ZERO. */

@@ -77,6 +77,14 @@ export interface ReverbOrderDto {
   amount_tax?: ReverbPrice;
   amount_shipping?: ReverbPrice;
   amount_total?: ReverbPrice;
+  /**
+   * Money fields as Reverb documents them on a single-order GET, where they
+   * are named differently from the list endpoint's `amount_*` fields. The
+   * mapper reads whichever is present.
+   */
+  amount_product_subtotal?: ReverbPrice;
+  shipping?: ReverbPrice;
+  total?: ReverbPrice;
   created_at?: string;
   shipping_address?: ReverbShippingAddressDto;
   order_bundle_id?: string;

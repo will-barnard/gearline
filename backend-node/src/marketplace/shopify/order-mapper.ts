@@ -227,7 +227,8 @@ export async function toShopifyOrderBody(
   }
 
   order['tags'] = source;
-  order['note'] = `Imported from ${sourceName} order #${importedOrder.externalOrderId}`;
+  // No free-text `note`: the order number is already the order's name, and the
+  // Additional details panel below carries the channel and link.
 
   // "Additional details" panel on the Shopify order page.
   const noteAttributes: Array<{ name: string; value: string }> = [
