@@ -173,6 +173,9 @@ export const config = {
   orderPolling: {
     intervalMs: intEnv('ORDER_POLL_INTERVAL_MS', 600_000), // 10 minutes
     initialDelayMs: intEnv('ORDER_POLL_INITIAL_DELAY_MS', 60_000), // 1 minute
+    // How far back the Reverb poll re-checks for orders it has not imported yet
+    // (an order can be paid days after it is created — see reverb/order-window.ts).
+    reverbRescanDays: intEnv('REVERB_ORDER_RESCAN_DAYS', 14),
   },
 } as const;
 

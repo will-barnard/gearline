@@ -91,6 +91,8 @@ export interface ImportedOrder {
   buyerInfo: BuyerInfoJson | null;
   shippingAddress: ShippingAddressJson | null;
   createdAt: string | null;
+  /** Marketplace's own order status, where the list endpoint exposes one (Reverb: paid, shipped, ...). */
+  marketplaceStatus?: string | null;
 }
 
 export interface ConnectorHealthResult {

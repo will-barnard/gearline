@@ -1,3 +1,4 @@
+import { config } from '../../config.js';
 import { db } from '../../db/index.js';
 import type { MarketplaceAccountRow, MarketplaceListingRow, ProductRow } from '../../db/types.js';
 import { loggerFor } from '../../logger.js';
@@ -22,11 +23,29 @@ import { configuredCategoryFor, resolveCategoryUuid } from './categories.js';
 import { resolveConditionUuid } from './conditions.js';
 import { mapCondition, toReverbRequest } from './listing-mapper.js';
 import { toImportedOrder } from './order-mapper.js';
+import {
+  isBehindWatermark,
+  isImportCandidate,
+  isInRescanWindow,
+  rescanWindowStartMs,
+} from './order-window.js';
 import type { ReverbListingDto } from './types.js';
 
 const log = loggerFor('reverb-connector');
 
 const PER_PAGE = 50;
+
+/** Which of these Reverb order IDs are already in the orders table? */
+async function knownReverbOrderIds(ids: string[]): Promise<Set<string>> {
+  if (ids.length === 0) return new Set();
+  const rows = await db
+    .selectFrom('orders')
+    .select('external_order_id')
+    .where('marketplace_type', '=', 'REVERB')
+    .where('external_order_id', 'in', ids)
+    .execute();
+  return new Set(rows.map((r) => r.external_order_id));
+}
 
 /**
  * Reverb marketplace connector. Port of ReverbConnector.
@@ -475,6 +494,17 @@ export const reverbConnector: MarketplaceConnector = {
    *   2. Filter the mapped results by createdAt as a backstop, in case ordering
    *      assumptions do not hold.
    *
+   * ── Orders paid after they were created ────────────────────────────────────
+   *
+   * `created_at` is when Reverb created the order, not when it was paid. An
+   * accepted offer can sit unpaid for a day, so by the time it is paid it is
+   * older than the watermark and a pure `createdAt >= since` filter loses it
+   * for good. So the scan window is the LONGER of the watermark and
+   * reverbRescanDays, and any order in it that is not already imported is a
+   * candidate. Behind the watermark only paid-type statuses qualify (see
+   * order-window.ts). The same rescan also retries an order whose detail
+   * fetch failed, rather than relying on the watermark being held back.
+   *
    * ── Line items ─────────────────────────────────────────────────────────────
    *
    * The list endpoint does NOT include the nested `listing` object — only the
@@ -498,14 +528,8 @@ export const reverbConnector: MarketplaceConnector = {
 
     const current = await ensureValidToken(account);
 
-    /** Newer than the watermark? Unparseable dates are kept, to fail safe. */
-    const isRecent = (order: ImportedOrder): boolean => {
-      if (!order.createdAt) return true;
-      const t = new Date(order.createdAt).getTime();
-      return Number.isNaN(t) || t >= sinceMs;
-    };
-
-    const recent: ImportedOrder[] = [];
+    const windowStart = rescanWindowStartMs(sinceMs, Date.now(), config.orderPolling.reverbRescanDays);
+    const candidates: ImportedOrder[] = [];
 
     const MAX_PAGES = 100;
     let page = 1;
@@ -530,13 +554,11 @@ export const reverbConnector: MarketplaceConnector = {
           continue;
         }
 
-        if (isRecent(mapped)) {
-          pageHadRecent = true;
-          recent.push(mapped);
-        }
+        if (isInRescanWindow(mapped, windowStart)) pageHadRecent = true;
+        if (isImportCandidate(mapped, sinceMs, windowStart)) candidates.push(mapped);
       }
 
-      // Whole page older than the watermark — everything after it is older too.
+      // Whole page older than the scan window — everything after it is older too.
       if (!pageHadRecent) {
         stoppedEarly = true;
         break;
@@ -554,8 +576,27 @@ export const reverbConnector: MarketplaceConnector = {
       log.warn({ skipped: unidentified }, 'Skipped Reverb order(s) with no identifiable ID');
     }
 
+    // Only orders we have not already imported cost a detail fetch.
+    const known = await knownReverbOrderIds(candidates.map((o) => o.externalOrderId));
+    const recent = candidates.filter((o) => !known.has(o.externalOrderId));
+
+    for (const o of recent) {
+      if (isBehindWatermark(o, sinceMs)) {
+        log.warn(
+          { externalOrderId: o.externalOrderId, createdAt: o.createdAt, status: o.marketplaceStatus },
+          'Reverb order is older than the watermark but not imported (paid after creation, or missed) — importing',
+        );
+      }
+    }
+
     log.info(
-      { scanned: rawCount, recent: recent.length, pages: page, stoppedEarly },
+      {
+        scanned: rawCount,
+        candidates: candidates.length,
+        recent: recent.length,
+        pages: page,
+        stoppedEarly,
+      },
       'Fetched Reverb orders',
     );
 

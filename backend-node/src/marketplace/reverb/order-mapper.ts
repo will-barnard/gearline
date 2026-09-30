@@ -33,6 +33,7 @@ export function toImportedOrder(dto: ReverbOrderDto): ImportedOrder | null {
     buyerInfo: mapBuyerInfo(dto),
     shippingAddress: mapShippingAddress(dto.shipping_address),
     createdAt: parseDate(dto.created_at),
+    marketplaceStatus: dto.status ?? null,
   };
 }
 
