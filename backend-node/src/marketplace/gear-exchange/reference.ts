@@ -94,8 +94,14 @@ export async function resolveConditionId(
 
   if (!hit) {
     const known = (caches.get('conditions')?.options ?? []).map((o) => o.name).join(', ');
+    // An empty list means the response could not be READ, not that GX lacks
+    // the condition — say so, rather than send the operator hunting for a
+    // condition that exists.
     throw new PermanentMarketplaceError(
-      `Gear Exchange has no condition "${nameOrId}"` + (known ? ` (it offers: ${known})` : '') + '.',
+      known
+        ? `Gear Exchange has no condition "${nameOrId}" (it offers: ${known}).`
+        : `Could not read Gear Exchange's list of conditions, so "${nameOrId}" could not be matched. ` +
+            "The backend log has the response under 'unrecognised shape'.",
     );
   }
 

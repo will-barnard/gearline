@@ -255,6 +255,27 @@ describe('Gear Exchange client helpers', () => {
     expect(normaliseOptions({ '3': 'Mint' })).toEqual([{ id: '3', name: 'Mint' }]);
   });
 
+  it('reads lists wrapped in a key named after the resource', () => {
+    expect(normaliseOptions({ conditions: [{ id: 3, name: 'Mint' }, { id: 1, name: 'Good' }] })).toEqual([
+      { id: '3', name: 'Mint' },
+      { id: '1', name: 'Good' },
+    ]);
+    expect(normaliseOptions({ data: { '3': 'Mint' } })).toEqual([{ id: '3', name: 'Mint' }]);
+    expect(normaliseOptions({ Mint: 3 })).toEqual([{ id: '3', name: 'Mint' }]);
+    expect(normaliseOptions({ '3': { name: 'Mint' } })).toEqual([{ id: '3', name: 'Mint' }]);
+  });
+
+  it('flattens category trees into Parent > Child names', () => {
+    expect(
+      normaliseOptions({
+        categories: [{ id: 1, name: 'Keyboards', children: [{ id: 59, name: 'Electric Pianos' }] }],
+      }),
+    ).toEqual([
+      { id: '1', name: 'Keyboards' },
+      { id: '59', name: 'Keyboards > Electric Pianos' },
+    ]);
+  });
+
   it('treats the image-processing block as retryable', () => {
     expect(isImageProcessingLock(new PermanentMarketplaceError('x', 409))).toBe(true);
     expect(

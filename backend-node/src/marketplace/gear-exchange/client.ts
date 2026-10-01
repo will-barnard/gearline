@@ -128,42 +128,128 @@ export function unwrapListing(body: unknown): GxListingDto {
  * having to be exactly right.
  */
 export function normaliseOptions(body: unknown): GxOption[] {
-  let items: unknown = body;
+  const out: GxOption[] = [];
+  const seen = new Set<string>();
 
-  if (items && typeof items === 'object' && !Array.isArray(items)) {
-    const obj = items as Record<string, unknown>;
-    const wrapped = obj['data'] ?? obj['results'] ?? obj['items'];
-    if (Array.isArray(wrapped)) {
-      items = wrapped;
-    } else {
-      // Plain map: { "3": "Mint", ... }
-      return Object.entries(obj)
-        .filter(([, v]) => typeof v === 'string' || typeof v === 'number')
-        .map(([k, v]) => ({ id: k, name: String(v) }));
+  const push = (id: unknown, name: unknown) => {
+    if (id === undefined || id === null || String(id).trim() === '') return;
+    const key = String(id);
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ id: key, name: String(name ?? id) });
+  };
+
+  const NAME_KEYS = [
+    'fullName', 'full_name', 'name', 'label', 'title', 'displayName', 'display_name',
+    'condition', 'category', 'description', 'text',
+  ];
+  const ID_KEYS = ['id', 'value', 'key', 'slug', 'code', 'days', 'conditionId', 'categoryId'];
+  const CHILD_KEYS = ['children', 'subcategories', 'sub_categories', 'subCategories', 'categories'];
+
+  const firstOf = (o: Record<string, unknown>, keys: string[]) => {
+    for (const k of keys) {
+      const v = o[k];
+      if (v !== undefined && v !== null && (typeof v === 'string' || typeof v === 'number')) return v;
     }
+    return undefined;
+  };
+
+  /**
+   * Walks an array of options. Nested children (category trees) are flattened
+   * into "Parent > Child" names, and the parent stays selectable too.
+   */
+  const walkArray = (items: unknown[], prefix: string) => {
+    for (const item of items) {
+      if (typeof item === 'string' || typeof item === 'number') {
+        push(item, prefix ? `${prefix} > ${item}` : item);
+        continue;
+      }
+      if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+
+      const o = item as Record<string, unknown>;
+      const id = firstOf(o, ID_KEYS);
+      const name = firstOf(o, NAME_KEYS) ?? id;
+      const fullName = prefix && name !== undefined ? `${prefix} > ${String(name)}` : name;
+
+      push(id, fullName);
+
+      for (const ck of CHILD_KEYS) {
+        const children = o[ck];
+        if (Array.isArray(children) && children.length > 0) {
+          walkArray(children, String(fullName ?? ''));
+        }
+      }
+    }
+  };
+
+  if (Array.isArray(body)) {
+    walkArray(body, '');
+    return out;
   }
 
-  if (!Array.isArray(items)) return [];
+  if (!body || typeof body !== 'object') return out;
 
-  const out: GxOption[] = [];
+  const obj = body as Record<string, unknown>;
 
-  for (const item of items) {
-    if (typeof item === 'string' || typeof item === 'number') {
-      out.push({ id: String(item), name: String(item) });
-      continue;
+  /**
+   * Wrapped list. GX's real responses are wrapped in a key named after the
+   * resource — `{ "conditions": [...] }` — which the first version of this
+   * did not accept, so every condition lookup came back empty and every
+   * publish failed with 'Gear Exchange has no condition "Mint"'. Any key whose
+   * value is an array is taken, preferring the conventional wrapper names.
+   */
+  const preferred = ['data', 'results', 'items', 'options'];
+  const arrayKeys = Object.keys(obj).filter((k) => Array.isArray(obj[k]));
+
+  if (arrayKeys.length > 0) {
+    const key = preferred.find((k) => arrayKeys.includes(k)) ?? arrayKeys[0]!;
+    walkArray(obj[key] as unknown[], '');
+    return out;
+  }
+
+  // A `data` object that is itself a map: { data: { "3": "Mint" } }.
+  const inner = obj['data'];
+  if (inner && typeof inner === 'object' && !Array.isArray(inner)) {
+    return normaliseOptions(inner);
+  }
+
+  // Maps: { "3": "Mint" }, { "Mint": 3 }, or { "3": { name: "Mint" } }.
+  for (const [k, v] of Object.entries(obj)) {
+    if (typeof v === 'string') {
+      push(k, v);
+    } else if (typeof v === 'number') {
+      // Name -> id when the key is not numeric; id -> name otherwise.
+      if (/^\d+$/.test(k)) push(k, v);
+      else push(v, k);
+    } else if (v && typeof v === 'object' && !Array.isArray(v)) {
+      const o = v as Record<string, unknown>;
+      push(firstOf(o, ID_KEYS) ?? k, firstOf(o, NAME_KEYS) ?? k);
     }
-    if (!item || typeof item !== 'object') continue;
-
-    const o = item as Record<string, unknown>;
-    const id = o['id'] ?? o['value'] ?? o['key'] ?? o['slug'] ?? o['days'];
-    const name =
-      o['fullName'] ?? o['full_name'] ?? o['name'] ?? o['label'] ?? o['title'] ?? o['displayName'] ?? o['display_name'] ?? id;
-
-    if (id === undefined || id === null) continue;
-    out.push({ id: String(id), name: String(name) });
   }
 
   return out;
+}
+
+/**
+ * Fetches an options endpoint and normalises it, logging the raw shape when
+ * nothing could be read. The docs never show these responses, so when a new
+ * shape slips past the parser, the log line is what makes it fixable.
+ */
+async function fetchOptions(account: MarketplaceAccountRow, path: string): Promise<GxOption[]> {
+  const body = await call<unknown>(account, { method: 'GET', path });
+  const options = normaliseOptions(body);
+
+  if (options.length === 0) {
+    let snippet: string;
+    try {
+      snippet = JSON.stringify(body).slice(0, 400);
+    } catch {
+      snippet = String(body).slice(0, 400);
+    }
+    log.warn({ path, snippet }, 'Could not read any options from a Gear Exchange response — unrecognised shape');
+  }
+
+  return options;
 }
 
 // ── Health ───────────────────────────────────────────────────────────────────
@@ -254,25 +340,23 @@ export async function getListingImages(
 // ── Reference data ───────────────────────────────────────────────────────────
 
 export async function getCategories(account: MarketplaceAccountRow): Promise<GxOption[]> {
-  return normaliseOptions(await call<unknown>(account, { method: 'GET', path: '/categories' }));
+  return fetchOptions(account, '/categories');
 }
 
 export async function getConditions(account: MarketplaceAccountRow): Promise<GxOption[]> {
-  return normaliseOptions(await call<unknown>(account, { method: 'GET', path: '/conditions' }));
+  return fetchOptions(account, '/conditions');
 }
 
 export async function getReturnPolicies(account: MarketplaceAccountRow): Promise<GxOption[]> {
-  return normaliseOptions(await call<unknown>(account, { method: 'GET', path: '/return-policies' }));
+  return fetchOptions(account, '/return-policies');
 }
 
 export async function getPayoutOptions(account: MarketplaceAccountRow): Promise<GxOption[]> {
-  return normaliseOptions(await call<unknown>(account, { method: 'GET', path: '/payout-options' }));
+  return fetchOptions(account, '/payout-options');
 }
 
 export async function getShippingProviders(account: MarketplaceAccountRow): Promise<GxOption[]> {
-  return normaliseOptions(
-    await call<unknown>(account, { method: 'GET', path: '/shipping/providers' }),
-  );
+  return fetchOptions(account, '/shipping/providers');
 }
 
 // ── Orders ───────────────────────────────────────────────────────────────────
