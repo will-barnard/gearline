@@ -18,7 +18,7 @@
       type="button"
       tabindex="-1"
       class="absolute right-1.5 top-1/2 -translate-y-1/2 text-gray-600 hover:text-gray-400"
-      title="Clear product type"
+      :title="`Clear ${noun}`"
       @mousedown.prevent="clearValue"
     >✕</button>
 
@@ -33,7 +33,7 @@
             Recently used
           </p>
           <p v-if="i === recentCount && recentCount > 0" class="border-t border-gray-800 px-3 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-gray-600">
-            All product types
+            All {{ noun }}s
           </p>
           <button
             type="button"
@@ -44,7 +44,7 @@
           >{{ c.name }}</button>
         </template>
         <p v-if="!visibleOptions.length" class="px-3 py-2 text-gray-600">
-          {{ query ? 'No matches' : 'No product types available' }}
+          {{ query ? 'No matches' : `No ${noun}s available` }}
         </p>
       </template>
     </div>
@@ -68,6 +68,9 @@
  *  - placeholder: text shown when nothing is selected/typed (caller controls this,
  *               since the exact wording depends on account-mapping fallback state)
  *  - size: 'xs' (default, inline overrides editor) | 'sm' (publish modal)
+ *  - noun: what an option is called in the UI. Reverb says "product type";
+ *          Gear Exchange reuses this component with "category" and passes its
+ *          categories as { uuid: id, name }.
  */
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 
@@ -78,6 +81,7 @@ const props = defineProps({
   loading: { type: Boolean, default: false },
   placeholder: { type: String, default: '— Select product type —' },
   size: { type: String, default: 'xs' },
+  noun: { type: String, default: 'product type' },
 })
 const emit = defineEmits(['update:modelValue'])
 

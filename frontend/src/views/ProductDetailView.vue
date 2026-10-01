@@ -342,8 +342,29 @@
                           class="input w-full mt-1 py-1 text-xs" />
                       </div>
                       <div>
-                        <label class="text-xs text-gray-500">Category ID</label>
-                        <input v-model="editOverrides[l.id].category_id" placeholder="Use account mapping" class="input w-full mt-1 py-1 text-xs" />
+                        <label class="text-xs text-gray-500">Category</label>
+                        <ReverbProductTypeSelect
+                          v-model="editOverrides[l.id].category_id"
+                          :account-id="l.marketplaceAccountId"
+                          :categories="gxCategoriesFor(l.marketplaceAccountId)"
+                          :loading="!!gxCategoriesLoading[l.marketplaceAccountId]"
+                          :placeholder="gxCategoryFallback(l.marketplaceAccountId) ? 'Use account mapping' : '— Select category —'"
+                          size="xs"
+                          noun="category"
+                        />
+                        <p
+                          v-if="!editOverrides[l.id].category_id"
+                          class="mt-1 text-xs"
+                          :class="gxCategoryFallback(l.marketplaceAccountId) ? 'text-gray-600' : 'text-amber-500/90'"
+                        >
+                          <template v-if="gxCategoryFallback(l.marketplaceAccountId)">
+                            Using {{ gxCategoryFallback(l.marketplaceAccountId).source }}:
+                            {{ gxCategoryFallback(l.marketplaceAccountId).value }}
+                          </template>
+                          <template v-else>
+                            No account mapping for this product type — pick a category, or Gear Exchange will reject the publish.
+                          </template>
+                        </p>
                       </div>
                     </div>
                     <p class="text-xs text-gray-600">
@@ -882,8 +903,29 @@
                           class="input w-full py-1.5 text-sm" />
                       </div>
                       <div>
-                        <label class="block text-xs font-medium text-gray-400 mb-1">Category ID</label>
-                        <input v-model="publishForm.category_id" placeholder="Use account mapping" class="input w-full py-1.5 text-sm" />
+                        <label class="block text-xs font-medium text-gray-400 mb-1">Category</label>
+                        <ReverbProductTypeSelect
+                          v-model="publishForm.category_id"
+                          :account-id="publishForm.accountId"
+                          :categories="gxCategoriesFor(publishForm.accountId)"
+                          :loading="!!gxCategoriesLoading[publishForm.accountId]"
+                          :placeholder="gxCategoryFallback(publishForm.accountId) ? 'Use account mapping' : '— Select category —'"
+                          size="sm"
+                          noun="category"
+                        />
+                        <p
+                          v-if="!publishForm.category_id"
+                          class="mt-1 text-xs"
+                          :class="gxCategoryFallback(publishForm.accountId) ? 'text-gray-600' : 'text-amber-500/90'"
+                        >
+                          <template v-if="gxCategoryFallback(publishForm.accountId)">
+                            Using {{ gxCategoryFallback(publishForm.accountId).source }}:
+                            {{ gxCategoryFallback(publishForm.accountId).value }}
+                          </template>
+                          <template v-else>
+                            No account mapping for this product type — pick a category, or Gear Exchange will reject the publish.
+                          </template>
+                        </p>
                       </div>
                     </div>
                     <p class="text-xs text-gray-600">
@@ -1188,6 +1230,9 @@ watch(() => publishForm.value.accountId, (accountId) => {
     loadReverbShippingProfiles(accountId)
     loadReverbCategories(accountId)
   }
+  if (selectedAccountType.value === 'GEAR_EXCHANGE' && accountId) {
+    loadGxCategories(accountId)
+  }
 })
 
 // ── Validation helpers ────────────────────────────────────────────────────────
@@ -1355,6 +1400,8 @@ async function load() {
           loadReverbCategories(listing.marketplaceAccountId)
         } else if (listing.marketplaceType === 'EBAY') {
           loadEbayConfigFor(listing.marketplaceAccountId)
+        } else if (listing.marketplaceType === 'GEAR_EXCHANGE') {
+          loadGxCategories(listing.marketplaceAccountId)
         }
       }
     })
@@ -1475,6 +1522,9 @@ function toggleOverridesEditor(listingId) {
     if (listing.marketplaceType === 'EBAY') {
       loadEbayConfigFor(listing.marketplaceAccountId)
     }
+    if (listing.marketplaceType === 'GEAR_EXCHANGE') {
+      loadGxCategories(listing.marketplaceAccountId)
+    }
   }
 }
 
@@ -1554,6 +1604,62 @@ function reverbCategoryFallback(accountId) {
 
   if (account.reverbDefaultCategory) {
     return { source: 'account fallback', value: account.reverbDefaultCategory }
+  }
+
+  return null
+}
+
+// ── Gear Exchange categories ──────────────────────────────────────────────────
+
+const gxCategories = ref({})        // accountId -> [{ uuid: id, name }] (uuid so the shared picker works)
+const gxCategoriesLoading = ref({})
+
+/**
+ * Fetches Gear Exchange's category list for an account and caches it.
+ *
+ * Same role as the Reverb picker: the account map on the Marketplaces page
+ * covers most products; this is the per-listing choice for anything it maps
+ * wrong or not at all. The stored override is the GX category id.
+ */
+async function loadGxCategories(accountId) {
+  if (!accountId) return
+  if (gxCategories.value[accountId] || gxCategoriesLoading.value[accountId]) return
+  gxCategoriesLoading.value[accountId] = true
+  try {
+    const res = await api.get(`/marketplace/accounts/${accountId}/gear-exchange/config`)
+    gxCategories.value[accountId] = (res.data?.categories || []).map(c => ({ uuid: String(c.id), name: c.name }))
+  } catch (e) {
+    console.error('Failed to load Gear Exchange categories', e)
+    gxCategories.value[accountId] = []
+  } finally {
+    gxCategoriesLoading.value[accountId] = false
+  }
+}
+
+function gxCategoriesFor(accountId) {
+  return gxCategories.value[accountId] || []
+}
+
+/** Category name for an id, falling back to the raw id until the list loads. */
+function gxCategoryName(accountId, id) {
+  return gxCategoriesFor(accountId).find(c => c.uuid === String(id))?.name || id
+}
+
+/** What the listing will publish under when no per-listing category is set. */
+function gxCategoryFallback(accountId) {
+  const account = accounts.value.find(a => a.id === accountId)
+  if (!account) return null
+
+  const map = account.gxCategoryMap || {}
+  const type = product.value?.category
+
+  if (type) {
+    const hit = Object.entries(map).find(([k]) => k.trim().toLowerCase() === type.trim().toLowerCase())
+    if (hit) return { source: `product type "${type}"`, value: gxCategoryName(accountId, hit[1]) }
+  }
+
+  if (account.gxDefaultCategory) {
+    return { source: 'account fallback', value: gxCategoryName(accountId, account.gxDefaultCategory) }
   }
 
   return null
@@ -1783,6 +1889,9 @@ function applySiblingOverrides(listing, sibling) {
 
   // Refresh whatever the copied fields need in order to render as names
   // rather than raw IDs (a Reverb category uuid, an eBay policy ID).
+  if (listing.marketplaceType === 'GEAR_EXCHANGE') {
+    loadGxCategories(listing.marketplaceAccountId)
+  }
   if (listing.marketplaceType === 'REVERB') {
     loadReverbShippingProfiles(listing.marketplaceAccountId)
     loadReverbCategories(listing.marketplaceAccountId)
