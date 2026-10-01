@@ -249,6 +249,10 @@
                       <span :class="Object.keys(account.gxCategoryMap || {}).length || account.gxDefaultCategory ? 'text-gray-400' : 'text-yellow-500/80 italic'">
                         {{ Object.keys(account.gxCategoryMap || {}).length }}{{ account.gxDefaultCategory ? ' + fallback' : '' }}
                       </span>
+                      <span class="text-gray-600">Conditions</span>
+                      <span class="text-gray-400">
+                        {{ Object.keys(account.gxConditionMap || {}).length ? Object.keys(account.gxConditionMap).length + ' remapped' : 'defaults' }}
+                      </span>
                       <span class="text-gray-600">Shipping cost</span>
                       <span :class="account.gxShippingCost ? 'text-gray-400' : 'text-yellow-500/80 italic'">
                         {{ account.gxShippingCost ? '$' + account.gxShippingCost : 'not set — required' }}
@@ -1016,6 +1020,24 @@
 
         <div class="grid grid-cols-2 gap-3">
           <div class="col-span-2">
+            <p class="text-xs font-medium text-gray-400 mb-1">Conditions</p>
+            <p class="text-xs text-gray-600 mb-2">
+              How Gearline's conditions become Gear Exchange grades. Leave a row on Default to keep the built-in
+              choice. Gear Exchange's Mint means original packaging and protective film, so you may want items
+              Reverb lists as Mint (like Open Box) to go out as Excellent here. A single listing can still
+              override this on the product page.
+            </p>
+            <div class="grid grid-cols-2 gap-x-4 gap-y-1.5">
+              <div v-for="row in gxConditionRows" :key="row.condition" class="flex items-center gap-2">
+                <span class="w-24 shrink-0 text-xs text-gray-400">{{ row.condition }}</span>
+                <select v-model="row.gx" class="input flex-1 py-1 text-xs">
+                  <option value="">Default — {{ row.fallback }}</option>
+                  <option v-for="c in gxConfig?.conditions || []" :key="c.id" :value="String(c.id)">{{ c.name }}</option>
+                </select>
+              </div>
+            </div>
+          </div>
+          <div class="col-span-2">
             <label class="block text-xs font-medium text-gray-400 mb-1">Fallback category</label>
             <select v-model="gxForm.gxDefaultCategory" class="input w-full text-sm">
               <option value="">None — unmapped types fail to publish</option>
@@ -1705,6 +1727,15 @@ const gxConfig = ref(null)            // { categories, conditions, returnPolicie
 const gxConfigLoading = ref(false)
 const gxConfigError = ref(null)
 const gxCategoryRows = ref([])        // [{ productType, category }]
+const gxConditionRows = ref([])       // [{ condition, fallback, gx }]
+
+/** Mirrors CONDITION_NAMES in backend gear-exchange/listing-mapper.ts. */
+const GX_DEFAULT_CONDITIONS = {
+  MINT: 'Mint', NEW: 'Mint', OPEN_BOX: 'Mint',
+  EXCELLENT: 'Excellent', VERY_GOOD: 'Excellent',
+  GOOD: 'Good', USED: 'Good',
+  FAIR: 'Fair', POOR: 'Poor', FOR_PARTS: 'Poor',
+}
 const gxForm = ref({})
 const savingGx = ref(false)
 const gxSaveError = ref('')
@@ -1714,6 +1745,11 @@ function openGxSettings(account) {
   gxConfig.value = null
   gxConfigError.value = null
   gxSaveError.value = ''
+  gxConditionRows.value = Object.entries(GX_DEFAULT_CONDITIONS).map(([condition, fallback]) => ({
+    condition,
+    fallback,
+    gx: (account.gxConditionMap || {})[condition] || '',
+  }))
   gxCategoryRows.value = Object.entries(account.gxCategoryMap || {})
     .map(([productType, category]) => ({ productType, category }))
   gxForm.value = {
@@ -1762,6 +1798,8 @@ async function saveGxSettings() {
     // present-but-blank value as "remove this setting".
     await api.patch(`/marketplace/accounts/${editingGx.value.id}/settings`, {
       gxCategoryMap: map,
+      // Only rows moved off Default are stored; an empty map clears the setting.
+      gxConditionMap: Object.fromEntries(gxConditionRows.value.filter(r => r.gx).map(r => [r.condition, r.gx])),
       ...Object.fromEntries(Object.entries(gxForm.value).map(([k, v]) => [k, v == null ? '' : String(v)])),
     })
     editingGx.value = null

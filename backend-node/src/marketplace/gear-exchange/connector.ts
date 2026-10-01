@@ -19,7 +19,7 @@ import {
 } from '../types.js';
 import { gearExchangeAuthProvider } from './auth-provider.js';
 import * as client from './client.js';
-import { mapCondition, toGxRequest } from './listing-mapper.js';
+import { conditionFor, toGxRequest } from './listing-mapper.js';
 import { gearlineProductId, isDeadOrder, toImportedOrder } from './order-mapper.js';
 import { configuredCategoryFor, resolveCategoryId, resolveConditionId } from './reference.js';
 import type { GxListingDto, GxOrderDto } from './types.js';
@@ -158,7 +158,7 @@ async function buildBody(
 
   const [categoryId, conditionId] = await Promise.all([
     resolveCategoryId(account, configuredCategory),
-    resolveConditionId(account, request.conditionMapping ?? mapCondition(product.condition)),
+    resolveConditionId(account, conditionFor(product, request, account)),
   ]);
 
   return toGxRequest(product, request, account, { categoryId, conditionId, publishImmediately });

@@ -65,6 +65,35 @@ export function mapCondition(condition: ProductCondition): string {
   return CONDITION_NAMES[condition] ?? 'Good';
 }
 
+/**
+ * The GX condition a product publishes with, before name -> id resolution:
+ *
+ *   1. condition_mapping on the listing (a GX condition name or id)
+ *   2. gx_condition_map[internal condition] on the account
+ *   3. the built-in CONDITION_NAMES default above
+ *
+ * (2) is how a whole grade is reassigned without touching every listing —
+ * e.g. OPEN_BOX, which Reverb publishes as "Mint", may deserve "Excellent"
+ * on GX, where Mint means original packaging and protective film.
+ */
+export function conditionFor(
+  product: Pick<ProductRow, 'condition'>,
+  request: Pick<PublishListingRequest, 'conditionMapping'>,
+  account: Pick<MarketplaceAccountRow, 'sync_settings'>,
+): string {
+  if (request.conditionMapping && request.conditionMapping.trim() !== '') {
+    return request.conditionMapping.trim();
+  }
+
+  const map = account.sync_settings?.['gx_condition_map'];
+  if (map && typeof map === 'object' && !Array.isArray(map)) {
+    const mapped = (map as Record<string, unknown>)[product.condition];
+    if (typeof mapped === 'string' && mapped.trim() !== '') return mapped.trim();
+  }
+
+  return mapCondition(product.condition);
+}
+
 // ── Setting helpers ──────────────────────────────────────────────────────────
 
 /** Listing override first, then account setting. Blank counts as unset. */

@@ -5,6 +5,7 @@ import { normaliseOptions, unwrapListing, isImageProcessingLock } from '../src/m
 import { explainError } from '../src/marketplace/gear-exchange/connector.js';
 import {
   assertPriceAllowed,
+  conditionFor,
   htmlToText,
   madeYear,
   mapCondition,
@@ -77,6 +78,14 @@ describe('Gear Exchange listing mapper', () => {
     expect(mapCondition('USED')).toBe('Good');
     expect(mapCondition('VERY_GOOD')).toBe('Excellent');
     expect(mapCondition('FOR_PARTS')).toBe('Poor');
+  });
+
+  it('picks the condition: listing override, then account map, then default', () => {
+    const acct = { sync_settings: { gx_condition_map: { OPEN_BOX: 'Excellent' } } };
+    expect(conditionFor({ condition: 'OPEN_BOX' }, { conditionMapping: null }, acct)).toBe('Excellent');
+    expect(conditionFor({ condition: 'OPEN_BOX' }, { conditionMapping: '4' }, acct)).toBe('4');
+    expect(conditionFor({ condition: 'MINT' }, { conditionMapping: null }, acct)).toBe('Mint');
+    expect(conditionFor({ condition: 'OPEN_BOX' }, { conditionMapping: null }, { sync_settings: {} })).toBe('Mint');
   });
 
   it('strips a leading brand from the title', () => {

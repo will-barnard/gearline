@@ -337,6 +337,13 @@
                           class="input w-full mt-1 py-1 text-xs" />
                       </div>
                       <div>
+                        <label class="text-xs text-gray-500">Condition</label>
+                        <select v-model="editOverrides[l.id].condition_mapping" class="input w-full mt-1 py-1 text-xs">
+                          <option value="">Automatic — {{ gxAutoConditionLabel(l.marketplaceAccountId) }}</option>
+                          <option v-for="c in gxConditionsFor(l.marketplaceAccountId)" :key="c.id" :value="c.id">{{ c.name }}</option>
+                        </select>
+                      </div>
+                      <div>
                         <label class="text-xs text-gray-500">Brand override</label>
                         <input v-model="editOverrides[l.id].gx_brand" :placeholder="product.brand || 'Required — product has no brand'"
                           class="input w-full mt-1 py-1 text-xs" />
@@ -896,6 +903,13 @@
                         <label class="block text-xs font-medium text-gray-400 mb-1">Minimum offer</label>
                         <input v-model="publishForm.gx_min_offer" type="number" step="0.01" min="0" placeholder="None"
                           class="input w-full py-1.5 text-sm" />
+                      </div>
+                      <div>
+                        <label class="block text-xs font-medium text-gray-400 mb-1">Condition</label>
+                        <select v-model="publishForm.condition_mapping" class="input w-full py-1.5 text-sm">
+                          <option value="">Automatic — {{ gxAutoConditionLabel(publishForm.accountId) }}</option>
+                          <option v-for="c in gxConditionsFor(publishForm.accountId)" :key="c.id" :value="c.id">{{ c.name }}</option>
+                        </select>
                       </div>
                       <div>
                         <label class="block text-xs font-medium text-gray-400 mb-1">Brand override</label>
@@ -1612,6 +1626,7 @@ function reverbCategoryFallback(accountId) {
 // ── Gear Exchange categories ──────────────────────────────────────────────────
 
 const gxCategories = ref({})        // accountId -> [{ uuid: id, name }] (uuid so the shared picker works)
+const gxConditions = ref({})        // accountId -> [{ id, name }]
 const gxCategoriesLoading = ref({})
 
 /**
@@ -1628,12 +1643,42 @@ async function loadGxCategories(accountId) {
   try {
     const res = await api.get(`/marketplace/accounts/${accountId}/gear-exchange/config`)
     gxCategories.value[accountId] = (res.data?.categories || []).map(c => ({ uuid: String(c.id), name: c.name }))
+    gxConditions.value[accountId] = res.data?.conditions || []
   } catch (e) {
     console.error('Failed to load Gear Exchange categories', e)
     gxCategories.value[accountId] = []
+    gxConditions.value[accountId] = []
   } finally {
     gxCategoriesLoading.value[accountId] = false
   }
+}
+
+function gxConditionsFor(accountId) {
+  return gxConditions.value[accountId] || []
+}
+
+/**
+ * Mirrors CONDITION_NAMES in backend gear-exchange/listing-mapper.ts — the
+ * grade a product gets when neither the listing nor the account says otherwise.
+ */
+const GX_DEFAULT_CONDITIONS = {
+  NEW: 'Mint', OPEN_BOX: 'Mint', MINT: 'Mint',
+  EXCELLENT: 'Excellent', VERY_GOOD: 'Excellent',
+  GOOD: 'Good', USED: 'Good',
+  FAIR: 'Fair', POOR: 'Poor', FOR_PARTS: 'Poor',
+}
+
+/** What "Automatic" resolves to for this product: account map first, then the default. */
+function gxAutoConditionLabel(accountId) {
+  const condition = product.value?.condition
+  if (!condition) return 'from product condition'
+  const account = accounts.value.find(a => a.id === accountId)
+  const mapped = account?.gxConditionMap?.[condition]
+  if (mapped) {
+    const name = gxConditionsFor(accountId).find(c => String(c.id) === String(mapped))?.name || mapped
+    return `${name} (account mapping for ${condition})`
+  }
+  return `${GX_DEFAULT_CONDITIONS[condition] || 'Good'} (from ${condition})`
 }
 
 function gxCategoriesFor(accountId) {

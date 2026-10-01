@@ -201,6 +201,8 @@ const settingsSchema = z.object({
   // ── Gear Exchange ──
   /** Shopify product type -> GX category id. Sent whole, like the Reverb map. */
   gxCategoryMap: z.record(z.string(), z.string()).nullish(),
+  /** Internal condition (MINT, OPEN_BOX, ...) -> GX condition id. Sent whole. */
+  gxConditionMap: z.record(z.string(), z.string()).nullish(),
   gxDefaultCategory: z.string().nullish(),
   gxShippingCost: z.string().nullish(),
   gxReturnPolicyDays: z.string().nullish(),
@@ -273,6 +275,19 @@ marketplaceAccountsRouter.patch(
       const cleaned = [...new Set(body.excludedProductTypes.map((t) => t.trim()).filter((t) => t !== ''))];
       if (cleaned.length === 0) removeKeys.push('excluded_product_types');
       else merge['excluded_product_types'] = cleaned;
+    }
+
+    if (body.gxConditionMap != null) {
+      const cleaned: Record<string, string> = {};
+
+      for (const [condition, gx] of Object.entries(body.gxConditionMap)) {
+        const key = condition.trim().toUpperCase();
+        const value = gx.trim();
+        if (key !== '' && value !== '') cleaned[key] = value;
+      }
+
+      if (Object.keys(cleaned).length === 0) removeKeys.push('gx_condition_map');
+      else merge['gx_condition_map'] = cleaned;
     }
 
     if (body.gxCategoryMap != null) {

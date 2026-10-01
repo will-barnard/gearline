@@ -230,6 +230,7 @@ export function toMarketplaceAccountDto(
       : [],
     // Always an object, never null — the settings form iterates it unguarded.
     gxCategoryMap: stringMapSetting(settings, 'gx_category_map'),
+    gxConditionMap: stringMapSetting(settings, 'gx_condition_map'),
     gxDefaultCategory: stringSetting(settings, 'gx_default_category'),
     gxShippingCost: stringSetting(settings, 'gx_shipping_cost'),
     gxReturnPolicyDays: stringSetting(settings, 'gx_return_policy_days'),
