@@ -4,6 +4,7 @@ import { db } from '../../db/index.js';
 import type { MarketplaceAccountRow, ProductRow } from '../../db/types.js';
 import { loggerFor } from '../../logger.js';
 import * as client from './client.js';
+import { shopifyWeightToKg } from './weight.js';
 import { titleTemplateFor, variantTitle } from './webhook-processor.js';
 
 const log = loggerFor('shopify-resync');
@@ -175,6 +176,20 @@ export async function resync(productId: string): Promise<ResyncResult> {
   );
 
   const patch = extractResyncFields(shopifyProduct, product.shopify_variant_id, titleTemplate);
+
+  // Weight lives on the Shopify inventory item, not in the product payload.
+  // Best-effort like metafields: a failure keeps the existing weight.
+  const inventoryItemId =
+    (typeof patch['shopify_inventory_item_id'] === 'string'
+      ? patch['shopify_inventory_item_id']
+      : null) ?? product.shopify_inventory_item_id;
+
+  if (inventoryItemId) {
+    const weights = await client.fetchInventoryItemWeights(account, [inventoryItemId]);
+    const weight = weights.get(inventoryItemId);
+    const kg = weight ? shopifyWeightToKg(weight.value, weight.unit) : null;
+    if (kg !== null) patch['weight_kg'] = kg;
+  }
 
   // Metafields are best-effort — a failure here must not block the field repair.
   try {

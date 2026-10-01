@@ -213,6 +213,91 @@ export async function fetchProductMetafields(
   }
 }
 
+// ── Inventory weights (GraphQL) ──────────────────────────────────────────────
+
+const INVENTORY_WEIGHT_QUERY = `
+  query InventoryItemWeights($ids: [ID!]!) {
+    nodes(ids: $ids) {
+      ... on InventoryItem {
+        id
+        measurement { weight { value unit } }
+      }
+    }
+  }
+`;
+
+/** `nodes` accepts at most 250 ids per call. */
+const MAX_NODES_PER_QUERY = 250;
+
+export interface ShopifyWeight {
+  value: number;
+  unit: string;
+}
+
+/**
+ * Fetches weights for inventory items, keyed by the numeric inventory item id
+ * Gearline stores (`shopify_inventory_item_id`).
+ *
+ * Weight lives on the inventory item, not on the variant, and the REST product
+ * payload no longer reliably carries it — so this reads it over GraphQL.
+ *
+ * Best-effort by design, like the metafield fetch: returns whatever it could
+ * read and logs the rest, so a GraphQL hiccup (or a token missing the
+ * read_inventory scope) leaves the existing weights in place instead of
+ * failing the product sync.
+ */
+export async function fetchInventoryItemWeights(
+  account: MarketplaceAccountRow,
+  inventoryItemIds: string[],
+): Promise<Map<string, ShopifyWeight>> {
+  const weights = new Map<string, ShopifyWeight>();
+  const ids = [...new Set(inventoryItemIds.filter((id) => /^\d+$/.test(id)))];
+
+  for (let i = 0; i < ids.length; i += MAX_NODES_PER_QUERY) {
+    const batch = ids.slice(i, i + MAX_NODES_PER_QUERY);
+
+    try {
+      const response = await apiRequest<{
+        data?: {
+          nodes?: Array<{
+            id?: string;
+            measurement?: { weight?: { value?: number; unit?: string } | null } | null;
+          } | null>;
+        };
+        errors?: unknown;
+      }>({
+        marketplace: 'Shopify',
+        method: 'POST',
+        url: adminUrl(account, '/graphql.json'),
+        headers: shopifyHeaders(account),
+        json: {
+          query: INVENTORY_WEIGHT_QUERY,
+          variables: { ids: batch.map((id) => `gid://shopify/InventoryItem/${id}`) },
+        },
+      });
+
+      // GraphQL reports failures in the body with a 200, so the HTTP layer
+      // cannot catch them.
+      if (response.body?.errors) {
+        log.warn({ errors: response.body.errors }, 'Shopify inventory weight query returned errors');
+      }
+
+      for (const node of response.body?.data?.nodes ?? []) {
+        const weight = node?.measurement?.weight;
+        const id = node?.id?.split('/').pop();
+
+        if (id && weight && typeof weight.value === 'number' && typeof weight.unit === 'string') {
+          weights.set(id, { value: weight.value, unit: weight.unit });
+        }
+      }
+    } catch (err) {
+      log.warn({ err, count: batch.length }, 'Could not fetch Shopify inventory weights — continuing without them');
+    }
+  }
+
+  return weights;
+}
+
 // ── Inventory ────────────────────────────────────────────────────────────────
 
 /**

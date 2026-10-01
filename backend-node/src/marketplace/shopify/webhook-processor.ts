@@ -13,6 +13,7 @@ import { propagateInventoryChange } from '../../services/inventory-consistency.j
 import { enqueue } from '../../queue/sync-job-producer.js';
 import { divideHalfUp, decimalToString } from '../../util/decimal.js';
 import * as client from './client.js';
+import { shopifyWeightToKg } from './weight.js';
 
 const log = loggerFor('shopify-webhook-processor');
 
@@ -769,7 +770,8 @@ async function upsertVariantsFromPayload(
 
   if (saved.length === 0) return [];
 
-  return applyMetafields(saved, shopDomain, shopifyProductId);
+  const weighed = await applyInventoryWeights(saved, shopDomain, shopifyProductId);
+  return applyMetafields(weighed, shopDomain, shopifyProductId);
 }
 
 /**
@@ -883,6 +885,8 @@ function extractVariantFields(
   const qty = num(variant, 'inventory_quantity', Number.NEGATIVE_INFINITY);
   if (Number.isFinite(qty)) fields.quantity = Math.max(0, qty);
 
+  // Legacy fallback only. Shopify now keeps weight on the inventory item, which
+  // applyInventoryWeights reads over GraphQL and which overrides this value.
   // Shopify sends grams; the column is kg at scale 3.
   const grams = num(variant, 'grams', 0);
   if (grams > 0) {
@@ -895,6 +899,72 @@ function extractVariantFields(
   }
 
   return fields;
+}
+
+// ── Inventory weights ────────────────────────────────────────────────────────
+
+/**
+ * Applies each variant's weight from its Shopify inventory item.
+ *
+ * Weight is stored on the inventory item (`measurement.weight`), and the REST
+ * variant `grams` field is no longer a reliable copy of it — products showed
+ * "weight not set" despite a weight in Shopify. Unlike metafields, weight is
+ * PER VARIANT, so each row is matched by its own inventory item id.
+ *
+ * Best-effort: any failure logs and returns the rows unchanged. A missing or
+ * zero Shopify weight keeps whatever value the row already has.
+ */
+async function applyInventoryWeights(
+  products: ProductRow[],
+  shopDomain: string,
+  shopifyProductId: string,
+): Promise<ProductRow[]> {
+  const itemIds = products
+    .map((p) => p.shopify_inventory_item_id)
+    .filter((id): id is string => !!id);
+
+  if (itemIds.length === 0) return products;
+
+  try {
+    const account = await db
+      .selectFrom('marketplace_accounts')
+      .selectAll()
+      .where('external_account_id', '=', shopDomain)
+      .executeTakeFirst();
+
+    if (!account) return products;
+
+    const weights = await client.fetchInventoryItemWeights(account, itemIds);
+    if (weights.size === 0) return products;
+
+    const result: ProductRow[] = [];
+
+    for (const row of products) {
+      const weight = row.shopify_inventory_item_id
+        ? weights.get(row.shopify_inventory_item_id)
+        : undefined;
+      const kg = weight ? shopifyWeightToKg(weight.value, weight.unit) : null;
+
+      if (kg === null || kg === String(row.weight_kg)) {
+        result.push(row);
+        continue;
+      }
+
+      const updated = await db
+        .updateTable('products')
+        .set({ weight_kg: kg, updated_at: new Date() })
+        .where('id', '=', row.id)
+        .returningAll()
+        .executeTakeFirst();
+
+      result.push(updated ?? row);
+    }
+
+    return result;
+  } catch (err) {
+    log.warn({ err, shopifyProductId }, 'Could not apply Shopify inventory weights');
+    return products;
+  }
 }
 
 // ── Metafields ───────────────────────────────────────────────────────────────
