@@ -11,6 +11,23 @@
 
     <div v-else-if="product" class="flex-1 overflow-auto p-6">
 
+      <!-- Archived banner -->
+      <div v-if="product.status === 'ARCHIVED'"
+           class="mb-5 flex items-start gap-3 rounded-lg border border-gray-700 bg-gray-900 px-4 py-3">
+        <div class="flex-1 min-w-0">
+          <p class="text-sm font-semibold text-gray-200">This product is archived</p>
+          <p class="mt-0.5 text-xs text-gray-400">
+            It can't be listed on marketplaces while archived. Un-archiving puts its listings back in the review queue — you still publish them yourself.
+          </p>
+          <p v-for="w in unarchiveWarnings" :key="w" class="mt-1 text-xs text-amber-400">{{ w }}</p>
+        </div>
+        <button
+          @click="unarchive"
+          :disabled="unarchiving"
+          class="shrink-0 btn-secondary px-3 py-1.5 text-xs text-green-400 border-green-700/50 hover:border-green-500"
+        >{{ unarchiving ? 'Restoring…' : '↩ Un-archive' }}</button>
+      </div>
+
       <!-- Marketplace exclusion banner -->
       <div v-if="product.marketplaceExcluded"
            class="mb-5 flex items-start gap-3 rounded-lg border border-orange-700/60 bg-orange-950/40 px-4 py-3">
@@ -1056,6 +1073,8 @@ const listings = ref([])
 const accounts = ref([])
 const loading = ref(true)
 const togglingExclusion = ref(false)
+const unarchiving = ref(false)
+const unarchiveWarnings = ref([])
 const listingsLoading = ref(true)
 
 // Publish modal state
@@ -1267,6 +1286,25 @@ function overrideValidationErrors(listing) {
 /** Returns true if the current override state has any blocking errors */
 function hasOverrideErrors(listing) {
   return overrideValidationErrors(listing).length > 0
+}
+
+// ── Archive ───────────────────────────────────────────────────────────────────
+
+async function unarchive() {
+  unarchiving.value = true
+  try {
+    const res = await api.post(`/products/${route.params.id}/unarchive`)
+    unarchiveWarnings.value = res.data.warnings || []
+    product.value = res.data.product
+    listings.value = res.data.listings
+    // Reload so the per-listing override editors initialise for the restored stubs.
+    await load()
+  } catch (e) {
+    const d = e.response?.data
+    alert(d?.detail || d?.message || d?.error || 'Failed to un-archive product.')
+  } finally {
+    unarchiving.value = false
+  }
 }
 
 // ── Marketplace exclusion ─────────────────────────────────────────────────────

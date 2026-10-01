@@ -54,6 +54,24 @@
       </div>
     </header>
 
+    <!-- Shown after an un-archive: the next step is publishing from Listings -->
+    <div
+      v-if="unarchiveNotice"
+      class="flex flex-shrink-0 items-start gap-3 border-b border-green-800/60 bg-green-950/30 px-6 py-2.5"
+    >
+      <div class="flex-1 min-w-0 text-xs">
+        <p class="text-green-300 font-medium">
+          Un-archived "{{ unarchiveNotice.title }}"
+          <template v-if="unarchiveNotice.ready > 0">
+            — {{ unarchiveNotice.ready }} marketplace listing{{ unarchiveNotice.ready !== 1 ? 's' : '' }} ready to publish.
+            <router-link to="/listings" class="underline hover:text-green-200">Go to Listings →</router-link>
+          </template>
+        </p>
+        <p v-for="w in unarchiveNotice.warnings" :key="w" class="mt-0.5 text-amber-400">{{ w }}</p>
+      </div>
+      <button @click="unarchiveNotice = null" class="text-gray-500 hover:text-gray-300 text-xs" aria-label="Dismiss">✕</button>
+    </div>
+
     <!-- Bulk action bar — slides in when items are selected -->
     <div
       v-if="selected.size > 0"
@@ -181,6 +199,12 @@
                       class="text-xs text-orange-500 hover:text-orange-400"
                       title="Remove from eBay/Reverb — Shopify unaffected"
                     >Exclude</button>
+                    <button
+                      v-if="p.status === 'ARCHIVED'"
+                      @click="unarchiveProduct(p)"
+                      class="text-xs text-green-500 hover:text-green-400"
+                      title="Restore to active and put its marketplace listings back in the review queue"
+                    >Un-archive</button>
                     <button
                       v-if="p.status !== 'ARCHIVED' && activeFilter !== 'excluded'"
                       @click="archiveProduct(p)"
@@ -371,6 +395,27 @@ async function archiveProduct(product) {
     totalElements.value = Math.max(0, totalElements.value - 1)
   } catch (e) {
     alert('Failed to archive product. You may need admin permissions.')
+  }
+}
+
+// ── Un-archive ────────────────────────────────────────────────────────────────
+
+const unarchiveNotice = ref(null)
+
+async function unarchiveProduct(product) {
+  try {
+    const res = await api.post(`/products/${product.id}/unarchive`)
+    products.value = products.value.filter(p => p.id !== product.id)
+    totalElements.value = Math.max(0, totalElements.value - 1)
+    unarchiveNotice.value = {
+      title: product.title,
+      ready: (res.data.listings || []).filter(l => l.listingStatus === 'NEEDS_REVIEW').length,
+      warnings: res.data.warnings || [],
+    }
+  } catch (e) {
+    // 409s carry an actionable reason (delist still running, not archived, ...)
+    const d = e.response?.data
+    alert(d?.detail || d?.message || d?.error || 'Failed to un-archive product.')
   }
 }
 

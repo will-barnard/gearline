@@ -15,6 +15,9 @@ export const listingsRouter: Router = Router();
 
 const uuidSchema = z.string().uuid('must be a valid UUID');
 
+/** Publishing an archived product would re-list something that was deliberately taken down. */
+const ARCHIVED_MESSAGE = 'Product is archived — un-archive it before listing it on a marketplace';
+
 const LISTING_STATUSES: ListingStatus[] = [
   'PENDING',
   'PUBLISHING',
@@ -152,6 +155,8 @@ listingsRouter.post(
     if (!product) throw new ResourceNotFoundError('Product', body.productId);
     if (!account) throw new ResourceNotFoundError('MarketplaceAccount', body.marketplaceAccountId);
 
+    if (product.status === 'ARCHIVED') throw new ConflictError(ARCHIVED_MESSAGE);
+
     const eligibility = checkEligibility(product, account);
     if (!eligibility.eligible) throw new ConflictError(eligibility.reason ?? 'Product cannot be listed here');
 
@@ -227,6 +232,8 @@ function enqueueListingJob(jobType: 'LISTING_PUBLISH' | 'LISTING_DELIST') {
           .where('id', '=', listing.marketplace_account_id)
           .executeTakeFirst(),
       ]);
+
+      if (product?.status === 'ARCHIVED') throw new ConflictError(ARCHIVED_MESSAGE);
 
       if (product && account) {
         const eligibility = checkEligibility(product, account);

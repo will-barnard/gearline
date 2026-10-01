@@ -5,11 +5,12 @@ import { db } from '../db/index.js';
 import { toJson } from '../db/json.js';
 import { parsePageRequest, toPage } from '../db/page.js';
 import type { ProductCondition, ProductStatus } from '../db/types.js';
-import { toProductDto } from '../dto/mappers.js';
+import { toListingDto, toProductDto } from '../dto/mappers.js';
 import { asyncHandler, ConflictError, ResourceNotFoundError } from '../http/errors.js';
 import { bulkResyncSkus, resync as resyncFromShopify } from '../marketplace/shopify/resync.js';
 import { currentUser } from '../security/auth-middleware.js';
 import * as audit from '../services/audit.js';
+import { archiveProduct, unarchiveProduct } from '../services/product-archive.js';
 import {
   EXCLUDABLE_MARKETPLACES,
   setExcluded,
@@ -430,8 +431,9 @@ productsRouter.put(
 // ── DELETE /:id — archive ────────────────────────────────────────────────────
 
 /**
- * Soft delete: sets status ARCHIVED, never removes the row. Admin-only, enforced
- * globally by requireAdminForDelete rather than here.
+ * Soft delete: sets status ARCHIVED, never removes the row, and queues a delist
+ * for every live marketplace listing (see services/product-archive). Admin-only,
+ * enforced globally by requireAdminForDelete rather than here.
  */
 productsRouter.delete(
   '/:id',
@@ -439,14 +441,7 @@ productsRouter.delete(
     const user = currentUser(req);
     const id = uuidSchema.parse(req.params.id);
 
-    const updated = await db
-      .updateTable('products')
-      .set({ status: 'ARCHIVED', updated_at: new Date() })
-      .where('id', '=', id)
-      .returning('id')
-      .executeTakeFirst();
-
-    if (!updated) throw new ResourceNotFoundError('Product', id);
+    await archiveProduct(id);
 
     audit.record({
       type: 'PRODUCT_ARCHIVED',
@@ -456,6 +451,40 @@ productsRouter.delete(
     });
 
     res.status(204).end();
+  }),
+);
+
+// ── POST /:id/unarchive ──────────────────────────────────────────────────────
+
+/**
+ * Reverses an archive: product back to ACTIVE, listings back in the review
+ * queue (NEEDS_REVIEW, or ON_HOLD at zero stock). Publishing is still a
+ * separate, deliberate step on the Listings page.
+ *
+ * A POST rather than a DELETE-style verb on purpose — it is not destructive, so
+ * it should not inherit the admin-only DELETE rule.
+ */
+productsRouter.post(
+  '/:id/unarchive',
+  asyncHandler(async (req, res) => {
+    const user = currentUser(req);
+    const id = uuidSchema.parse(req.params.id);
+
+    const result = await unarchiveProduct(id);
+
+    audit.record({
+      type: 'PRODUCT_UNARCHIVED',
+      actorId: user.id,
+      entityType: 'Product',
+      entityId: id,
+      metadata: { sku: result.product.sku },
+    });
+
+    res.json({
+      product: toProductDto(result.product),
+      listings: result.listings.map((l) => toListingDto(l, result.product)),
+      warnings: result.warnings,
+    });
   }),
 );
 

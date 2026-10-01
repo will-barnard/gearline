@@ -1149,7 +1149,7 @@ const REVIEW_STATUSES: ListingStatus[] = ['NEEDS_REVIEW', 'ON_HOLD'];
  * listing is gone, and keeping its ID would make a later publish try to update
  * a listing that no longer exists.
  */
-async function upsertReviewListings(product: ProductRow): Promise<void> {
+export async function upsertReviewListings(product: ProductRow): Promise<void> {
   const targetReviewStatus: ListingStatus = product.quantity > 0 ? 'NEEDS_REVIEW' : 'ON_HOLD';
 
   const accounts = await db
