@@ -1,5 +1,5 @@
 import { db, sql } from '../db/index.js';
-import { toJson } from '../db/json.js';
+import { jsonMerge, toJson } from '../db/json.js';
 import type { MarketplaceListingRow, SyncJobRow } from '../db/types.js';
 import { loggerFor } from '../logger.js';
 import { getConnector } from '../marketplace/registry.js';
@@ -183,12 +183,27 @@ async function updateListing(job: SyncJobRow): Promise<void> {
   const result = await connector.updateListing(account, product, listing, request);
 
   if (result.success) {
+    /**
+     * The connector's metadata and external ID are now saved on update too,
+     * not only on publish. Dropping them is what made eBay updates fail
+     * forever after an offer was recreated: the new offerId came back in
+     * rawMetadata and was thrown away, so the next update PUT the dead one
+     * again. Metadata is MERGED (jsonb ||), so keys only set at publish time
+     * survive an update that does not return them.
+     */
+    const externalId =
+      result.externalListingId && result.externalListingId.trim() !== ''
+        ? result.externalListingId
+        : listing.external_listing_id;
+
     await db
       .updateTable('marketplace_listings')
       .set({
         listing_status: 'ACTIVE',
+        external_listing_id: externalId,
         synced_price: result.publishedPrice,
         synced_quantity: result.publishedQuantity,
+        marketplace_metadata: jsonMerge('marketplace_metadata', result.rawMetadata ?? {}),
         last_sync_at: new Date(),
         last_error: null,
         updated_at: new Date(),

@@ -19,6 +19,7 @@ import {
 import { ebayAuthProvider } from './auth-provider.js';
 import { missingRequiredAspects } from './aspects.js';
 import * as client from './client.js';
+import { isNotFound } from '../http.js';
 import { buildInventoryItemBody, buildOfferBody, ebayCategoryId } from './listing-mapper.js';
 import { map as mapOrder } from './order-mapper.js';
 
@@ -299,13 +300,30 @@ export const ebayConnector: MarketplaceConnector = {
       let offerId = getOfferId(existingListing);
 
       if (offerId) {
-        await client.updateOffer(current, offerId, offerBody);
-        log.info({ offerId, sku }, 'eBay offer updated');
+        try {
+          await client.updateOffer(current, offerId, offerBody);
+          log.info({ offerId, sku }, 'eBay offer updated');
+        } catch (err) {
+          /**
+           * 404 (errorId 25710): the stored offer no longer exists on eBay —
+           * ended or deleted in Seller Hub, or recreated by hand. Failing here
+           * left the listing permanently stuck, because every retry PUT the
+           * same dead ID. Instead create a fresh offer for the SKU, or adopt
+           * the one eBay already has (createOrAdoptOffer handles 25002), and
+           * carry on to publish. The new ID is returned in metadata and saved
+           * by the dispatcher.
+           */
+          if (!isNotFound(err)) throw err;
+          log.warn({ staleOfferId: offerId, sku }, 'Stored eBay offer no longer exists — recreating or adopting');
+          offerId = await createOrAdoptOffer(current, sku, offerBody);
+        }
       } else {
         // Recovery path: metadata lost the offerId (older listing, or a publish
         // that half-completed). Create a fresh offer rather than failing.
-        offerId = await createOfferOrThrow(current, sku, offerBody);
-        log.warn({ offerId, sku }, 'eBay offer was missing from metadata — created a new one');
+        // createOrAdopt rather than create: if an offer for the SKU already
+        // exists, eBay refuses a second one, and adopting it is the fix.
+        offerId = await createOrAdoptOffer(current, sku, offerBody);
+        log.warn({ offerId, sku }, 'eBay offer was missing from metadata — created or adopted one');
       }
 
       // Step 3 — republish so the changes go live.
