@@ -156,6 +156,26 @@ describe('Gear Exchange listing mapper', () => {
     expect(body).not.toHaveProperty('publishImmediately');
   });
 
+  it('lists pickup-only without a shipping cost', () => {
+    const body = toGxRequest(
+      product(),
+      request({ extraParams: { gx_delivery: 'pickup' } }),
+      { sync_settings: { gx_return_policy_days: '7' } },
+      { categoryId: '1', conditionId: '1' },
+    );
+    expect(body['shippingAllowed']).toBe(false);
+    expect(body['localPickupAllowed']).toBe(true);
+    expect(body).not.toHaveProperty('shippingCost');
+  });
+
+  it('offers ship-or-pickup when asked', () => {
+    const body = toGxRequest(product(), request({ extraParams: { gx_delivery: 'both' } }), account, {
+      categoryId: '1',
+      conditionId: '1',
+    });
+    expect(body).toMatchObject({ shippingAllowed: true, localPickupAllowed: true, shippingCost: 12.5 });
+  });
+
   it('names every missing requirement at once', () => {
     expect(() =>
       toGxRequest(product({ brand: null, description: null }), request({ imageUrls: [] }), { sync_settings: {} }, {

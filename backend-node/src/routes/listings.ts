@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 
-import { db } from '../db/index.js';
+import { db, sql } from '../db/index.js';
 import { jsonMerge, toJson } from '../db/json.js';
 import { parsePageRequest, toPage } from '../db/page.js';
 import type { ListingStatus, ProductRow } from '../db/types.js';
@@ -401,10 +401,25 @@ listingsRouter.patch(
     const id = uuidSchema.parse(req.params.id);
     const { overrides } = overridesSchema.parse(req.body);
 
+    /**
+     * A key sent as null means "clear this override". Merging alone could
+     * never remove a key, so clearing a field in the editor used to leave the
+     * old value in force — invisible in the UI, still applied on publish.
+     * Nulls are stripped from the merge and removed with jsonb `-`.
+     */
+    const incoming = overrides ?? {};
+    const toSet = Object.fromEntries(Object.entries(incoming).filter(([, v]) => v !== null));
+    const toRemove = Object.keys(incoming).filter((k) => incoming[k] === null);
+
+    const merged =
+      toRemove.length > 0
+        ? sql<string>`(COALESCE(listing_overrides, '{}'::jsonb) || ${JSON.stringify(toSet)}::jsonb) - ${toRemove}::text[]`
+        : jsonMerge('listing_overrides', toSet);
+
     const saved = await db
       .updateTable('marketplace_listings')
       .set({
-        listing_overrides: jsonMerge('listing_overrides', overrides ?? {}),
+        listing_overrides: merged,
         updated_at: new Date(),
       })
       .where('id', '=', id)

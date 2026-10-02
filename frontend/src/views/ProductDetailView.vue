@@ -312,8 +312,17 @@
                     </div>
                     <div class="grid grid-cols-2 gap-2">
                       <div>
+                        <label class="text-xs text-gray-500">Delivery</label>
+                        <select v-model="editOverrides[l.id].gx_delivery" class="input w-full mt-1 py-1 text-xs">
+                          <option value="">Account default (ships)</option>
+                          <option value="ship">Ship only</option>
+                          <option value="pickup">Local pickup only</option>
+                          <option value="both">Ship or local pickup</option>
+                        </select>
+                      </div>
+                      <div>
                         <label class="text-xs text-gray-500">Shipping cost</label>
-                        <input v-model="editOverrides[l.id].gx_shipping_cost" type="number" step="0.01" min="0"
+                        <input v-model="editOverrides[l.id].gx_shipping_cost" :disabled="editOverrides[l.id].gx_delivery === 'pickup'" type="number" step="0.01" min="0"
                           :placeholder="gxAccountDefault(l.marketplaceAccountId, 'gxShippingCost', 'Account default')"
                           class="input w-full mt-1 py-1 text-xs" />
                       </div>
@@ -880,8 +889,17 @@
                     </div>
                     <div class="grid grid-cols-2 gap-2">
                       <div>
+                        <label class="block text-xs font-medium text-gray-400 mb-1">Delivery</label>
+                        <select v-model="publishForm.gx_delivery" class="input w-full py-1.5 text-sm">
+                          <option value="">Account default (ships)</option>
+                          <option value="ship">Ship only</option>
+                          <option value="pickup">Local pickup only</option>
+                          <option value="both">Ship or local pickup</option>
+                        </select>
+                      </div>
+                      <div>
                         <label class="block text-xs font-medium text-gray-400 mb-1">Shipping cost</label>
-                        <input v-model="publishForm.gx_shipping_cost" type="number" step="0.01" min="0"
+                        <input v-model="publishForm.gx_shipping_cost" :disabled="publishForm.gx_delivery === 'pickup'" type="number" step="0.01" min="0"
                           :placeholder="gxAccountDefault(publishForm.accountId, 'gxShippingCost', 'Account default')"
                           class="input w-full py-1.5 text-sm" />
                       </div>
@@ -1963,6 +1981,11 @@ async function saveOverrides(listing) {
   overridesPushMessage.value[listing.id] = null
   try {
     const overrides = buildOverrides(editOverrides.value[listing.id])
+    // Fields that were set before and are now blank are sent as null, which the
+    // server treats as "remove". Omitting them would leave the old value in force.
+    for (const key of Object.keys(listing.listingOverrides || {})) {
+      if (!(key in overrides) && key in OVERRIDE_FORM_KEYS) overrides[key] = null
+    }
     const res = await api.patch(`/listings/${listing.id}/overrides`, { overrides })
 
     if (!res.data?.updateQueued) {
@@ -2025,12 +2048,26 @@ function emptyPublishForm() {
     gx_accepts_offers: '',
     gx_min_offer: '',
     gx_brand: '',
+    gx_delivery: '',
   }
 }
 
 function buildOverrides(form) {
   const result = {}
-  const map = {
+  const map = OVERRIDE_FORM_KEYS
+  for (const [formKey, overrideKey] of Object.entries(map)) {
+    const val = form[formKey]
+    if (val !== '' && val != null) result[overrideKey] = val
+  }
+  return result
+}
+
+/**
+ * Every override the editor manages, form key -> stored key. Only these are
+ * ever cleared on save; a key set some other way (copied from a sibling, or by
+ * an older build) and not shown in the form is left alone.
+ */
+const OVERRIDE_FORM_KEYS = {
     price: 'price',
     title: 'title',
     description: 'description',
@@ -2052,13 +2089,8 @@ function buildOverrides(form) {
     gx_accepts_offers: 'gx_accepts_offers',
     gx_min_offer: 'gx_min_offer',
     gx_brand: 'gx_brand',
+    gx_delivery: 'gx_delivery',
   }
-  for (const [formKey, overrideKey] of Object.entries(map)) {
-    const val = form[formKey]
-    if (val !== '' && val != null) result[overrideKey] = val
-  }
-  return result
-}
 
 function flattenOverrides(listing) {
   const o = listing.listingOverrides || {}
@@ -2084,6 +2116,7 @@ function flattenOverrides(listing) {
     gx_accepts_offers: o.gx_accepts_offers ?? '',
     gx_min_offer: o.gx_min_offer ?? '',
     gx_brand: o.gx_brand ?? '',
+    gx_delivery: o.gx_delivery ?? '',
   }
 }
 

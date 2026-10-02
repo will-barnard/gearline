@@ -21,6 +21,8 @@ import { PermanentMarketplaceError, type PublishListingRequest } from '../types.
  *   gx_min_offer                               auto-reject offers below this
  *   gx_opted_in_to_sales     "true"/"false"    eligible for GX sale events
  *   gx_local_pickup          "true"/"false"    allow local pickup
+ *   gx_delivery  (listing)   ship | pickup | both — overrides the two above;
+ *                            "pickup" lists with shipping OFF, no cost needed
  *   gx_payout_method                           one of GX's payout options
  *   gx_brand                 (listing only)    brand when the product has none
  *
@@ -215,6 +217,36 @@ export function assertPriceAllowed(price: string): void {
   }
 }
 
+// ── Delivery ─────────────────────────────────────────────────────────────────
+
+export interface GxDelivery {
+  shippingAllowed: boolean;
+  localPickupAllowed: boolean;
+}
+
+/**
+ * How the buyer gets the item.
+ *
+ * The per-listing `gx_delivery` override wins: "pickup" for something too big
+ * or fragile to ship (a full Rhodes, say), "ship", or "both". Without it the
+ * listing ships, with local pickup added when the account allows it.
+ */
+export function deliveryFor(
+  request: PublishListingRequest,
+  account: Pick<MarketplaceAccountRow, 'sync_settings'>,
+): GxDelivery {
+  const mode = (setting(request, account, 'gx_delivery') ?? '').toLowerCase();
+
+  if (mode === 'pickup') return { shippingAllowed: false, localPickupAllowed: true };
+  if (mode === 'ship') return { shippingAllowed: true, localPickupAllowed: false };
+  if (mode === 'both') return { shippingAllowed: true, localPickupAllowed: true };
+
+  return {
+    shippingAllowed: true,
+    localPickupAllowed: boolSetting(request, account, 'gx_local_pickup', false),
+  };
+}
+
 // ── Payload ──────────────────────────────────────────────────────────────────
 
 export interface GxRequestOptions {
@@ -251,8 +283,12 @@ export function toGxRequest(
   const images = request.imageUrls.filter((u) => /^https?:\/\//i.test(u)).slice(0, GX_MAX_IMAGES);
   if (images.length === 0) problems.push('at least one image');
 
+  const delivery = deliveryFor(request, account);
+
   const shippingCost = setting(request, account, 'gx_shipping_cost');
-  if (shippingCost === null || !tryParseDecimal(shippingCost)) {
+  // A shipping cost only means something when the item ships. Pickup-only
+  // listings must not be blocked by a missing one.
+  if (delivery.shippingAllowed && (shippingCost === null || !tryParseDecimal(shippingCost))) {
     problems.push('a shipping cost (Gear Exchange account settings, or a gx_shipping_cost override)');
   }
 
@@ -279,9 +315,9 @@ export function toGxRequest(
     // sale is tied back to the right variant without trusting SKUs.
     productId: product.id,
     sku: product.sku,
-    shippingAllowed: true,
-    shippingCost: Number(shippingCost),
-    localPickupAllowed: boolSetting(request, account, 'gx_local_pickup', false),
+    shippingAllowed: delivery.shippingAllowed,
+    ...(delivery.shippingAllowed ? { shippingCost: Number(shippingCost) } : {}),
+    localPickupAllowed: delivery.localPickupAllowed,
     returnPolicyDays: Number(returnDays),
     acceptsOffers: boolSetting(request, account, 'gx_accepts_offers', false),
     optedInToSales: boolSetting(request, account, 'gx_opted_in_to_sales', false),
