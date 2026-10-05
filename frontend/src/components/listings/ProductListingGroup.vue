@@ -87,7 +87,7 @@
           <span class="text-xs text-gray-600">{{ formatDate(l.lastSyncAt) }}</span>
 
           <span
-            v-if="l.lastError"
+            v-if="l.lastError && l.listingStatus !== 'ON_HOLD'"
             class="text-xs text-red-400 truncate max-w-md"
             :title="l.lastError"
           >{{ l.lastError }}</span>
@@ -147,7 +147,7 @@ const summary = computed(() => summarise(props.group))
  * Surfaces one error on the collapsed row. A product whose eBay listing failed
  * must not look healthy just because its Reverb listing is live.
  */
-const firstError = computed(() => props.group.listings.find((l) => l.lastError))
+const firstError = computed(() => props.group.listings.find((l) => l.lastError && l.listingStatus !== 'ON_HOLD'))
 
 function chipClass(status) {
   const base = 'inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium border'

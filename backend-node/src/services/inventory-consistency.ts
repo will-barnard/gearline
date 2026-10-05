@@ -133,7 +133,11 @@ async function holdOrReleaseReviewListings(
 
   const toggled = await trx
     .updateTable('marketplace_listings')
-    .set({ listing_status: targetStatus, updated_at: new Date() })
+    .set({
+      listing_status: targetStatus,
+      ...(targetStatus === 'ON_HOLD' ? { last_error: null } : {}),
+      updated_at: new Date(),
+    })
     .where('product_id', '=', product.id)
     .where('listing_status', '=', currentStatus)
     .returning('id')

@@ -148,7 +148,7 @@
                 </div>
 
                 <!-- Failed -->
-                <div v-if="l.lastError" class="mt-1.5 text-xs text-red-400 break-words" :title="l.lastError">{{ l.lastError }}</div>
+                <div v-if="l.lastError && l.listingStatus !== 'ON_HOLD'" class="mt-1.5 text-xs text-red-400 break-words" :title="l.lastError">{{ l.lastError }}</div>
 
                 <!-- Taken down -->
                 <div v-if="l.listingStatus === 'DELISTED' || l.listingStatus === 'INACTIVE'" class="mt-1.5 text-xs text-gray-500">

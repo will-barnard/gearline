@@ -1199,7 +1199,13 @@ export async function upsertReviewListings(product: ProductRow): Promise<void> {
 
         await db
           .updateTable('marketplace_listings')
-          .set({ listing_status: targetReviewStatus, updated_at: new Date() })
+          .set({
+            listing_status: targetReviewStatus,
+            // A held listing can't be published, so any error left from an earlier
+            // attempt (e.g. Reverb's "inventory cannot be 0") is stale.
+            ...(targetReviewStatus === 'ON_HOLD' ? { last_error: null } : {}),
+            updated_at: new Date(),
+          })
           .where('id', '=', existing.id)
           .execute();
 
@@ -1218,6 +1224,7 @@ export async function upsertReviewListings(product: ProductRow): Promise<void> {
         .set({
           listing_status: targetReviewStatus,
           external_listing_id: null,
+          last_error: null,
           updated_at: new Date(),
         })
         .where('id', '=', existing.id)
