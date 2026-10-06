@@ -94,6 +94,20 @@ function extractPrice(dto: ReverbListingDto): string {
   return '0';
 }
 
+/**
+ * The listing's state slug. Reverb returns `state` as `{ slug, description }`
+ * even though ReverbListingDto types it as a string, so accept either.
+ */
+function reverbStateSlug(dto: ReverbListingDto): string | null {
+  const state: unknown = dto.state;
+  if (typeof state === 'string') return state.toLowerCase();
+  if (state && typeof state === 'object') {
+    const slug = (state as { slug?: unknown }).slug;
+    if (typeof slug === 'string') return slug.toLowerCase();
+  }
+  return null;
+}
+
 function buildMetadata(dto: ReverbListingDto): Record<string, unknown> {
   const metadata: Record<string, unknown> = {
     reverb_id: dto.id ?? null,
@@ -259,10 +273,31 @@ async function adoptExistingListing(
       }),
     );
   } catch (updateErr) {
-    // The ID is still worth keeping even if the update failed — without it
-    // gearline can never reach this listing again.
     if (updateErr instanceof PermanentMarketplaceError) {
       log.error({ err: updateErr, reverbId: existing.id }, 'Adopted listing but could not update it');
+
+      /**
+       * The listing is already LIVE on Reverb and matched by exact SKU, so the
+       * failed update only means its fields were not refreshed. Reporting that
+       * as a failed publish leaves a live listing with no ID in gearline: a sale
+       * elsewhere could never end it, so it would sell with no stock behind it.
+       * Track it, and keep the reason in metadata and the logs.
+       *
+       * Only for a live listing. A draft or ended one is not selling anything, so
+       * the failure stays a failure and nothing is marked ACTIVE that is not.
+       */
+      if (reverbStateSlug(existing) === 'live') {
+        log.warn(
+          { reverbId: existing.id, sku: product.sku },
+          'Adopting live Reverb listing despite failed update',
+        );
+        const metadata = buildMetadata(existing);
+        metadata['adopted_existing'] = true;
+        metadata['adopt_update_error'] = updateErr.message.slice(0, 500);
+        // Quantity is null: the update that would have synced it did not apply.
+        return publishSuccess(String(existing.id), extractPrice(existing), null, metadata);
+      }
+
       return publishFailure(
         `Adopted the existing Reverb listing ${existing.id}, but updating it failed: ${updateErr.message}`,
       );
