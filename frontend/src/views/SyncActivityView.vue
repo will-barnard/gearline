@@ -45,18 +45,24 @@
                 <span v-else class="text-gray-600">—</span>
               </td>
               <td class="px-4 py-3">
-                <span :class="statusBadge(job.status)">{{ job.status }}</span>
+                <span :class="job.resolved ? 'badge-gray' : statusBadge(job.status)">{{ job.status }}</span>
               </td>
               <td class="px-4 py-3 text-center text-xs text-gray-400">{{ job.retryCount }}/{{ job.maxRetries }}</td>
               <td class="px-4 py-3 text-xs text-gray-500">{{ formatDate(job.createdAt) }}</td>
               <td class="px-4 py-3 max-w-xs">
-                <span v-if="job.failureReason" class="text-xs text-red-400 truncate block" :title="job.failureReason">
+                <span
+                  v-if="job.failureReason"
+                  :class="job.resolved ? 'text-gray-500' : 'text-red-400'"
+                  class="text-xs truncate block"
+                  :title="job.failureReason"
+                >
                   {{ job.failureReason }}
                 </span>
+                <span v-if="job.resolved" class="text-xs text-green-500">Resolved — a later run succeeded</span>
               </td>
               <td class="px-4 py-3 text-right">
                 <button
-                  v-if="['FAILED','DEAD_LETTERED'].includes(job.status)"
+                  v-if="['FAILED','DEAD_LETTERED'].includes(job.status) && !job.resolved"
                   @click="replayJob(job.id)"
                   class="text-xs text-brand-400 hover:text-brand-300"
                 >

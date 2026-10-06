@@ -9,6 +9,7 @@ import { asyncHandler, ResourceNotFoundError } from '../http/errors.js';
 import { currentUser, requireRole } from '../security/auth-middleware.js';
 import { enqueue } from '../queue/sync-job-producer.js';
 import * as audit from '../services/audit.js';
+import { isResolvedFailure } from '../services/sync-job-resolution.js';
 
 /** Port of SyncJobController. Mounted at /api/v1/sync. */
 export const syncRouter: Router = Router();
@@ -33,7 +34,10 @@ syncRouter.get(
     const status = req.query.status as SyncJobStatus | undefined;
     const filterStatus = status && SYNC_STATUSES.includes(status) ? status : null;
 
-    let listQuery = db.selectFrom('sync_jobs').selectAll();
+    let listQuery = db
+      .selectFrom('sync_jobs')
+      .selectAll()
+      .select(isResolvedFailure('sync_jobs').as('resolved'));
     let countQuery = db.selectFrom('sync_jobs').select((eb) => eb.fn.countAll<string>().as('count'));
 
     if (filterStatus) {
@@ -47,7 +51,14 @@ syncRouter.get(
     ]);
 
     const total = Number.parseInt(countRow?.count ?? '0', 10);
-    res.json(toPage(rows.map(toSyncJobDto), total, page, size));
+    res.json(
+      toPage(
+        rows.map((r) => ({ ...toSyncJobDto(r), resolved: Boolean(r.resolved) })),
+        total,
+        page,
+        size,
+      ),
+    );
   }),
 );
 

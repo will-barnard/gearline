@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import { z } from 'zod';
 
+import { sql } from 'kysely';
+
 import { db } from '../db/index.js';
 import { parsePageRequest, toPage } from '../db/page.js';
 import type { AuditEventType, MarketplaceType, UserRole } from '../db/types.js';
@@ -8,6 +10,7 @@ import { toAuditEventDto, toUserDto } from '../dto/mappers.js';
 import { asyncHandler, ResourceNotFoundError } from '../http/errors.js';
 import { requireRole } from '../security/auth-middleware.js';
 import { hashPassword } from '../security/password.js';
+import { isResolvedFailure } from '../services/sync-job-resolution.js';
 
 const uuidSchema = z.string().uuid('must be a valid UUID');
 
@@ -191,6 +194,9 @@ dashboardRouter.get(
         .selectFrom('sync_jobs')
         .select(['status', (eb) => eb.fn.countAll<string>().as('count')])
         .where('status', 'in', ['FAILED', 'IN_PROGRESS'])
+        // A FAILED job that a later run has since completed (e.g. after a Replay)
+        // is history, not a live problem — don't count it.
+        .where(sql<boolean>`NOT ${isResolvedFailure('sync_jobs')}`)
         .groupBy('status')
         .execute(),
 
