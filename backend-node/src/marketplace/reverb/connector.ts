@@ -271,7 +271,7 @@ async function adoptExistingListing(
   metadata['adopted_existing'] = true;
 
   return publishSuccess(
-    result.id ?? existing.id,
+    String(result.id ?? existing.id),
     extractPrice(result),
     request.quantity,
     metadata,
@@ -351,7 +351,7 @@ export const reverbConnector: MarketplaceConnector = {
       log.info({ reverbId: result.id, sku: product.sku }, 'Published Reverb listing');
 
       return publishSuccess(
-        result.id,
+        String(result.id),
         extractPrice(result),
         request.quantity,
         buildMetadata(result),
@@ -413,7 +413,7 @@ export const reverbConnector: MarketplaceConnector = {
       return publishSuccess(
         // Reverb may omit the id on an update response; fall back to the one we
         // already hold rather than nulling a valid external ID.
-        result.id ?? externalId,
+        String(result.id ?? externalId),
         extractPrice(result),
         request.quantity,
         buildMetadata(result),

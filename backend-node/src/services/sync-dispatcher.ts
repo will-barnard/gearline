@@ -191,10 +191,11 @@ async function updateListing(job: SyncJobRow): Promise<void> {
      * again. Metadata is MERGED (jsonb ||), so keys only set at publish time
      * survive an update that does not return them.
      */
-    const externalId =
-      result.externalListingId && result.externalListingId.trim() !== ''
-        ? result.externalListingId
-        : listing.external_listing_id;
+    // String() first: a connector can hand back a numeric id at runtime (Reverb
+    // does) and .trim() on a number throws, failing the whole job after the
+    // marketplace call already succeeded.
+    const returnedId = result.externalListingId == null ? '' : String(result.externalListingId).trim();
+    const externalId = returnedId !== '' ? returnedId : listing.external_listing_id;
 
     await db
       .updateTable('marketplace_listings')
