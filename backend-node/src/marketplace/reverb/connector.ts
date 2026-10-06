@@ -253,6 +253,9 @@ async function adoptExistingListing(
         categoryUuid: await categoryUuidFor(account, product, request),
         // No publish on an adoption. If the operator had deliberately ended
         // or drafted this listing, silently reviving it is not our call.
+        // No photos either: the listing already has its own, and Reverb adds
+        // to them rather than replacing.
+        includePhotos: false,
       }),
     );
   } catch (updateErr) {
@@ -394,10 +397,11 @@ export const reverbConnector: MarketplaceConnector = {
 
     try {
       // No `publish` on update — see ReverbRequestOptions. An update must not
-      // change listing state.
+      // change listing state. No `photos` either: Reverb appends them.
       body = toReverbRequest(product, request, {
         conditionUuid: await conditionUuidFor(current, product, request),
         categoryUuid: await categoryUuidFor(current, product, request),
+        includePhotos: false,
       });
     } catch (err) {
       if (err instanceof PermanentMarketplaceError) {

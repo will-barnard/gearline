@@ -210,6 +210,24 @@ describe('ReverbListingMapper — required fields', () => {
     expect(body['photos']).toEqual(['https://a.jpg', 'https://b.jpg']);
   });
 
+  it('caps photos at 25 on create', () => {
+    const urls = Array.from({ length: 30 }, (_, i) => `https://img/${i}.jpg`);
+    const photos = listingBody(product(), request({ imageUrls: urls }))['photos'] as string[];
+    expect(photos).toHaveLength(25);
+    expect(photos[0]).toBe('https://img/0.jpg');
+  });
+
+  it('omits photos when includePhotos is false (updates and adoptions)', () => {
+    // Reverb appends PUT photos to the listing's existing ones, so re-sending
+    // them on every sync stacks duplicates past the 25-photo limit.
+    const body = toReverbRequest(product(), request({ imageUrls: ['https://a.jpg'] }), {
+      conditionUuid: TEST_CONDITION_UUID,
+      categoryUuid: TEST_CATEGORY_UUID,
+      includePhotos: false,
+    });
+    expect(body).not.toHaveProperty('photos');
+  });
+
   it('omits photos entirely when there are none', () => {
     expect(listingBody(product(), request({ imageUrls: [] }))).not.toHaveProperty('photos');
   });

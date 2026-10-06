@@ -104,7 +104,22 @@ export interface ReverbRequestOptions {
    * ended — turning an inventory sync into a relist.
    */
   publish?: boolean;
+  /**
+   * Send `photos`. Defaults to true; the connector passes false on UPDATE and on
+   * adopting an existing listing.
+   *
+   * Reverb ADDS the URLs in a PUT's `photos` to the listing's existing photos —
+   * it does not replace them (removal is a separate DELETE per image, and
+   * reordering needs photo_upload_method=override_position with Reverb's own
+   * URLs). Re-sending the full list on every inventory/price sync therefore
+   * stacks duplicates until Reverb rejects the listing with "You cannot have
+   * more than 25 images".
+   */
+  includePhotos?: boolean;
 }
+
+/** Reverb refuses to publish a listing with more than this many photos. */
+export const REVERB_MAX_PHOTOS = 25;
 
 export function toReverbRequest(
   product: ProductRow,
@@ -210,8 +225,8 @@ export function toReverbRequest(
 
   // A plain array of URL strings — NOT [{ source: url }]. The object form is
   // accepted by the API and then silently produces a listing with no photos.
-  if (request.imageUrls.length > 0) {
-    listing['photos'] = [...request.imageUrls];
+  if (options.includePhotos !== false && request.imageUrls.length > 0) {
+    listing['photos'] = request.imageUrls.slice(0, REVERB_MAX_PHOTOS);
   }
 
   // ── Category ───────────────────────────────────────────────────────────────
