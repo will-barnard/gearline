@@ -671,7 +671,7 @@
               <div><dt class="text-xs text-gray-500">Category</dt><dd class="mt-1 text-sm text-gray-200">{{ product.category || '—' }}</dd></div>
               <div><dt class="text-xs text-gray-500">Condition</dt><dd class="mt-1"><span class="badge-gray">{{ product.condition }}</span></dd></div>
               <div><dt class="text-xs text-gray-500">Price</dt><dd class="mt-1 text-lg font-bold text-white">${{ product.price }}</dd></div>
-              <div><dt class="text-xs text-gray-500">Quantity</dt><dd class="mt-1 text-lg font-bold" :class="product.quantity === 0 ? 'text-red-400' : 'text-white'">{{ product.quantity }}</dd></div>
+              <div><dt class="text-xs text-gray-500">Quantity</dt><dd class="mt-1 text-lg font-bold" :class="product.quantity === 0 && !product.specialOrder ? 'text-red-400' : 'text-white'">{{ product.quantity }}<span v-if="product.specialOrder" class="badge-gray ml-2 align-middle" :title="`Special order: no stock, but listed on marketplaces at ${product.specialOrderQuantity}`">special order</span></dd></div>
               <div v-if="product.serialNumber"><dt class="text-xs text-gray-500">Serial Number</dt><dd class="mt-1 font-mono text-sm text-gray-200">{{ product.serialNumber }}</dd></div>
               <div v-if="product.shopifyProductId"><dt class="text-xs text-gray-500">Shopify ID</dt><dd class="mt-1 font-mono text-xs text-gray-400">{{ product.shopifyProductId }}</dd></div>
             </dl>

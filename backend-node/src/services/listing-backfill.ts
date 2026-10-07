@@ -17,7 +17,7 @@ const PAGE_SIZE = 100;
  * happened to fire for each one — which for a static catalogue could be never.
  *
  * Eligibility matches ProductRepository.findAvailableForListing exactly:
- *   status = ACTIVE AND quantity > 0 AND marketplace_excluded = false
+ *   status = ACTIVE AND (quantity > 0 OR special order) AND marketplace_excluded = false
  * plus the per-marketplace rules in marketplace-eligibility.ts (a product
  * excluded from this marketplace type, or whose product type this account
  * excludes, gets no stub).
@@ -42,7 +42,10 @@ export async function backfillListingsForNewAccount(
       .selectFrom('products')
       .select(['id', 'category', 'marketplace_excluded', 'excluded_marketplaces'])
       .where('status', '=', 'ACTIVE')
-      .where('quantity', '>', 0)
+      // A special-order product has no stock but is sellable (channelQuantity()).
+      .where((eb) =>
+        eb.or([eb('quantity', '>', 0), eb('special_order_quantity', 'is not', null)]),
+      )
       .where('marketplace_excluded', '=', false)
       // Stable ordering so paging cannot skip or repeat rows if the catalogue
       // changes mid-backfill.

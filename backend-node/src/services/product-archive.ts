@@ -3,6 +3,7 @@ import type { MarketplaceListingRow, ProductRow } from '../db/types.js';
 import { ConflictError, ResourceNotFoundError } from '../http/errors.js';
 import { loggerFor } from '../logger.js';
 import { enqueue } from '../queue/sync-job-producer.js';
+import { channelQuantity } from './special-order.js';
 import * as shopify from '../marketplace/shopify/client.js';
 import { upsertReviewListings } from '../marketplace/shopify/webhook-processor.js';
 
@@ -136,7 +137,7 @@ export async function unarchiveProduct(productId: string): Promise<UnarchiveResu
 
   if (updated.marketplace_excluded) {
     warnings.push('This product is excluded from all marketplaces, so no listings were restored.');
-  } else if (updated.quantity <= 0) {
+  } else if (channelQuantity(updated) <= 0) {
     warnings.push('Quantity is 0 — listings are on hold until stock is back.');
   }
 

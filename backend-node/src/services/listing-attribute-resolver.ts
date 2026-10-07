@@ -2,6 +2,7 @@ import type { MarketplaceAccountRow, MarketplaceListingRow, ProductRow } from '.
 import { loggerFor } from '../logger.js';
 import type { PublishListingRequest } from '../marketplace/types.js';
 import { resolveShipping } from './shipping-calculator.js';
+import { channelQuantity } from './special-order.js';
 
 const log = loggerFor('listing-attribute-resolver');
 
@@ -178,7 +179,7 @@ export function resolve(
     titleOverride: getString(overrides, 'title'),
     descriptionOverride: resolveDescription(overrides, product, account),
     priceOverride: getDecimalString(overrides, 'price'),
-    quantity: product.quantity,
+    quantity: channelQuantity(product),
     imageUrls: resolveImageUrls(overrides, product),
     categoryId: getString(overrides, 'category_id'),
     conditionMapping: getString(overrides, 'condition_mapping'),

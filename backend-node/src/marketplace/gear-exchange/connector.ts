@@ -2,6 +2,7 @@ import { db } from '../../db/index.js';
 import type { MarketplaceAccountRow, MarketplaceListingRow, ProductRow } from '../../db/types.js';
 import { loggerFor } from '../../logger.js';
 import { enqueue } from '../../queue/sync-job-producer.js';
+import { channelQuantity } from '../../services/special-order.js';
 import {
   healthy,
   inventoryFailure,
@@ -401,7 +402,7 @@ export const gearExchangeConnector: MarketplaceConnector = {
        * replace its external ID.
        */
       if (statusOf(current) === 'sold') {
-        if (product.quantity > 0) await enqueueRelist(existingListing, gxId);
+        if (channelQuantity(product) > 0) await enqueueRelist(existingListing, gxId);
         return publishSuccess(gxId, current.price ?? null, 0, buildMetadata(current, {
           gx_previous_listing_ids: previousIds(existingListing),
         }));

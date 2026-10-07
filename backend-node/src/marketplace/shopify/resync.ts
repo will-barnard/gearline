@@ -5,6 +5,7 @@ import type { MarketplaceAccountRow, ProductRow } from '../../db/types.js';
 import { loggerFor } from '../../logger.js';
 import * as client from './client.js';
 import { shopifyWeightToKg } from './weight.js';
+import { specialOrderQuantityFor } from '../../services/special-order.js';
 import { titleTemplateFor, variantTitle } from './webhook-processor.js';
 
 const log = loggerFor('shopify-resync');
@@ -176,6 +177,14 @@ export async function resync(productId: string): Promise<ResyncResult> {
   );
 
   const patch = extractResyncFields(shopifyProduct, product.shopify_variant_id, titleTemplate);
+
+  // Same rule as the webhook path, so a manual resync cannot disagree with it.
+  if ('tags' in shopifyProduct) {
+    patch['special_order_quantity'] = specialOrderQuantityFor(
+      str(shopifyProduct, 'tags'),
+      account.sync_settings ?? null,
+    );
+  }
 
   // Weight lives on the Shopify inventory item, not in the product payload.
   // Best-effort like metafields: a failure keeps the existing weight.

@@ -6,6 +6,7 @@ import { getConnector } from '../marketplace/registry.js';
 import type { PublishListingRequest } from '../marketplace/types.js';
 import { applyPercentageAdjustment } from '../util/decimal.js';
 import { resolve } from './listing-attribute-resolver.js';
+import { channelQuantity } from './special-order.js';
 import { importOrder } from './order-import.js';
 
 const log = loggerFor('sync-dispatcher');
@@ -245,7 +246,7 @@ async function syncInventory(job: SyncJobRow): Promise<void> {
   ]);
   const connector = getConnector(account.marketplace_type);
 
-  const result = await connector.syncInventory(account, listing, product.quantity);
+  const result = await connector.syncInventory(account, listing, channelQuantity(product));
 
   if (result.success) {
     await db

@@ -259,6 +259,13 @@ export interface ProductsTable {
    * services/marketplace-eligibility.ts for the one place both are evaluated.
    */
   excluded_marketplaces: ColumnType<MarketplaceType[], MarketplaceType[] | undefined, MarketplaceType[]>;
+  /**
+   * V22. NULL for ordinary products. For a special-order product (tagged in
+   * Shopify), the quantity shown on marketplaces while real stock is 0. Never
+   * read this directly to decide whether something is sellable — go through
+   * services/special-order.ts channelQuantity().
+   */
+  special_order_quantity: ColumnType<number | null, number | null | undefined, number | null>;
 }
 
 export interface MarketplaceAccountsTable {

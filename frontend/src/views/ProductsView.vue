@@ -170,8 +170,16 @@
                   <span class="badge-gray">{{ p.condition }}</span>
                 </td>
                 <td class="px-4 py-3 text-right font-medium text-gray-200">${{ p.price }}</td>
-                <td class="px-4 py-3 text-right font-medium" :class="p.quantity === 0 ? 'text-red-400' : 'text-gray-200'">
+                <td
+                  class="px-4 py-3 text-right font-medium"
+                  :class="p.quantity === 0 && !p.specialOrder ? 'text-red-400' : 'text-gray-200'"
+                >
                   {{ p.quantity }}
+                  <span
+                    v-if="p.specialOrder"
+                    class="badge-gray ml-1"
+                    :title="`Special order: no stock, but listed on marketplaces at ${p.specialOrderQuantity}`"
+                  >special order</span>
                 </td>
                 <td class="px-4 py-3">
                   <!-- On the excluded tab we just show EXCLUDED prominently instead of status -->

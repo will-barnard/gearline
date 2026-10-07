@@ -10,6 +10,7 @@ import { loggerFor } from '../../logger.js';
 import { notifyMarketplace } from '../../services/fulfillment-notification.js';
 import { checkEligibility } from '../../services/marketplace-eligibility.js';
 import { propagateInventoryChange } from '../../services/inventory-consistency.js';
+import { channelQuantity, specialOrderQuantityFor } from '../../services/special-order.js';
 import { enqueue } from '../../queue/sync-job-producer.js';
 import { divideHalfUp, decimalToString } from '../../util/decimal.js';
 import * as client from './client.js';
@@ -432,6 +433,28 @@ async function processProductUpdate(shopDomain: string, payload: Json): Promise<
     }
 
     /**
+     * The special-order tag was added or removed on a product with no stock.
+     * Nothing else fires for that: no inventory event arrives, and the row's
+     * quantity is unchanged. Removing the tag leaves a live listing sitting at
+     * the special-order quantity with nothing to take it down, so run the normal
+     * propagation, which now sees the new rule — delisting at 0, or topping the
+     * listing up to the special-order quantity. Only when stock is 0: with stock,
+     * the marketplace quantity is the real stock either way.
+     */
+    const before = existingRows.find((row) => row.id === product.id);
+    if (
+      before &&
+      product.quantity <= 0 &&
+      (before.special_order_quantity == null) !== (product.special_order_quantity == null)
+    ) {
+      log.info(
+        { sku: product.sku, specialOrder: product.special_order_quantity != null },
+        'Special-order tag changed on a product with no stock — re-propagating',
+      );
+      await propagateInventoryChange(product.id, product.quantity);
+    }
+
+    /**
      * Push changes to listings that are already live. Shopify is the source of
      * truth, so a price or title change there should cascade without review.
      *
@@ -672,6 +695,17 @@ async function upsertVariantsFromPayload(
     str(payload, 'product_type'),
   );
 
+  /**
+   * Special order is a property of the Shopify product (its tag), so like the
+   * title template it is worked out once and applies to every variant. Only
+   * written when the payload actually carries tags: a payload without the key
+   * says nothing, whereas an empty string means the tag was removed.
+   */
+  const specialOrderQty =
+    'tags' in payload
+      ? specialOrderQuantityFor(str(payload, 'tags'), shopifyAccount?.sync_settings ?? null)
+      : undefined;
+
   const saved: ProductRow[] = [];
 
   for (const [index, variant] of variants.entries()) {
@@ -684,6 +718,7 @@ async function upsertVariantsFromPayload(
 
     const existing = byVariantId.get(variantId) ?? (index === 0 ? unkeyed[0] : undefined);
     const fields = extractVariantFields(payload, variant, productTitle, titleTemplate);
+    if (specialOrderQty !== undefined) fields.special_order_quantity = specialOrderQty;
 
     let row: ProductRow | undefined;
 
@@ -724,6 +759,7 @@ async function upsertVariantsFromPayload(
           brand: fields.brand ?? null,
           category: fields.category ?? null,
           weight_kg: fields.weight_kg ?? null,
+          special_order_quantity: fields.special_order_quantity ?? null,
         })
         /**
          * ── The guard on this conflict clause is load-bearing ────────────────
@@ -832,6 +868,8 @@ interface ProductFieldPatch {
   weight_kg?: string;
   shopify_inventory_item_id?: string;
   image_urls?: ReturnType<typeof toJson>;
+  /** null means "explicitly not special order"; absent leaves the column alone. */
+  special_order_quantity?: number | null;
 }
 
 /**
@@ -1150,7 +1188,9 @@ const REVIEW_STATUSES: ListingStatus[] = ['NEEDS_REVIEW', 'ON_HOLD'];
  * a listing that no longer exists.
  */
 export async function upsertReviewListings(product: ProductRow): Promise<void> {
-  const targetReviewStatus: ListingStatus = product.quantity > 0 ? 'NEEDS_REVIEW' : 'ON_HOLD';
+  // channelQuantity, not quantity: a special-order product with no stock is
+  // still sellable, so its stubs stay publishable instead of going on hold.
+  const targetReviewStatus: ListingStatus = channelQuantity(product) > 0 ? 'NEEDS_REVIEW' : 'ON_HOLD';
 
   const accounts = await db
     .selectFrom('marketplace_accounts')

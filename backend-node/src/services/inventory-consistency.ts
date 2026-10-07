@@ -6,6 +6,7 @@ import { OptimisticLockError } from '../http/errors.js';
 import { loggerFor } from '../logger.js';
 import type { ImportedOrder } from '../marketplace/types.js';
 import { enqueue } from '../queue/sync-job-producer.js';
+import { channelQuantity } from './special-order.js';
 
 const log = loggerFor('inventory-consistency');
 
@@ -27,6 +28,14 @@ const log = loggerFor('inventory-consistency');
  * holdOrReleaseReviewListings below — so a variant with no stock never shows
  * up as "ready to publish" on the dashboard, and comes back on its own once
  * a Shopify sync reports quantity again.
+ *
+ * ── Special-order products ───────────────────────────────────────────────────
+ *
+ * "Zero" below means channelQuantity(product) === 0, not quantity === 0. A
+ * special-order product (see special-order.ts) at Shopify stock 0 still has a
+ * marketplace quantity, so it is neither delisted nor held: it gets an
+ * INVENTORY_SYNC to that quantity instead, which is also what tops a listing
+ * back up after a marketplace sale.
  *
  * ── Shopify is always skipped ────────────────────────────────────────────────
  *
@@ -107,8 +116,8 @@ async function attemptPropagate(productId: string, newQuantity: number): Promise
       'Propagating inventory change',
     );
 
-    await fanOutInventoryJobs(trx, updated, newQuantity);
-    await holdOrReleaseReviewListings(trx, updated, newQuantity);
+    await fanOutInventoryJobs(trx, updated);
+    await holdOrReleaseReviewListings(trx, updated);
   });
 }
 
@@ -123,12 +132,8 @@ async function attemptPropagate(productId: string, newQuantity: number): Promise
  * job, and PENDING/PUBLISHING/SOLD/terminal listings are left alone here, same
  * as everywhere else in this file.
  */
-async function holdOrReleaseReviewListings(
-  trx: Trx,
-  product: ProductRow,
-  newQuantity: number,
-): Promise<void> {
-  const targetStatus: ListingStatus = newQuantity > 0 ? 'NEEDS_REVIEW' : 'ON_HOLD';
+async function holdOrReleaseReviewListings(trx: Trx, product: ProductRow): Promise<void> {
+  const targetStatus: ListingStatus = channelQuantity(product) > 0 ? 'NEEDS_REVIEW' : 'ON_HOLD';
   const currentStatus: ListingStatus = targetStatus === 'NEEDS_REVIEW' ? 'ON_HOLD' : 'NEEDS_REVIEW';
 
   const toggled = await trx
@@ -168,11 +173,11 @@ async function holdOrReleaseReviewListings(
  * and it only works because the UPDATE above increments version exactly once
  * per real change.
  */
-async function fanOutInventoryJobs(
-  trx: Trx,
-  product: ProductRow,
-  newQuantity: number,
-): Promise<void> {
+async function fanOutInventoryJobs(trx: Trx, product: ProductRow): Promise<void> {
+  // What the marketplaces should hold. Equals the stored quantity except for a
+  // special-order product at 0, which is listed at its special-order quantity.
+  const newQuantity = channelQuantity(product);
+
   const activeListings = await trx
     .selectFrom('marketplace_listings')
     .selectAll()

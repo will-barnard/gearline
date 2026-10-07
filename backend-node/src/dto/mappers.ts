@@ -70,6 +70,10 @@ export function toProductDto(p: ProductRow) {
     // Primitive boolean in Java — always present even when false, so it must
     // survive stripNulls. false is not null, so it does.
     marketplaceExcluded: p.marketplace_excluded,
+    // Real Shopify stock stays in `quantity`; this is what marketplaces are
+    // shown while it is 0. Both are absent for ordinary products.
+    specialOrder: p.special_order_quantity != null,
+    specialOrderQuantity: p.special_order_quantity,
     // Always an array, never null — the product screen iterates it unguarded.
     excludedMarketplaces: p.excluded_marketplaces ?? [],
     shopifyProductId: p.shopify_product_id,
