@@ -3,7 +3,7 @@ import type { MarketplaceAccountRow } from '../../db/types.js';
 import { loggerFor } from '../../logger.js';
 import { readCredentials } from '../../security/credential-encryptor.js';
 import { apiRequest, isNotFound } from '../http.js';
-import { PermanentMarketplaceError } from '../types.js';
+import { PermanentMarketplaceError, RetryableMarketplaceError } from '../types.js';
 import type {
   ReverbCategoriesResponse,
   ReverbMyListingsResponse,
@@ -145,13 +145,35 @@ export async function endListing(
   account: MarketplaceAccountRow,
   listingId: string,
 ): Promise<void> {
+  const token = getAccessToken(account);
+
+  /**
+   * Already sold or ended (or never live)? Then there is nothing to take down,
+   * and no offers worth declining. Without this a listing that SOLD on Reverb
+   * itself would have its end request refused and retried for a day.
+   * If the read fails, carry on and attempt the end anyway.
+   */
+  const before = await readListingState(token, listingId);
+  if (before !== null && before !== 'live') {
+    log.info({ listingId, state: before }, 'Reverb listing is not live — nothing to end');
+    return;
+  }
+
+  // Reverb refuses to end a listing that has an open offer, so the item must
+  // be freed of them first. Best-effort: see declineOpenOffers.
+  await declineOpenOffers(token, listingId);
+
   try {
     await apiRequest({
       marketplace: 'Reverb',
       method: 'PUT',
       url: url(`/listings/${encodeURIComponent(listingId)}/state/end`),
-      accessToken: getAccessToken(account),
+      accessToken: token,
       headers: baseHeaders(),
+      // Reverb's end endpoint takes a `reason`: `not_sold` (the item went
+      // elsewhere — this is always our case) or `reverb_sale`, which means a sale
+      // made off-platform and bills a selling fee. Never send the latter.
+      json: { reason: 'not_sold' },
     });
   } catch (err) {
     if (isNotFound(err)) {
@@ -160,6 +182,204 @@ export async function endListing(
     }
     throw err;
   }
+
+  /**
+   * ── Read back ────────────────────────────────────────────────────────────────
+   *
+   * A 2xx from the end call is not proof the listing came down. Reverb will not
+   * end a listing that has an open offer or a pending order, and gearline once
+   * recorded such a delist as COMPLETED while the sold item stayed live. The
+   * only reliable check is to ask Reverb what state the listing is in now.
+   *
+   * Still live is thrown as RETRYABLE: an offer expires, and the delist ladder
+   * keeps trying (see DELIST_MAX_RETRIES). If the read itself fails, the end
+   * call already succeeded, so that is logged rather than failing the job.
+   */
+  const state = await readListingState(token, listingId);
+
+  if (state === null) {
+    log.warn({ listingId }, 'Ended Reverb listing but could not read it back to verify');
+    return;
+  }
+
+  if (state === 'live') {
+    throw new RetryableMarketplaceError(
+      `Reverb accepted the request to end listing ${listingId}, but it is still live. ` +
+        'Reverb will not end a listing with an open offer or a pending order — ' +
+        'decline the offer or finish the order on Reverb. Gearline will keep retrying.',
+    );
+  }
+
+  log.info({ listingId, state }, 'Reverb listing end verified');
+}
+
+/** The listing's current state slug, or null if it could not be read. */
+async function readListingState(token: string, listingId: string): Promise<string | null> {
+  try {
+    const response = await apiRequest<ReverbListingDto>({
+      marketplace: 'Reverb',
+      method: 'GET',
+      url: url(`/listings/${encodeURIComponent(listingId)}`),
+      accessToken: token,
+      headers: baseHeaders(),
+    });
+    return listingStateSlug(unwrapListing(response.body));
+  } catch (err) {
+    log.warn({ err, listingId }, 'Could not read Reverb listing state');
+    return null;
+  }
+}
+
+/** Last path segment of a HAL link, e.g. ".../listings/123" -> "123". */
+function idFromHref(href: unknown): string | null {
+  if (typeof href !== 'string') return null;
+  const last = (href.split('?')[0] ?? '').replace(/\/+$/, '').split('/').pop();
+  return last ? last : null;
+}
+
+type Obj = Record<string, unknown>;
+const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null && !Array.isArray(v);
+
+/**
+ * Pulls the offers out of GET /my/listings/negotiations. The response shape is
+ * not documented, so accept a bare array or the first array-valued property.
+ */
+function extractOffers(body: unknown): Obj[] {
+  if (Array.isArray(body)) return body.filter(isObj);
+  if (!isObj(body)) return [];
+
+  for (const key of ['negotiations', 'offers']) {
+    const value = body[key];
+    if (Array.isArray(value)) return value.filter(isObj);
+  }
+
+  for (const value of Object.values(body)) {
+    if (Array.isArray(value) && value.some(isObj)) return value.filter(isObj);
+  }
+
+  return [];
+}
+
+/** Which listing an offer is on. The field is undocumented, so try the likely spots. */
+function offerListingId(offer: Obj): string | null {
+  const direct = offer['listing_id'] ?? offer['product_id'];
+  if (direct !== undefined && direct !== null && String(direct) !== '') return String(direct);
+
+  const listing = offer['listing'];
+  if (isObj(listing) && listing['id'] !== undefined && listing['id'] !== null) {
+    return String(listing['id']);
+  }
+
+  const links = offer['_links'];
+  if (isObj(links) && isObj(links['listing'])) return idFromHref(links['listing']['href']);
+
+  return null;
+}
+
+function offerId(offer: Obj): string | null {
+  const direct = offer['id'] ?? offer['uuid'];
+  if (direct !== undefined && direct !== null && String(direct) !== '') return String(direct);
+
+  const links = offer['_links'];
+  if (isObj(links) && isObj(links['self'])) return idFromHref(links['self']['href']);
+
+  return null;
+}
+
+const OFFER_PAGE_SIZE = 50;
+const OFFER_MAX_PAGES = 10;
+
+/**
+ * Declines every open offer on a listing, so Reverb will let it be ended.
+ *
+ * Reverb will not end a listing with an open offer. When the item has sold on
+ * another channel those offers can never be honoured, so they are declined.
+ *
+ * BEST EFFORT, by design. It never throws: if offers cannot be read (the token
+ * lacks the read_offers/write_offers scopes until the account is reconnected),
+ * or one will not decline, that is logged and the end is still attempted — and
+ * the read-back after it turns a listing that stayed live into a retried
+ * failure rather than a silent success.
+ *
+ * The offer endpoints are from the Reverb API docs
+ * (https://www.reverb-api.com/docs/offers): GET /my/listings/negotiations lists
+ * active offers, POST /my/negotiations/{id}/decline declines one. The offer
+ * object's shape is not documented, hence the tolerant field lookups above.
+ */
+async function declineOpenOffers(token: string, listingId: string): Promise<void> {
+  const mine: string[] = [];
+  let unmatched = 0;
+
+  try {
+    for (let page = 1; page <= OFFER_MAX_PAGES; page++) {
+      const response = await apiRequest<unknown>({
+        marketplace: 'Reverb',
+        method: 'GET',
+        url: url('/my/listings/negotiations'),
+        query: { page, per_page: OFFER_PAGE_SIZE },
+        accessToken: token,
+        headers: baseHeaders(),
+      });
+
+      const offers = extractOffers(response.body);
+
+      for (const offer of offers) {
+        const forListing = offerListingId(offer);
+        const id = offerId(offer);
+
+        if (forListing === null || id === null) {
+          unmatched++;
+        } else if (forListing === String(listingId)) {
+          mine.push(id);
+        }
+      }
+
+      if (offers.length < OFFER_PAGE_SIZE) break;
+    }
+  } catch (err) {
+    log.warn(
+      { err, listingId },
+      'Could not list Reverb offers — skipping offer decline. If this is a 401/403, ' +
+        'reconnect the Reverb account so it is granted the read_offers and write_offers scopes.',
+    );
+    return;
+  }
+
+  if (unmatched > 0) {
+    log.warn(
+      { listingId, unmatched },
+      'Some Reverb offers could not be matched to a listing — response shape differs from what was expected',
+    );
+  }
+
+  for (const id of mine) {
+    try {
+      await apiRequest({
+        marketplace: 'Reverb',
+        method: 'POST',
+        url: url(`/my/negotiations/${encodeURIComponent(id)}/decline`),
+        accessToken: token,
+        headers: baseHeaders(),
+      });
+      log.info({ listingId, offerId: id }, 'Declined Reverb offer (item no longer available)');
+    } catch (err) {
+      log.warn({ err, listingId, offerId: id }, 'Could not decline Reverb offer');
+    }
+  }
+}
+
+/**
+ * The listing's state slug. Reverb returns `state` as `{ slug, description }`
+ * even though ReverbListingDto types it as a string, so accept either.
+ */
+export function listingStateSlug(dto: ReverbListingDto): string | null {
+  const state: unknown = dto.state;
+  if (typeof state === 'string') return state.toLowerCase();
+  if (state && typeof state === 'object') {
+    const slug = (state as { slug?: unknown }).slug;
+    if (typeof slug === 'string') return slug.toLowerCase();
+  }
+  return null;
 }
 
 /**

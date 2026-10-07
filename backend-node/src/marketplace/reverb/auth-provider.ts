@@ -46,7 +46,9 @@ export const reverbAuthProvider: MarketplaceAuthProvider = {
       client_id: config.reverb.clientId,
       redirect_uri: redirectUri,
       response_type: 'code',
-      scope: 'read_listings write_listings read_orders',
+      // read_offers/write_offers let a delist decline open offers first — Reverb will
+      // not end a listing that has one. Existing connections must be reconnected to get them.
+      scope: 'read_listings write_listings read_orders read_offers write_offers',
       state,
     });
 

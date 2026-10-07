@@ -6,7 +6,7 @@ import { isRetryable } from '../marketplace/types.js';
 import { dispatch, markDelistFailed } from '../services/sync-dispatcher.js';
 import * as audit from '../services/audit.js';
 import { getQueue } from './boss.js';
-import { scheduleRetry, type SyncJobMessage } from './sync-job-producer.js';
+import { DELIST_MAX_RETRIES, scheduleRetry, type SyncJobMessage } from './sync-job-producer.js';
 
 const log = loggerFor('sync-job-consumer');
 
@@ -190,8 +190,12 @@ async function handleFailure(jobId: string, attempt: number, err: unknown): Prom
   // A permanent error skips the ladder entirely. Retrying a payload the
   // marketplace has definitively rejected wastes five attempts and delays the
   // operator seeing the real problem.
-  const retryable = isRetryable(err);
-  const hasAttemptsLeft = job.retry_count < job.max_retries;
+  // A failed delist is retried even on a "permanent" error, and for far longer —
+  // see DELIST_MAX_RETRIES. Dead-lettering a delist leaves a sold item live.
+  const isDelist = job.job_type === 'LISTING_DELIST';
+  const retryable = isDelist || isRetryable(err);
+  const maxRetries = isDelist ? Math.max(job.max_retries, DELIST_MAX_RETRIES) : job.max_retries;
+  const hasAttemptsLeft = job.retry_count < maxRetries;
 
   if (retryable && hasAttemptsLeft) {
     await scheduleRetry(job, failureReason);

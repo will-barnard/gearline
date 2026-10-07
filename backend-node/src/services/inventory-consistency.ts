@@ -180,6 +180,26 @@ async function fanOutInventoryJobs(
     .where('listing_status', '=', 'ACTIVE')
     .execute();
 
+  /**
+   * At zero the item has sold, so every listing that could still be live must
+   * come down — not only the ones we last recorded as ACTIVE. A FAILED listing
+   * that holds a marketplace ID (a failed update after adoption, or a delist
+   * that was dead-lettered earlier) can still be for sale; skipping it is how a
+   * sold item stays up. Ending an already-ended listing is a no-op (404 is
+   * treated as success), so including them is safe.
+   */
+  if (newQuantity === 0) {
+    const failedButTracked = await trx
+      .selectFrom('marketplace_listings')
+      .selectAll()
+      .where('product_id', '=', product.id)
+      .where('listing_status', '=', 'FAILED')
+      .where('external_listing_id', 'is not', null)
+      .execute();
+
+    activeListings.push(...failedButTracked);
+  }
+
   const version = product.version ?? '0';
 
   if (newQuantity === 0) {

@@ -94,20 +94,6 @@ function extractPrice(dto: ReverbListingDto): string {
   return '0';
 }
 
-/**
- * The listing's state slug. Reverb returns `state` as `{ slug, description }`
- * even though ReverbListingDto types it as a string, so accept either.
- */
-function reverbStateSlug(dto: ReverbListingDto): string | null {
-  const state: unknown = dto.state;
-  if (typeof state === 'string') return state.toLowerCase();
-  if (state && typeof state === 'object') {
-    const slug = (state as { slug?: unknown }).slug;
-    if (typeof slug === 'string') return slug.toLowerCase();
-  }
-  return null;
-}
-
 function buildMetadata(dto: ReverbListingDto): Record<string, unknown> {
   const metadata: Record<string, unknown> = {
     reverb_id: dto.id ?? null,
@@ -286,7 +272,7 @@ async function adoptExistingListing(
        * Only for a live listing. A draft or ended one is not selling anything, so
        * the failure stays a failure and nothing is marked ACTIVE that is not.
        */
-      if (reverbStateSlug(existing) === 'live') {
+      if (client.listingStateSlug(existing) === 'live') {
         log.warn(
           { reverbId: existing.id, sku: product.sku },
           'Adopting live Reverb listing despite failed update',

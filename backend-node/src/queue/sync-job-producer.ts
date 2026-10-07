@@ -129,12 +129,16 @@ export async function enqueue(input: EnqueueInput, trx?: Transaction<Database>):
  */
 export async function scheduleRetry(job: SyncJobRow, failureReason: string): Promise<void> {
   const attempt = job.retry_count + 1;
-  const delayMs = calculateBackoffDelay(attempt);
+  const isDelist = job.job_type === 'LISTING_DELIST';
+  const delayMs = isDelist ? DELIST_RETRY_DELAY_MS : calculateBackoffDelay(attempt);
 
   await db
     .updateTable('sync_jobs')
     .set({
       retry_count: attempt,
+      // Delists get a longer ladder than max_retries was created with; see
+      // DELIST_MAX_RETRIES.
+      ...(isDelist ? { max_retries: Math.max(job.max_retries, DELIST_MAX_RETRIES) } : {}),
       next_retry_at: new Date(Date.now() + delayMs),
       status: 'FAILED',
       failure_reason: failureReason,
@@ -173,6 +177,17 @@ export async function publishRetry(job: SyncJobRow): Promise<void> {
 
   log.info({ jobId: job.id, attempt: updated.retry_count }, 'Re-enqueued sync job');
 }
+
+/**
+ * A delist is the one job that must not give up quickly. It runs when an item
+ * has SOLD, and a marketplace can refuse to end a listing for reasons that clear
+ * on their own — Reverb will not end one with an open offer or pending order, and
+ * an offer lives for ~24h. The normal ladder (1s, 2s, 4s, 8s, 16s) is over inside
+ * a minute, so the listing would stay live for sale with nothing left retrying.
+ * Retry every 15 minutes, for about a day.
+ */
+export const DELIST_RETRY_DELAY_MS = 15 * 60_000;
+export const DELIST_MAX_RETRIES = 100;
 
 /** Exponential backoff: initial × 2^(attempt-1), capped at maxRetryDelayMs. */
 export function calculateBackoffDelay(attempt: number): number {
