@@ -14,6 +14,7 @@ import { channelQuantity, specialOrderQuantityFor } from '../../services/special
 import { enqueue } from '../../queue/sync-job-producer.js';
 import { divideHalfUp, decimalToString } from '../../util/decimal.js';
 import * as client from './client.js';
+import { patchIsNoop } from './variant-dimensions.js';
 import { shopifyWeightToKg } from './weight.js';
 
 const log = loggerFor('shopify-webhook-processor');
@@ -807,7 +808,9 @@ async function upsertVariantsFromPayload(
   if (saved.length === 0) return [];
 
   const weighed = await applyInventoryWeights(saved, shopDomain, shopifyProductId);
-  return applyMetafields(weighed, shopDomain, shopifyProductId);
+  const withMetafields = await applyMetafields(weighed, shopDomain, shopifyProductId);
+  // After applyMetafields, so a variant's own dimensions win over the product's.
+  return applyVariantDimensions(withMetafields, shopDomain, shopifyProductId);
 }
 
 /**
@@ -1087,6 +1090,9 @@ async function applyMetafields(
      * two variants genuinely differ in year or finish — per-listing overrides
      * are the escape hatch for that.
      *
+     * Dimensions are the exception: variants can carry their own dim_*
+     * metafields, applied after this by applyVariantDimensions.
+     *
      * Fetched once and applied to all, rather than once per variant.
      */
     const updated = await db
@@ -1104,6 +1110,68 @@ async function applyMetafields(
     return updated.length > 0 ? updated : products;
   } catch (err) {
     log.warn({ err, shopifyProductId }, 'Could not apply metafields');
+    return products;
+  }
+}
+
+/**
+ * Applies variant-level custom.dim_* metafields on top of the product-level
+ * ones (see variant-dimensions.ts for the precedence rule).
+ *
+ * Best-effort, like applyMetafields: any failure logs and returns the rows
+ * unchanged, leaving the product-level dimensions in place.
+ */
+async function applyVariantDimensions(
+  products: ProductRow[],
+  shopDomain: string,
+  shopifyProductId: string,
+): Promise<ProductRow[]> {
+  const variantIds = products
+    .map((p) => p.shopify_variant_id)
+    .filter((id): id is string => !!id);
+
+  if (variantIds.length === 0) return products;
+
+  try {
+    const account = await db
+      .selectFrom('marketplace_accounts')
+      .selectAll()
+      .where('external_account_id', '=', shopDomain)
+      .executeTakeFirst();
+
+    if (!account) return products;
+
+    const byVariant = await client.fetchVariantDimensions(account, variantIds);
+    if (byVariant.size === 0) return products;
+
+    const result: ProductRow[] = [];
+
+    for (const row of products) {
+      const patch = row.shopify_variant_id ? byVariant.get(row.shopify_variant_id) : undefined;
+
+      if (!patch || patchIsNoop(row, patch)) {
+        result.push(row);
+        continue;
+      }
+
+      const updated = await db
+        .updateTable('products')
+        .set({ ...patch, updated_at: new Date() })
+        .where('id', '=', row.id)
+        .returningAll()
+        .executeTakeFirst();
+
+      result.push(updated ?? row);
+    }
+
+    log.debug(
+      { shopifyProductId, variants: byVariant.size },
+      'Applied variant-level dimension metafields',
+    );
+
+    return result;
+  } catch (err) {
+    log.warn({ err, shopifyProductId }, 'Could not apply variant dimension metafields');
     return products;
   }
 }

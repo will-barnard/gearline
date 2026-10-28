@@ -3,6 +3,7 @@ import { loggerFor } from '../../logger.js';
 import { readCredentials } from '../../security/credential-encryptor.js';
 import { apiRequest } from '../http.js';
 import { PermanentMarketplaceError } from '../types.js';
+import { dimensionPatch, type DimensionKey, type DimensionPatch } from './variant-dimensions.js';
 
 const log = loggerFor('shopify-client');
 
@@ -211,6 +212,87 @@ export async function fetchProductMetafields(
     log.warn({ err, shopifyProductId }, 'Could not fetch Shopify metafields — continuing without them');
     return [];
   }
+}
+
+// ── Variant dimension metafields (GraphQL) ───────────────────────────────────
+
+const VARIANT_DIMENSIONS_QUERY = `
+  query VariantDimensions($ids: [ID!]!) {
+    nodes(ids: $ids) {
+      ... on ProductVariant {
+        id
+        dim_length_in: metafield(namespace: "custom", key: "dim_length_in") { value }
+        dim_width_in: metafield(namespace: "custom", key: "dim_width_in") { value }
+        dim_height_in: metafield(namespace: "custom", key: "dim_height_in") { value }
+      }
+    }
+  }
+`;
+
+/**
+ * Fetches the custom.dim_* metafields set on VARIANTS, keyed by the numeric
+ * variant id Gearline stores (`shopify_variant_id`). Variants with no
+ * dimension metafields are absent from the map.
+ *
+ * GraphQL rather than REST `/variants/{id}/metafields.json`, so a product with
+ * 36 variants is one request rather than 36. Aliased single-key lookups keep
+ * the response to exactly the three values we use.
+ *
+ * Best-effort like the product metafield fetch: a failure logs and returns
+ * what was read, so the product-level dimensions stay in place.
+ */
+export async function fetchVariantDimensions(
+  account: MarketplaceAccountRow,
+  variantIds: string[],
+): Promise<Map<string, DimensionPatch>> {
+  const result = new Map<string, DimensionPatch>();
+  const ids = [...new Set(variantIds.filter((id) => /^\d+$/.test(id)))];
+
+  for (let i = 0; i < ids.length; i += MAX_NODES_PER_QUERY) {
+    const batch = ids.slice(i, i + MAX_NODES_PER_QUERY);
+
+    try {
+      const response = await apiRequest<{
+        data?: {
+          nodes?: Array<
+            | ({ id?: string } & Partial<Record<DimensionKey, { value?: string } | null>>)
+            | null
+          >;
+        };
+        errors?: unknown;
+      }>({
+        marketplace: 'Shopify',
+        method: 'POST',
+        url: adminUrl(account, '/graphql.json'),
+        headers: shopifyHeaders(account),
+        json: {
+          query: VARIANT_DIMENSIONS_QUERY,
+          variables: { ids: batch.map((id) => `gid://shopify/ProductVariant/${id}`) },
+        },
+      });
+
+      if (response.body?.errors) {
+        log.warn({ errors: response.body.errors }, 'Shopify variant dimension query returned errors');
+      }
+
+      for (const node of response.body?.data?.nodes ?? []) {
+        const id = node?.id?.split('/').pop();
+        if (!id || !node) continue;
+
+        const patch = dimensionPatch({
+          dim_length_in: node.dim_length_in?.value,
+          dim_width_in: node.dim_width_in?.value,
+          dim_height_in: node.dim_height_in?.value,
+        });
+
+        if (Object.keys(patch).length > 0) result.set(id, patch);
+      }
+    } catch (err) {
+      log.warn({ err, count: batch.length }, 'Could not fetch Shopify variant dimensions — continuing without them');
+    }
+  }
+
+  return result;
 }
 
 // ── Inventory weights (GraphQL) ──────────────────────────────────────────────

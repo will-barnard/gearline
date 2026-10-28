@@ -211,6 +211,14 @@ export async function resync(productId: string): Promise<ResyncResult> {
     );
   }
 
+  // Variant-level dimensions win over the product's (see variant-dimensions.ts).
+  // fetchVariantDimensions is already best-effort, so no try/catch here.
+  if (product.shopify_variant_id) {
+    const byVariant = await client.fetchVariantDimensions(account, [product.shopify_variant_id]);
+    const variantPatch = byVariant.get(product.shopify_variant_id);
+    if (variantPatch) Object.assign(patch, variantPatch);
+  }
+
   const saved = await db
     .updateTable('products')
     .set({ ...patch, updated_at: new Date() })
