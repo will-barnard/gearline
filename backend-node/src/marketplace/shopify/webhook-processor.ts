@@ -1090,8 +1090,8 @@ async function applyMetafields(
      * two variants genuinely differ in year or finish — per-listing overrides
      * are the escape hatch for that.
      *
-     * Dimensions are the exception: variants can carry their own dim_*
-     * metafields, applied after this by applyVariantDimensions.
+     * Dimensions are the exception: a variant's packed dimensions or its own
+     * dim_* metafields win, applied after this by applyVariantDimensions.
      *
      * Fetched once and applied to all, rather than once per variant.
      */
@@ -1115,8 +1115,9 @@ async function applyMetafields(
 }
 
 /**
- * Applies variant-level custom.dim_* metafields on top of the product-level
- * ones (see variant-dimensions.ts for the precedence rule).
+ * Applies per-variant dimensions on top of the product-level metafields:
+ * Shopify's packed dimensions first, then variant custom.dim_* metafields
+ * (see variant-dimensions.ts for the precedence rule).
  *
  * Best-effort, like applyMetafields: any failure logs and returns the rows
  * unchanged, leaving the product-level dimensions in place.
@@ -1129,8 +1130,11 @@ async function applyVariantDimensions(
   const variantIds = products
     .map((p) => p.shopify_variant_id)
     .filter((id): id is string => !!id);
+  const inventoryItemIds = products
+    .map((p) => p.shopify_inventory_item_id)
+    .filter((id): id is string => !!id);
 
-  if (variantIds.length === 0) return products;
+  if (variantIds.length === 0 && inventoryItemIds.length === 0) return products;
 
   try {
     const account = await db
@@ -1141,15 +1145,24 @@ async function applyVariantDimensions(
 
     if (!account) return products;
 
-    const byVariant = await client.fetchVariantDimensions(account, variantIds);
-    if (byVariant.size === 0) return products;
+    const [byVariant, byInventoryItem] = await Promise.all([
+      client.fetchVariantDimensions(account, variantIds),
+      client.fetchPackedDimensions(account, inventoryItemIds),
+    ]);
+    if (byVariant.size === 0 && byInventoryItem.size === 0) return products;
 
     const result: ProductRow[] = [];
 
     for (const row of products) {
-      const patch = row.shopify_variant_id ? byVariant.get(row.shopify_variant_id) : undefined;
+      // Packed dimensions are spread last so they win over the metafields.
+      const patch = {
+        ...(row.shopify_variant_id ? byVariant.get(row.shopify_variant_id) : undefined),
+        ...(row.shopify_inventory_item_id
+          ? byInventoryItem.get(row.shopify_inventory_item_id)
+          : undefined),
+      };
 
-      if (!patch || patchIsNoop(row, patch)) {
+      if (Object.keys(patch).length === 0 || patchIsNoop(row, patch)) {
         result.push(row);
         continue;
       }
@@ -1165,13 +1178,13 @@ async function applyVariantDimensions(
     }
 
     log.debug(
-      { shopifyProductId, variants: byVariant.size },
-      'Applied variant-level dimension metafields',
+      { shopifyProductId, variantMetafields: byVariant.size, packed: byInventoryItem.size },
+      'Applied variant-level dimensions',
     );
 
     return result;
   } catch (err) {
-    log.warn({ err, shopifyProductId }, 'Could not apply variant dimension metafields');
+    log.warn({ err, shopifyProductId }, 'Could not apply variant-level dimensions');
     return products;
   }
 }

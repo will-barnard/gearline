@@ -211,12 +211,19 @@ export async function resync(productId: string): Promise<ResyncResult> {
     );
   }
 
-  // Variant-level dimensions win over the product's (see variant-dimensions.ts).
-  // fetchVariantDimensions is already best-effort, so no try/catch here.
+  // Variant-level dimensions win over the product's: variant metafields, then
+  // Shopify's packed dimensions on top (see variant-dimensions.ts). Both
+  // fetches are already best-effort, so no try/catch here.
   if (product.shopify_variant_id) {
     const byVariant = await client.fetchVariantDimensions(account, [product.shopify_variant_id]);
     const variantPatch = byVariant.get(product.shopify_variant_id);
     if (variantPatch) Object.assign(patch, variantPatch);
+  }
+
+  if (inventoryItemId) {
+    const packed = await client.fetchPackedDimensions(account, [inventoryItemId]);
+    const packedPatch = packed.get(inventoryItemId);
+    if (packedPatch) Object.assign(patch, packedPatch);
   }
 
   const saved = await db
