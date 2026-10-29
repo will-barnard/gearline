@@ -600,8 +600,14 @@ export async function verifyToken(account: MarketplaceAccountRow): Promise<boole
 /**
  * Marks an order shipped with tracking info.
  *
- * POST /my/orders/{id}/ship
- * Body: { shipment: { tracking_number, provider } }
+ * POST /my/orders/selling/{id}/ship
+ * Body (flat): { provider, tracking_number, send_notification }
+ *
+ * Note the `/selling/` segment — every seller-side order endpoint lives under
+ * it. Without it Reverb answers 404, which is what silently dropped tracking
+ * on order 26738240. The body is flat too; an earlier version nested the
+ * fields under `shipment`, which Reverb does not read.
+ * Docs: https://www.reverb-api.com/docs/ship-orders
  */
 export async function markOrderShipped(
   account: MarketplaceAccountRow,
@@ -612,14 +618,31 @@ export async function markOrderShipped(
   await apiRequest({
     marketplace: 'Reverb',
     method: 'POST',
-    url: url(`/my/orders/${encodeURIComponent(orderId)}/ship`),
+    url: url(`/my/orders/selling/${encodeURIComponent(orderId)}/ship`),
     accessToken: getAccessToken(account),
     headers: baseHeaders(),
     json: {
-      shipment: {
-        tracking_number: trackingNumber ?? '',
-        provider: carrier ?? 'Other',
-      },
+      provider: reverbProviderFor(carrier),
+      tracking_number: trackingNumber ?? '',
+      // Reverb emails the buyer their tracking — the whole point of the call.
+      send_notification: true,
     },
   });
+}
+
+/**
+ * Maps Shopify's free-text carrier ("UPS", "FedEx Ground", "USPS Priority")
+ * onto Reverb's provider names. Unknown carriers go as "Other" rather than a
+ * raw string Reverb may reject.
+ */
+export function reverbProviderFor(carrier: string | null): string {
+  const c = (carrier ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (c === '') return 'Other';
+  // USPS before UPS: "usps" contains "ups".
+  if (c.includes('usps') || c.includes('postalservice')) return 'USPS';
+  if (c.includes('ups')) return 'UPS';
+  if (c.includes('fedex')) return 'FedEx';
+  if (c.includes('dhl')) return 'DHL';
+  if (c.includes('canadapost')) return 'Canada Post';
+  return 'Other';
 }

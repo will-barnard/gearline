@@ -22,6 +22,7 @@
               <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Buyer</th>
               <th class="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Total</th>
               <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Status</th>
+              <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Tracking</th>
               <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Imported</th>
             </tr>
           </thead>
@@ -34,10 +35,26 @@
                 {{ o.totalAmount ? `$${o.totalAmount}` : '—' }}
               </td>
               <td class="px-4 py-3"><span :class="orderBadge(o.orderStatus)">{{ o.orderStatus }}</span></td>
+              <td class="px-4 py-3 text-xs">
+                <div v-if="o.trackingNumber" class="font-mono text-gray-400">
+                  {{ o.trackingCarrier ? `${o.trackingCarrier} ` : '' }}{{ o.trackingNumber }}
+                </div>
+                <span v-else class="text-gray-600">—</span>
+                <!-- Tracking saved but not shipped = the marketplace call failed. -->
+                <button
+                  v-if="needsResend(o)"
+                  class="mt-1 text-xs font-medium text-brand-400 hover:text-brand-300 disabled:opacity-50"
+                  :disabled="resending[o.id]"
+                  @click="resend(o)"
+                >
+                  {{ resending[o.id] ? 'Sending…' : `Resend to ${o.marketplaceType}` }}
+                </button>
+                <div v-if="resendErrors[o.id]" class="mt-1 max-w-xs text-red-400">{{ resendErrors[o.id] }}</div>
+              </td>
               <td class="px-4 py-3 text-xs text-gray-500">{{ formatDate(o.importedAt) }}</td>
             </tr>
             <tr v-if="orders.length === 0">
-              <td colspan="6" class="px-4 py-12 text-center text-sm text-gray-500">No orders imported yet</td>
+              <td colspan="7" class="px-4 py-12 text-center text-sm text-gray-500">No orders imported yet</td>
             </tr>
           </tbody>
         </table>
@@ -54,6 +71,29 @@ const orders = ref([])
 const loading = ref(true)
 const statusFilter = ref('')
 const statuses = ['IMPORTED','ACKNOWLEDGED','PROCESSING','SHIPPED','DELIVERED','CANCELLED','REFUNDED','DISPUTED']
+const resending = ref({})
+const resendErrors = ref({})
+
+const UNSHIPPED = ['IMPORTED', 'ACKNOWLEDGED', 'PROCESSING']
+
+function needsResend(o) {
+  return o.trackingNumber && o.marketplaceType !== 'SHOPIFY' && UNSHIPPED.includes(o.orderStatus)
+}
+
+async function resend(o) {
+  resending.value[o.id] = true
+  resendErrors.value[o.id] = null
+  try {
+    const res = await api.post(`/orders/${o.id}/resend-shipment`)
+    const i = orders.value.findIndex((x) => x.id === o.id)
+    if (i !== -1) orders.value[i] = res.data.order
+    if (res.data.outcome !== 'SHIPPED') resendErrors.value[o.id] = res.data.message || res.data.outcome
+  } catch (e) {
+    resendErrors.value[o.id] = e.response?.data?.message || e.message
+  } finally {
+    resending.value[o.id] = false
+  }
+}
 
 async function load() {
   loading.value = true

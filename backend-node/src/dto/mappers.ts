@@ -131,6 +131,9 @@ export function toOrderDto(o: OrderRow) {
     buyerInfo: o.buyer_info,
     shippingAddress: o.shipping_address,
     marketplaceOrderUrl: o.marketplace_order_url,
+    trackingNumber: o.tracking_number,
+    trackingCarrier: o.tracking_carrier,
+    fulfilledAt: iso(o.fulfilled_at),
     importedAt: iso(o.imported_at),
     createdAt: iso(o.created_at),
   });

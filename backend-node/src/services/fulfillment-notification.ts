@@ -38,12 +38,18 @@ export interface FulfillmentDetails {
   fulfilledAt: Date | null;
 }
 
-export async function notifyMarketplace(details: FulfillmentDetails): Promise<void> {
+/** What happened to one notification attempt — lets callers (the resend route) report back. */
+export interface NotifyResult {
+  outcome: 'SHIPPED' | 'FAILED' | 'SKIPPED';
+  message?: string;
+}
+
+export async function notifyMarketplace(details: FulfillmentDetails): Promise<NotifyResult> {
   const { shopifyOrderId, trackingNumber, trackingCarrier, trackingUrl, fulfilledAt } = details;
 
   if (!shopifyOrderId || shopifyOrderId.trim() === '') {
     log.warn('fulfillments/create received with no order_id — ignoring');
-    return;
+    return { outcome: 'SKIPPED', message: 'No Shopify order id' };
   }
 
   const order = await db
@@ -55,14 +61,14 @@ export async function notifyMarketplace(details: FulfillmentDetails): Promise<vo
   if (!order) {
     // Almost always a native Shopify sale that Gearline never mirrored.
     log.debug({ shopifyOrderId }, 'No Gearline order for this Shopify order — skipping');
-    return;
+    return { outcome: 'SKIPPED', message: 'No Gearline order for this Shopify order' };
   }
 
   // Idempotency: Shopify redelivers, and a second notification would send the
   // buyer a duplicate shipping email.
   if (order.order_status === 'SHIPPED') {
     log.debug({ orderId: order.id }, 'Order already SHIPPED — skipping duplicate fulfillment webhook');
-    return;
+    return { outcome: 'SKIPPED', message: 'Order is already SHIPPED' };
   }
 
   const shippedDate = fulfilledAt ?? new Date();
@@ -71,7 +77,7 @@ export async function notifyMarketplace(details: FulfillmentDetails): Promise<vo
   if (order.marketplace_type === 'SHOPIFY') {
     log.debug({ orderId: order.id }, 'Shopify-native order — no external marketplace to notify');
     await markShipped(order, details, shippedDate);
-    return;
+    return { outcome: 'SHIPPED' };
   }
 
   const account = await db
@@ -85,7 +91,7 @@ export async function notifyMarketplace(details: FulfillmentDetails): Promise<vo
       { orderId: order.id, accountId: order.marketplace_account_id },
       'Cannot notify marketplace — account not found',
     );
-    return;
+    return { outcome: 'FAILED', message: 'Marketplace account not found' };
   }
 
   try {
@@ -164,7 +170,7 @@ export async function notifyMarketplace(details: FulfillmentDetails): Promise<vo
 
       default:
         log.warn({ marketplaceType: order.marketplace_type }, 'No fulfilment handler for marketplace');
-        return;
+        return { outcome: 'SKIPPED', message: `No fulfilment handler for ${order.marketplace_type}` };
     }
 
     await markShipped(order, details, shippedDate);
@@ -184,6 +190,8 @@ export async function notifyMarketplace(details: FulfillmentDetails): Promise<vo
       null,
       { status: 'SHIPPED', trackingNumber: trackingNumber ?? '' },
     );
+
+    return { outcome: 'SHIPPED' };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
 
@@ -205,7 +213,49 @@ export async function notifyMarketplace(details: FulfillmentDetails): Promise<vo
       message,
       { trackingNumber: trackingNumber ?? '' },
     );
+
+    return { outcome: 'FAILED', message };
   }
+}
+
+/**
+ * Re-sends a shipment notification using the tracking already saved on the
+ * order. This is the recovery path for a failed fulfillments/create: the
+ * failure branch above keeps the tracking and leaves the order unshipped, so
+ * replaying it is just the same call again — no need to re-fulfil in Shopify
+ * or wait for a webhook.
+ *
+ * Returns null when the order does not exist.
+ */
+export async function resendShipment(orderId: string): Promise<NotifyResult | null> {
+  const order = await db.selectFrom('orders').selectAll().where('id', '=', orderId).executeTakeFirst();
+
+  if (!order) return null;
+
+  if (order.order_status === 'SHIPPED') {
+    return { outcome: 'SKIPPED', message: 'Order is already SHIPPED' };
+  }
+  if (!order.shopify_order_id) {
+    return { outcome: 'FAILED', message: 'Order has no linked Shopify order' };
+  }
+  if (!order.tracking_number) {
+    return {
+      outcome: 'FAILED',
+      message: 'No tracking saved on this order — add the fulfilment in Shopify first',
+    };
+  }
+
+  log.info({ orderId: order.id, externalOrderId: order.external_order_id }, 'Manually resending shipment notification');
+
+  return notifyMarketplace({
+    shopifyOrderId: order.shopify_order_id,
+    trackingNumber: order.tracking_number,
+    trackingCarrier: order.tracking_carrier,
+    trackingUrl: order.tracking_url,
+    // The original fulfilment time is not persisted on failure, so a resend
+    // reports now. Only eBay uses this date.
+    fulfilledAt: null,
+  });
 }
 
 /** Marks SHIPPED and stores every tracking field. */

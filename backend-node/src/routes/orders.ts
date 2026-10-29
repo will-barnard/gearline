@@ -6,8 +6,12 @@ import { parsePageRequest, toPage } from '../db/page.js';
 import type { OrderStatus } from '../db/types.js';
 import { toOrderDto } from '../dto/mappers.js';
 import { asyncHandler, ResourceNotFoundError } from '../http/errors.js';
+import { resendShipment } from '../services/fulfillment-notification.js';
 
-/** Port of OrderController. Mounted at /api/v1/orders. Read-only. */
+/**
+ * Port of OrderController. Mounted at /api/v1/orders. Read-only apart from
+ * the shipment-resend action.
+ */
 export const ordersRouter: Router = Router();
 
 const uuidSchema = z.string().uuid('must be a valid UUID');
@@ -60,5 +64,26 @@ ordersRouter.get(
     if (!order) throw new ResourceNotFoundError('Order', id);
 
     res.json(toOrderDto(order));
+  }),
+);
+
+/**
+ * Re-sends tracking to the order's marketplace from the tracking saved on the
+ * order. For when the fulfillments/create webhook reached Gearline but the
+ * marketplace call failed (the order stays unshipped with tracking saved).
+ *
+ * 200 with { outcome, message?, order } — FAILED is a normal outcome here, not
+ * an HTTP error, so the UI can show Reverb/eBay's reason.
+ */
+ordersRouter.post(
+  '/:id/resend-shipment',
+  asyncHandler(async (req, res) => {
+    const id = uuidSchema.parse(req.params.id);
+
+    const result = await resendShipment(id);
+    if (!result) throw new ResourceNotFoundError('Order', id);
+
+    const order = await db.selectFrom('orders').selectAll().where('id', '=', id).executeTakeFirstOrThrow();
+    res.json({ ...result, order: toOrderDto(order) });
   }),
 );
