@@ -487,6 +487,18 @@ async function processProductUpdate(shopDomain: string, payload: Json): Promise<
       .where('listing_status', '=', 'ACTIVE')
       .execute();
 
+    /**
+     * Sold out: the inventory path has already queued delists for these
+     * listings (a sale sends the stock change and this product update
+     * together). An update queued now would run after the delist and try to
+     * republish the item at quantity 0. The dispatcher refuses such updates
+     * too; not queuing them keeps the job log honest.
+     */
+    if (activeListings.length > 0 && (await marketplaceQuantity(product)) <= 0) {
+      log.info({ sku: product.sku }, 'Not queuing LISTING_UPDATE — product is sold out');
+      continue;
+    }
+
     for (const listing of activeListings) {
       if (listing.marketplace_type === 'SHOPIFY') continue;
 

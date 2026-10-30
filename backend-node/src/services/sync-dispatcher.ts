@@ -194,6 +194,33 @@ async function updateListing(job: SyncJobRow): Promise<void> {
   ]);
   const connector = getConnector(account.marketplace_type);
 
+  /**
+   * ── Stale updates ──────────────────────────────────────────────────────────
+   *
+   * Updates are queued only for ACTIVE listings, but by the time one runs the
+   * world can have moved: a sale fires the delist AND the Shopify product
+   * update in the same second, and the update used to run after the delist.
+   * On eBay that republished the withdrawn offer at quantity 0 (rejected with
+   * 25004, leaving the sold listing FAILED); on Gear Exchange it marked an
+   * ended listing ACTIVE again. A delisted or sold-out listing has nothing to
+   * update — the delist path and upsertReviewListings own it from here.
+   */
+  if (listing.listing_status !== 'ACTIVE') {
+    log.info(
+      { listingId: listing.id, status: listing.listing_status, jobId: job.id },
+      'Skipping LISTING_UPDATE — listing is no longer ACTIVE',
+    );
+    return;
+  }
+
+  if (channelQuantity(product) <= 0) {
+    log.info(
+      { listingId: listing.id, sku: product.sku, jobId: job.id },
+      'Skipping LISTING_UPDATE — product is sold out; the delist owns this listing',
+    );
+    return;
+  }
+
   // Re-resolve on every update so newly-set overrides are picked up.
   let request = resolve(product, listing, account);
   request = await applyPricingProfile(request, product.price, account.pricing_profile_id);
@@ -262,6 +289,17 @@ async function syncInventory(job: SyncJobRow): Promise<void> {
     requireListingProduct(job.product_id),
   ]);
   const connector = getConnector(account.marketplace_type);
+
+  // Same staleness rule as updateListing: a listing delisted since the job was
+  // queued must not have its quantity pushed (that can relist it on some
+  // marketplaces).
+  if (listing.listing_status !== 'ACTIVE') {
+    log.info(
+      { listingId: listing.id, status: listing.listing_status, jobId: job.id },
+      'Skipping INVENTORY_SYNC — listing is no longer ACTIVE',
+    );
+    return;
+  }
 
   const result = await connector.syncInventory(account, listing, channelQuantity(product));
 
