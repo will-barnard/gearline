@@ -8,6 +8,7 @@ import { applyPercentageAdjustment } from '../util/decimal.js';
 import { resolve } from './listing-attribute-resolver.js';
 import { channelQuantity } from './special-order.js';
 import { importOrder } from './order-import.js';
+import { isGroupMember, listingProduct } from './variant-groups.js';
 
 const log = loggerFor('sync-dispatcher');
 
@@ -71,6 +72,15 @@ async function requireProduct(id: string | null) {
   return product;
 }
 
+/**
+ * The product as the marketplace should see it. For a variant-group lead that
+ * is the whole group — merged photos, total stock, the option note — and for
+ * everything else the row itself. See services/variant-groups.ts.
+ */
+async function requireListingProduct(id: string | null) {
+  return listingProduct(await requireProduct(id));
+}
+
 async function requireListing(id: string | null) {
   if (!id) throw new Error('Sync job has no listingId');
   const listing = await db
@@ -122,9 +132,16 @@ async function applyPricingProfile(
 async function publishListing(job: SyncJobRow): Promise<void> {
   const [account, product] = await Promise.all([
     requireAccount(job.marketplace_account_id),
-    requireProduct(job.product_id),
+    requireListingProduct(job.product_id),
   ]);
   const connector = getConnector(account.marketplace_type);
+
+  // A publish queued before the variant was grouped. Its group's lead carries
+  // the listing now; publishing this one too would list the colour twice.
+  if (isGroupMember(product)) {
+    log.warn({ productId: product.id, sku: product.sku }, 'Skipping publish — product is a variant-group member');
+    return;
+  }
 
   // Find the existing listing, or build a transient shell so the resolver has
   // somewhere to read overrides from. A brand-new listing has empty overrides
@@ -172,7 +189,7 @@ async function publishListing(job: SyncJobRow): Promise<void> {
 async function updateListing(job: SyncJobRow): Promise<void> {
   const [account, product, listing] = await Promise.all([
     requireAccount(job.marketplace_account_id),
-    requireProduct(job.product_id),
+    requireListingProduct(job.product_id),
     requireListing(job.listing_id),
   ]);
   const connector = getConnector(account.marketplace_type);
@@ -242,7 +259,7 @@ async function syncInventory(job: SyncJobRow): Promise<void> {
   const [account, listing, product] = await Promise.all([
     requireAccount(job.marketplace_account_id),
     requireListing(job.listing_id),
-    requireProduct(job.product_id),
+    requireListingProduct(job.product_id),
   ]);
   const connector = getConnector(account.marketplace_type);
 

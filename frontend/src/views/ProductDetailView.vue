@@ -94,6 +94,9 @@
             </div>
           </div>
 
+          <!-- Variant grouping: one listing per size × cut, colour chosen after the sale -->
+          <VariantGroupingCard v-if="!product.marketplaceExcluded" :product="product" @changed="load" />
+
           <div class="card">
             <div class="flex items-center justify-between mb-4">
               <h2 class="text-sm font-semibold uppercase tracking-wider text-gray-500">Marketplace Listings</h2>
@@ -1037,6 +1040,7 @@
 import { ref, computed, onMounted, watch, defineComponent, h } from 'vue'
 import ReverbProductTypeSelect from '@/components/products/ReverbProductTypeSelect.vue'
 import CopyOverridesPicker from '@/components/products/CopyOverridesPicker.vue'
+import VariantGroupingCard from '@/components/products/VariantGroupingCard.vue'
 import { useRoute } from 'vue-router'
 import api from '@/lib/api'
 import { isTransientStatus, pollUntilSettled } from '@/lib/listingStatus'
@@ -2235,6 +2239,9 @@ async function toggleMarketplaceExclusion(type) {
  */
 function accountAllowsProduct(account) {
   if (!product.value) return true
+  // A variant-group member is sold through its lead's listing.
+  const lead = product.value.variantGroupLeadId
+  if (lead && lead !== product.value.id) return false
   if ((product.value.excludedMarketplaces || []).includes(account.marketplaceType)) return false
   const type = (product.value.category || '').trim().toLowerCase()
   if (!type) return true
@@ -2266,4 +2273,7 @@ async function saveVideoUrl(url) {
 }
 
 onMounted(load)
+// Same component for /products/:id → /products/:otherId (e.g. a variant
+// group's "sold through" link), so reload when only the id changes.
+watch(() => route.params.id, (id, previous) => { if (id && id !== previous) load() })
 </script>

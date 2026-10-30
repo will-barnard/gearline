@@ -40,11 +40,17 @@ export async function backfillListingsForNewAccount(
   for (;;) {
     const products = await db
       .selectFrom('products')
-      .select(['id', 'category', 'marketplace_excluded', 'excluded_marketplaces'])
+      .select(['id', 'category', 'marketplace_excluded', 'excluded_marketplaces', 'variant_group_lead_id'])
       .where('status', '=', 'ACTIVE')
       // A special-order product has no stock but is sellable (channelQuantity()).
+      // A variant-group lead may have none of its own while other colours do;
+      // members are then filtered out by isEligible.
       .where((eb) =>
-        eb.or([eb('quantity', '>', 0), eb('special_order_quantity', 'is not', null)]),
+        eb.or([
+          eb('quantity', '>', 0),
+          eb('special_order_quantity', 'is not', null),
+          eb('variant_group_lead_id', 'is not', null),
+        ]),
       )
       .where('marketplace_excluded', '=', false)
       // Stable ordering so paging cannot skip or repeat rows if the catalogue

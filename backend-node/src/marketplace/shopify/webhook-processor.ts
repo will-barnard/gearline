@@ -10,7 +10,9 @@ import { loggerFor } from '../../logger.js';
 import { notifyMarketplace } from '../../services/fulfillment-notification.js';
 import { checkEligibility } from '../../services/marketplace-eligibility.js';
 import { propagateInventoryChange } from '../../services/inventory-consistency.js';
-import { channelQuantity, specialOrderQuantityFor } from '../../services/special-order.js';
+import { specialOrderQuantityFor } from '../../services/special-order.js';
+import { isGroupMember, marketplaceQuantity, regroupProduct } from '../../services/variant-groups.js';
+import { variantShape } from './variant-shape.js';
 import { enqueue } from '../../queue/sync-job-producer.js';
 import { divideHalfUp, decimalToString } from '../../util/decimal.js';
 import * as client from './client.js';
@@ -288,11 +290,15 @@ async function processProductCreate(shopDomain: string, payload: Json): Promise<
     return;
   }
 
-  const saved = await upsertVariantsFromPayload(shopDomain, shopifyProductId, payload, {
+  const upserted = await upsertVariantsFromPayload(shopDomain, shopifyProductId, payload, {
     restoreArchived: true,
   });
 
-  if (saved.length === 0) return;
+  if (upserted.length === 0) return;
+
+  // A grouping can predate the product's rows (deleted and recreated in
+  // Shopify), so membership is settled before any stubs are made.
+  const saved = await applyGrouping(shopifyProductId, upserted);
 
   // Tag exclusion is a property of the Shopify product, so it is evaluated once
   // and applies to all of its variants.
@@ -380,16 +386,21 @@ async function processProductUpdate(shopDomain: string, payload: Json): Promise<
     existingRows.filter((row) => row.status === 'ARCHIVED').map((row) => row.id),
   );
 
-  const saved = await upsertVariantsFromPayload(shopDomain, shopifyProductId, payload, {
+  const upserted = await upsertVariantsFromPayload(shopDomain, shopifyProductId, payload, {
     restoreArchived: true,
     existing: existingRows,
   });
 
-  if (saved.length === 0) return;
+  if (upserted.length === 0) return;
 
   // A variant removed in Shopify leaves a row behind. Do this AFTER the upsert
   // so a variant being renamed or re-ordered is never mistaken for a deletion.
   await archiveMissingVariants(shopifyProductId, payload, existingRows);
+
+  // New variants, renamed options or an archived lead all change who is in
+  // which variant group. Settled before the loop, which decides stubs and
+  // updates per row from it.
+  const saved = await applyGrouping(shopifyProductId, upserted);
 
   const tagExcluded = await isExcludedByTags(payload, shopDomain);
   const updatedAt = str(payload, 'updated_at', String(Date.now()));
@@ -419,6 +430,13 @@ async function processProductUpdate(shopDomain: string, payload: Json): Promise<
     // survived (excluded after publishing), do not propagate updates to it.
     if (product.marketplace_excluded) {
       log.debug({ sku: product.sku }, 'Skipping LISTING_UPDATE propagation — marketplace_excluded');
+      continue;
+    }
+
+    // A variant-group member is sold through its lead, which is in this same
+    // payload and gets the update. Its own review stubs are cleared here.
+    if (isGroupMember(product)) {
+      await upsertReviewListings(product);
       continue;
     }
 
@@ -487,6 +505,24 @@ async function processProductUpdate(shopDomain: string, payload: Json): Promise<
         'Enqueued LISTING_UPDATE after Shopify product update',
       );
     }
+  }
+}
+
+/**
+ * Re-derives variant-group membership for the product and returns the rows
+ * with their new variant_group_lead_id, so the caller's per-row decisions see
+ * it. A no-op for products without a grouping. Best-effort: a failure leaves
+ * the previous membership in place rather than failing the whole webhook.
+ */
+async function applyGrouping(shopifyProductId: string, rows: ProductRow[]): Promise<ProductRow[]> {
+  try {
+    const { leadByProductId } = await regroupProduct(shopifyProductId);
+    return rows.map((row) =>
+      leadByProductId.has(row.id) ? { ...row, variant_group_lead_id: leadByProductId.get(row.id) ?? null } : row,
+    );
+  } catch (err) {
+    log.error({ err, shopifyProductId }, 'Could not regroup variants — keeping previous grouping');
+    return rows;
   }
 }
 
@@ -761,6 +797,9 @@ async function upsertVariantsFromPayload(
           category: fields.category ?? null,
           weight_kg: fields.weight_kg ?? null,
           special_order_quantity: fields.special_order_quantity ?? null,
+          variant_options: fields.variant_options ?? toJson([]),
+          variant_position: fields.variant_position ?? null,
+          variant_image_url: fields.variant_image_url ?? null,
         })
         /**
          * ── The guard on this conflict clause is load-bearing ────────────────
@@ -873,6 +912,10 @@ interface ProductFieldPatch {
   image_urls?: ReturnType<typeof toJson>;
   /** null means "explicitly not special order"; absent leaves the column alone. */
   special_order_quantity?: number | null;
+  /** V23 — see variant-shape.ts. */
+  variant_options?: ReturnType<typeof toJson>;
+  variant_position?: number | null;
+  variant_image_url?: string | null;
 }
 
 /**
@@ -937,6 +980,16 @@ function extractVariantFields(
   const inventoryItemId = str(variant, 'inventory_item_id');
   if (inventoryItemId !== '' && inventoryItemId !== 'null') {
     fields.shopify_inventory_item_id = inventoryItemId;
+  }
+
+  // Option values, position and the variant's own photo — what variant groups
+  // are built from. Only written when the payload carries options, so a
+  // partial payload cannot wipe them.
+  if ('options' in payload) {
+    const shape = variantShape(payload, variant);
+    fields.variant_options = toJson(shape.variant_options);
+    fields.variant_position = shape.variant_position;
+    if ('images' in payload) fields.variant_image_url = shape.variant_image_url;
   }
 
   return fields;
@@ -1271,7 +1324,9 @@ const REVIEW_STATUSES: ListingStatus[] = ['NEEDS_REVIEW', 'ON_HOLD'];
 export async function upsertReviewListings(product: ProductRow): Promise<void> {
   // channelQuantity, not quantity: a special-order product with no stock is
   // still sellable, so its stubs stay publishable instead of going on hold.
-  const targetReviewStatus: ListingStatus = channelQuantity(product) > 0 ? 'NEEDS_REVIEW' : 'ON_HOLD';
+  // For a variant-group lead it is the whole group's — one colour out of stock
+  // does not hold the listing while others have stock.
+  const targetReviewStatus: ListingStatus = (await marketplaceQuantity(product)) > 0 ? 'NEEDS_REVIEW' : 'ON_HOLD';
 
   const accounts = await db
     .selectFrom('marketplace_accounts')

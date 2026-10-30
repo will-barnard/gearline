@@ -134,12 +134,13 @@ export async function findListingBySku(
 }
 
 /**
- * Ends a listing. Idempotent: a 404 means it is already gone, which is the
- * outcome we wanted, so it resolves rather than throwing.
+ * Ends a listing. Idempotent: a listing that is already ended or sold (read
+ * first), or that Reverb no longer has, resolves rather than throwing — delist
+ * jobs retry, and one ended by hand on Reverb must not dead-letter as FAILED.
  *
- * This matters because delist jobs retry. Without the 404 tolerance, a listing
- * ended manually on Reverb would fail every retry and then dead-letter, marking
- * a perfectly fine listing as FAILED.
+ * "Gone" is decided by reading the listing's state, never by a 404 from the
+ * end call alone: a wrong endpoint 404s too, and trusting that once let every
+ * delist pass while the listings stayed live.
  */
 export async function endListing(
   account: MarketplaceAccountRow,
@@ -163,11 +164,21 @@ export async function endListing(
   // be freed of them first. Best-effort: see declineOpenOffers.
   await declineOpenOffers(token, listingId);
 
+  /**
+   * PUT /my/listings/{id}/state/end — the `/my/` matters. Without it Reverb
+   * answers 404, and while a 404 here was trusted as "already ended", every
+   * Gearline delist on Reverb reported success and ended nothing: sold items
+   * stayed live (Oct 2026). A 404 is therefore no longer taken on its word;
+   * the read-back below decides.
+   * Docs: https://www.reverb-api.com/docs/updating-your-listing
+   */
+  let notFound = false;
+
   try {
     await apiRequest({
       marketplace: 'Reverb',
       method: 'PUT',
-      url: url(`/listings/${encodeURIComponent(listingId)}/state/end`),
+      url: url(`/my/listings/${encodeURIComponent(listingId)}/state/end`),
       accessToken: token,
       headers: baseHeaders(),
       // Reverb's end endpoint takes a `reason`: `not_sold` (the item went
@@ -176,11 +187,9 @@ export async function endListing(
       json: { reason: 'not_sold' },
     });
   } catch (err) {
-    if (isNotFound(err)) {
-      log.info({ listingId }, 'Reverb listing already ended or not found — treating as success');
-      return;
-    }
-    throw err;
+    if (!isNotFound(err)) throw err;
+    notFound = true;
+    log.info({ listingId }, 'Reverb returned 404 ending listing — verifying its state');
   }
 
   /**
@@ -200,6 +209,15 @@ export async function endListing(
   if (state === null) {
     log.warn({ listingId }, 'Ended Reverb listing but could not read it back to verify');
     return;
+  }
+
+  if (state === 'live' && notFound) {
+    // The listing exists and is for sale, so the 404 was about the request,
+    // not the listing. Retrying the same request cannot help.
+    throw new PermanentMarketplaceError(
+      `Reverb returned 404 when ending listing ${listingId}, but the listing is still live. ` +
+        'End it on Reverb by hand and check the end-listing endpoint in reverb/client.ts.',
+    );
   }
 
   if (state === 'live') {

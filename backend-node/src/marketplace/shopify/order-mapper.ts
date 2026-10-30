@@ -3,6 +3,7 @@ import type { MarketplaceType, OrderLineItemJson } from '../../db/types.js';
 import { loggerFor } from '../../logger.js';
 import { compareDecimal, parseDecimal, ZERO } from '../../util/decimal.js';
 import type { ImportedOrder } from '../types.js';
+import { collapsedValues, getGrouping, isGroupLead, optionsSummary } from '../../services/variant-groups.js';
 
 const log = loggerFor('shopify-order-mapper');
 
@@ -82,6 +83,54 @@ async function resolveVariantIds(skus: string[]): Promise<Map<string, string>> {
     if (row.shopify_variant_id) map.set(row.sku, row.shopify_variant_id);
   }
   return map;
+}
+
+/**
+ * Notes for line items sold through a variant-group listing.
+ *
+ * A grouped listing (services/variant-groups.ts) sells every colour under the
+ * lead variant's SKU, so the mirrored Shopify order books against the lead's
+ * colour whatever the buyer wants. The note says so, and what to ask: the
+ * buyer is to message their choice, and the order should be edited to the
+ * right variant before it ships. The tag makes these filterable in Shopify.
+ */
+export async function groupedLineNotes(
+  skus: string[],
+): Promise<{ notes: string[]; optionNames: string[] }> {
+  const unique = [...new Set(skus.filter((s) => s && s.trim() !== ''))];
+  if (unique.length === 0) return { notes: [], optionNames: [] };
+
+  const leads = (await db.selectFrom('products').selectAll().where('sku', 'in', unique).execute()).filter(isGroupLead);
+
+  const notes: string[] = [];
+  const optionNames = new Set<string>();
+
+  for (const lead of leads) {
+    if (!lead.shopify_product_id) continue;
+
+    const grouping = await getGrouping(lead.shopify_product_id);
+    if (!grouping) continue;
+
+    const members = await db
+      .selectFrom('products')
+      .selectAll()
+      .where('variant_group_lead_id', '=', lead.id)
+      .where('status', '!=', 'ARCHIVED')
+      .execute();
+
+    const values = collapsedValues(members, grouping.collapsed_options);
+    const names = values.map((v) => v.name);
+    names.forEach((n) => optionNames.add(n));
+
+    const what = names.join(' / ') || 'option';
+    notes.push(
+      `${what.toUpperCase()} TBD — "${lead.title}" (${lead.sku}) was sold through a grouped listing and is ` +
+        `booked as this variant by default. Confirm the ${what.toLowerCase()} with the buyer and edit the ` +
+        `order to the right variant before shipping. ${optionsSummary(values)}`,
+    );
+  }
+
+  return { notes, optionNames: [...optionNames] };
 }
 
 function buildLineItems(
@@ -227,8 +276,23 @@ export async function toShopifyOrderBody(
   }
 
   order['tags'] = source;
-  // No free-text `note`: the order number is already the order's name, and the
-  // Additional details panel below carries the channel and link.
+  // No free-text `note` by default: the order number is already the order's
+  // name, and the Additional details panel below carries the channel and link.
+  // The exception is a variant-group sale, where the buyer's choice of the
+  // collapsed option (Color) still has to be collected.
+  // Best-effort: a failed lookup must never stop the order reaching Shopify.
+  const grouped = await groupedLineNotes(
+    importedOrder.lineItems.map((li) => li.sku).filter((s): s is string => Boolean(s)),
+  ).catch((err: unknown) => {
+    log.warn({ err, externalOrderId: importedOrder.externalOrderId }, 'Could not build variant-group order note');
+    return { notes: [] as string[], optionNames: [] as string[] };
+  });
+
+  if (grouped.notes.length > 0) {
+    order['note'] = grouped.notes.join('\n\n');
+    const tags = [source, ...grouped.optionNames.map((n) => `confirm-${n.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-')}`)];
+    order['tags'] = [...new Set(tags)].join(', ');
+  }
 
   // "Additional details" panel on the Shopify order page.
   const noteAttributes: Array<{ name: string; value: string }> = [

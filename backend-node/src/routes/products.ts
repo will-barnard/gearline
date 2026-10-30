@@ -17,6 +17,7 @@ import {
   bulkSetExcluded,
   setExcludedMarketplaces,
 } from '../services/product-exclusion.js';
+import { describeGrouping, saveGrouping } from '../services/variant-group-admin.js';
 
 /** Port of ProductController. Mounted at /api/v1/products. */
 export const productsRouter: Router = Router();
@@ -544,6 +545,60 @@ productsRouter.patch(
     });
 
     res.json(toProductDto(updated));
+  }),
+);
+
+// ── Variant grouping ─────────────────────────────────────────────────────────
+
+/**
+ * Collapse variants into one marketplace listing per group — e.g. list a lid
+ * once per size × cut and take the colour from the buyer after the sale. See
+ * services/variant-groups.ts. Addressed through any variant row of the Shopify
+ * product; the grouping belongs to the Shopify product.
+ */
+const variantGroupingSchema = z.object({
+  collapsedOptions: z.array(z.string().max(255)).max(3),
+  leadVariantIds: z.array(z.string().max(64)).max(250).optional(),
+  buyerNote: z.string().max(1000).nullish(),
+});
+
+productsRouter.get(
+  '/:id/variant-grouping',
+  asyncHandler(async (req, res) => {
+    const id = uuidSchema.parse(req.params.id);
+    res.json(await describeGrouping(id));
+  }),
+);
+
+/** What a config WOULD produce, without saving it. */
+productsRouter.post(
+  '/:id/variant-grouping/preview',
+  asyncHandler(async (req, res) => {
+    const id = uuidSchema.parse(req.params.id);
+    const body = variantGroupingSchema.parse(req.body);
+    res.json(await describeGrouping(id, body));
+  }),
+);
+
+/** Saves the grouping. An empty collapsedOptions removes it. */
+productsRouter.put(
+  '/:id/variant-grouping',
+  asyncHandler(async (req, res) => {
+    const user = currentUser(req);
+    const id = uuidSchema.parse(req.params.id);
+    const body = variantGroupingSchema.parse(req.body);
+
+    const result = await saveGrouping(id, body);
+
+    audit.record({
+      type: 'PRODUCT_UPDATED',
+      actorId: user.id,
+      entityType: 'Product',
+      entityId: id,
+      metadata: { variantGrouping: body.collapsedOptions.join(',') || 'removed' },
+    });
+
+    res.json(result);
   }),
 );
 

@@ -77,6 +77,11 @@ export function toProductDto(p: ProductRow) {
     // Always an array, never null — the product screen iterates it unguarded.
     excludedMarketplaces: p.excluded_marketplaces ?? [],
     shopifyProductId: p.shopify_product_id,
+    shopifyVariantId: p.shopify_variant_id,
+    variantOptions: p.variant_options ?? [],
+    // Variant groups: the lead's id on every row of a group (own id on the
+    // lead). Absent when the variant is not grouped.
+    variantGroupLeadId: p.variant_group_lead_id,
     createdAt: iso(p.created_at),
     updatedAt: iso(p.updated_at),
   });

@@ -43,7 +43,7 @@
                 <!-- Tracking saved but not shipped = the marketplace call failed. -->
                 <button
                   v-if="needsResend(o)"
-                  class="mt-1 text-xs font-medium text-brand-400 hover:text-brand-300 disabled:opacity-50"
+                  class="mt-1 text-xs font-medium text-blue-400 hover:text-blue-300 disabled:opacity-50"
                   :disabled="resending[o.id]"
                   @click="resend(o)"
                 >

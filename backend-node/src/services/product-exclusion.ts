@@ -1,4 +1,4 @@
-import type { Transaction } from 'kysely';
+import type { Kysely } from 'kysely';
 
 import { db } from '../db/index.js';
 import type { Database, MarketplaceType, ProductRow } from '../db/types.js';
@@ -151,7 +151,23 @@ export async function setExcludedMarketplaces(
   });
 }
 
-type Trx = Transaction<Database>;
+/** A transaction or the pool — the side effects work inside either. */
+type Trx = Kysely<Database>;
+
+/**
+ * Takes a product off every marketplace with the exclusion side effects
+ * below: live listings delisted, stubs removed, sold history kept. Used when a
+ * variant becomes a member of a variant group (services/variant-groups.ts) —
+ * it is then sold through the group lead's listing instead.
+ */
+export async function removeFromMarketplaces(
+  ex: Trx,
+  productId: string,
+  sku: string,
+  reason: string,
+): Promise<void> {
+  await applyExclusionSideEffects(ex, productId, sku, undefined, reason);
+}
 
 /**
  * `onlyTypes` scopes the side effects to particular marketplaces, for a
@@ -162,6 +178,7 @@ async function applyExclusionSideEffects(
   productId: string,
   sku: string,
   onlyTypes?: MarketplaceType[],
+  reason = 'marketplace_excluded',
 ): Promise<void> {
   const listings = await trx
     .selectFrom('marketplace_listings')
@@ -182,7 +199,7 @@ async function applyExclusionSideEffects(
             marketplaceAccountId: listing.marketplace_account_id,
             productId,
             listingId: listing.id,
-            payload: { reason: 'marketplace_excluded' },
+            payload: { reason },
             // Keyed on the listing's updated_at as well as its id. The id alone
             // suppressed the delist forever after the first one: exclude,
             // re-include, republish, exclude again — and the second delist was

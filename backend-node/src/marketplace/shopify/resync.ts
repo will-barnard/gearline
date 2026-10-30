@@ -7,6 +7,8 @@ import * as client from './client.js';
 import { shopifyWeightToKg } from './weight.js';
 import { specialOrderQuantityFor } from '../../services/special-order.js';
 import { titleTemplateFor, variantTitle } from './webhook-processor.js';
+import { variantShape } from './variant-shape.js';
+import { toJson } from '../../db/json.js';
 
 const log = loggerFor('shopify-resync');
 
@@ -538,6 +540,16 @@ function extractResyncFields(
     const inventoryItemId = str(variant, 'inventory_item_id');
     if (inventoryItemId !== '' && inventoryItemId !== 'null') {
       patch['shopify_inventory_item_id'] = inventoryItemId;
+    }
+
+    // Same source as the webhook path (variant-shape.ts). Membership of a
+    // variant group is re-derived on the product's next webhook or grouping
+    // edit, not here — resync never touches listings.
+    if ('options' in shopifyProduct) {
+      const shape = variantShape(shopifyProduct, variant as Record<string, unknown>);
+      patch['variant_options'] = toJson(shape.variant_options);
+      patch['variant_position'] = shape.variant_position;
+      if ('images' in shopifyProduct) patch['variant_image_url'] = shape.variant_image_url;
     }
 
     /**

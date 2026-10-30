@@ -1,4 +1,4 @@
-import type { Transaction } from 'kysely';
+import type { Kysely } from 'kysely';
 
 import { config } from '../config.js';
 import { db } from '../db/index.js';
@@ -32,7 +32,8 @@ export interface EnqueueInput {
   maxRetries?: number;
 }
 
-type Db = typeof db | Transaction<Database>;
+/** The pool or a transaction (Transaction extends Kysely). */
+type Db = Kysely<Database>;
 
 function toMessage(job: SyncJobRow, attemptNumber: number): SyncJobMessage {
   return {
@@ -68,7 +69,7 @@ function toMessage(job: SyncJobRow, attemptNumber: number): SyncJobMessage {
  * the sync_jobs row atomically. This is the property RabbitMQ could not give us
  * and the reason the Java afterCommit callback existed.
  */
-export async function enqueue(input: EnqueueInput, trx?: Transaction<Database>): Promise<SyncJobRow> {
+export async function enqueue(input: EnqueueInput, trx?: Db): Promise<SyncJobRow> {
   const executor: Db = trx ?? db;
 
   const inserted = await executor

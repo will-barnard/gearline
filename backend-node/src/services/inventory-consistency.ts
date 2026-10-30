@@ -7,6 +7,7 @@ import { loggerFor } from '../logger.js';
 import type { ImportedOrder } from '../marketplace/types.js';
 import { enqueue } from '../queue/sync-job-producer.js';
 import { channelQuantity } from './special-order.js';
+import { listingProduct } from './variant-groups.js';
 
 const log = loggerFor('inventory-consistency');
 
@@ -36,6 +37,13 @@ const log = loggerFor('inventory-consistency');
  * marketplace quantity, so it is neither delisted nor held: it gets an
  * INVENTORY_SYNC to that quantity instead, which is also what tops a listing
  * back up after a marketplace sale.
+ *
+ * ── Variant groups ───────────────────────────────────────────────────────────
+ *
+ * A grouped variant (services/variant-groups.ts) has no listings of its own —
+ * its group's lead carries one listing for every colour. So a stock change on
+ * ANY member fans out to the LEAD's listings, at the group's total quantity,
+ * and the group is "zero" only when every colour is.
  *
  * ── Shopify is always skipped ────────────────────────────────────────────────
  *
@@ -116,9 +124,43 @@ async function attemptPropagate(productId: string, newQuantity: number): Promise
       'Propagating inventory change',
     );
 
-    await fanOutInventoryJobs(trx, updated);
-    await holdOrReleaseReviewListings(trx, updated);
+    const target = await listingTarget(trx, updated);
+    await fanOutInventoryJobs(trx, updated, target);
+    await holdOrReleaseReviewListings(trx, target);
   });
+}
+
+/** Whose listings a stock change lands on, and at what marketplace quantity. */
+interface ListingTarget {
+  productId: string;
+  sku: string;
+  quantity: number;
+  grouped: boolean;
+}
+
+/**
+ * The row itself, or — for a variant-group lead or member — the group's lead
+ * at the group's total. Read inside the transaction, so the quantity just
+ * written is already counted.
+ */
+async function listingTarget(trx: Trx, product: ProductRow): Promise<ListingTarget> {
+  if (product.variant_group_lead_id) {
+    const lead =
+      product.variant_group_lead_id === product.id
+        ? product
+        : await trx
+            .selectFrom('products')
+            .selectAll()
+            .where('id', '=', product.variant_group_lead_id)
+            .executeTakeFirst();
+
+    if (lead) {
+      const grouped = await listingProduct(lead, trx);
+      return { productId: lead.id, sku: lead.sku, quantity: channelQuantity(grouped), grouped: true };
+    }
+  }
+
+  return { productId: product.id, sku: product.sku, quantity: channelQuantity(product), grouped: false };
 }
 
 /**
@@ -132,8 +174,8 @@ async function attemptPropagate(productId: string, newQuantity: number): Promise
  * job, and PENDING/PUBLISHING/SOLD/terminal listings are left alone here, same
  * as everywhere else in this file.
  */
-async function holdOrReleaseReviewListings(trx: Trx, product: ProductRow): Promise<void> {
-  const targetStatus: ListingStatus = channelQuantity(product) > 0 ? 'NEEDS_REVIEW' : 'ON_HOLD';
+async function holdOrReleaseReviewListings(trx: Trx, product: ListingTarget): Promise<void> {
+  const targetStatus: ListingStatus = product.quantity > 0 ? 'NEEDS_REVIEW' : 'ON_HOLD';
   const currentStatus: ListingStatus = targetStatus === 'NEEDS_REVIEW' ? 'ON_HOLD' : 'NEEDS_REVIEW';
 
   const toggled = await trx
@@ -143,7 +185,7 @@ async function holdOrReleaseReviewListings(trx: Trx, product: ProductRow): Promi
       ...(targetStatus === 'ON_HOLD' ? { last_error: null } : {}),
       updated_at: new Date(),
     })
-    .where('product_id', '=', product.id)
+    .where('product_id', '=', product.productId)
     .where('listing_status', '=', currentStatus)
     .returning('id')
     .execute();
@@ -173,15 +215,16 @@ async function holdOrReleaseReviewListings(trx: Trx, product: ProductRow): Promi
  * and it only works because the UPDATE above increments version exactly once
  * per real change.
  */
-async function fanOutInventoryJobs(trx: Trx, product: ProductRow): Promise<void> {
+async function fanOutInventoryJobs(trx: Trx, product: ProductRow, target: ListingTarget): Promise<void> {
   // What the marketplaces should hold. Equals the stored quantity except for a
-  // special-order product at 0, which is listed at its special-order quantity.
-  const newQuantity = channelQuantity(product);
+  // special-order product at 0, which is listed at its special-order quantity,
+  // and a variant group, which is listed at its total.
+  const newQuantity = target.quantity;
 
   const activeListings = await trx
     .selectFrom('marketplace_listings')
     .selectAll()
-    .where('product_id', '=', product.id)
+    .where('product_id', '=', target.productId)
     .where('listing_status', '=', 'ACTIVE')
     .execute();
 
@@ -197,7 +240,7 @@ async function fanOutInventoryJobs(trx: Trx, product: ProductRow): Promise<void>
     const failedButTracked = await trx
       .selectFrom('marketplace_listings')
       .selectAll()
-      .where('product_id', '=', product.id)
+      .where('product_id', '=', target.productId)
       .where('listing_status', '=', 'FAILED')
       .where('external_listing_id', 'is not', null)
       .execute();
@@ -206,6 +249,14 @@ async function fanOutInventoryJobs(trx: Trx, product: ProductRow): Promise<void>
   }
 
   const version = product.version ?? '0';
+
+  /**
+   * Keys embed the CHANGED row's version. For a group, several rows feed one
+   * listing, and two colours can sit at the same version number — so the
+   * changed row's id goes in too, or one colour's sell-out would be
+   * deduplicated against another's and leave the listing up.
+   */
+  const keyTag = target.grouped ? `-p${product.id}` : '';
 
   if (newQuantity === 0) {
     log.info(
@@ -226,10 +277,10 @@ async function fanOutInventoryJobs(trx: Trx, product: ProductRow): Promise<void>
           jobType: 'LISTING_DELIST',
           marketplaceType: listing.marketplace_type,
           marketplaceAccountId: listing.marketplace_account_id,
-          productId: product.id,
+          productId: target.productId,
           listingId: listing.id,
           payload: {},
-          idempotencyKey: `delist-soldout-${listing.id}-v${version}`,
+          idempotencyKey: `delist-soldout-${listing.id}${keyTag}-v${version}`,
         },
         trx,
       );
@@ -244,7 +295,7 @@ async function fanOutInventoryJobs(trx: Trx, product: ProductRow): Promise<void>
           jobType: 'INVENTORY_SYNC',
           marketplaceType: listing.marketplace_type,
           marketplaceAccountId: listing.marketplace_account_id,
-          productId: product.id,
+          productId: target.productId,
           listingId: listing.id,
           payload: { newQuantity },
           idempotencyKey: `inv-${product.id}-${listing.id}-v${version}`,

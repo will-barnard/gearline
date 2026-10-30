@@ -266,6 +266,32 @@ export interface ProductsTable {
    * services/special-order.ts channelQuantity().
    */
   special_order_quantity: ColumnType<number | null, number | null | undefined, number | null>;
+  /** V23. Shopify option values in option order; [] until the next webhook/resync. */
+  variant_options: ColumnType<VariantOptionJson[], string | RawBuilder<string> | undefined, string | RawBuilder<string>>;
+  /** V23. Shopify's 1-based variant position. */
+  variant_position: ColumnType<number | null, number | null | undefined, number | null>;
+  /** V23. The variant's own image (variant.image_id), when it has one. */
+  variant_image_url: ColumnType<string | null, string | null | undefined, string | null>;
+  /**
+   * V23. Derived by services/variant-groups.ts — never write it anywhere else.
+   * NULL = not grouped, own id = group lead, another id = member of that lead.
+   */
+  variant_group_lead_id: ColumnType<string | null, string | null | undefined, string | null>;
+}
+
+export interface VariantOptionJson {
+  name: string;
+  value: string;
+}
+
+/** V23. Per-Shopify-product config for collapsing variants into one listing. */
+export interface VariantGroupingsTable {
+  shopify_product_id: string;
+  collapsed_options: ColumnType<string[], string[], string[]>;
+  lead_variant_ids: ColumnType<string[], string[] | undefined, string[]>;
+  buyer_note: string | null;
+  created_at: GeneratedTimestamp;
+  updated_at: GeneratedTimestamp;
 }
 
 export interface MarketplaceAccountsTable {
@@ -388,6 +414,7 @@ export interface Database {
   sync_jobs: SyncJobsTable;
   audit_events: AuditEventsTable;
   pricing_profiles: PricingProfilesTable;
+  variant_groupings: VariantGroupingsTable;
 }
 
 // Convenience row aliases used throughout the service layer.
@@ -405,3 +432,4 @@ export type OrderRow = Selectable<OrdersTable>;
 export type SyncJobRow = Selectable<SyncJobsTable>;
 export type AuditEventRow = Selectable<AuditEventsTable>;
 export type PricingProfileRow = Selectable<PricingProfilesTable>;
+export type VariantGroupingRow = Selectable<VariantGroupingsTable>;

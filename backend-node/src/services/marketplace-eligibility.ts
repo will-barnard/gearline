@@ -11,8 +11,11 @@ import type { MarketplaceAccountRow, MarketplaceType, ProductRow } from '../db/t
  * to three copies is how one of them gets missed — and the one that gets
  * missed is the one that puts a t-shirt on a marketplace that bans clothing.
  *
- * Three rules, checked in order:
+ * Four rules, checked in order:
  *
+ *   0. products.variant_group_lead_id — a variant-group MEMBER is sold through
+ *      its lead's listing (services/variant-groups.ts), so it is never listed
+ *      itself.
  *   1. products.marketplace_excluded — "never list this anywhere".
  *   2. products.excluded_marketplaces — "never list this on marketplace X".
  *   3. The ACCOUNT's `excluded_product_types` setting — "nothing of Shopify
@@ -51,8 +54,11 @@ export function excludedProductTypes(account: Pick<MarketplaceAccountRow, 'sync_
   return raw.map((t) => normaliseType(String(t))).filter((t) => t !== '');
 }
 
+type EligibilityFields = Pick<ProductRow, 'marketplace_excluded' | 'excluded_marketplaces' | 'category'> &
+  Partial<Pick<ProductRow, 'id' | 'variant_group_lead_id'>>;
+
 export function checkEligibility(
-  product: Pick<ProductRow, 'marketplace_excluded' | 'excluded_marketplaces' | 'category'>,
+  product: EligibilityFields,
   account: Pick<MarketplaceAccountRow, 'marketplace_type' | 'sync_settings'>,
 ): Eligibility {
   const type = account.marketplace_type;
@@ -60,6 +66,10 @@ export function checkEligibility(
 
   if (type === 'SHOPIFY') {
     return { eligible: false, reason: 'Shopify is the product source, not a listing destination' };
+  }
+
+  if (product.variant_group_lead_id != null && product.variant_group_lead_id !== product.id) {
+    return { eligible: false, reason: 'Sold through its variant group\'s listing' };
   }
 
   if (product.marketplace_excluded) {
@@ -82,7 +92,7 @@ export function checkEligibility(
 }
 
 export function isEligible(
-  product: Pick<ProductRow, 'marketplace_excluded' | 'excluded_marketplaces' | 'category'>,
+  product: EligibilityFields,
   account: Pick<MarketplaceAccountRow, 'marketplace_type' | 'sync_settings'>,
 ): boolean {
   return checkEligibility(product, account).eligible;
