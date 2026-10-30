@@ -148,11 +148,37 @@ export async function publishOffer(
 }
 
 /**
+ * An offer's status — "PUBLISHED" (live) or "UNPUBLISHED" — or null when it
+ * could not be read. GET /sell/inventory/v1/offer/{offerId}.
+ */
+export async function getOfferStatus(account: MarketplaceAccountRow, offerId: string): Promise<string | null> {
+  try {
+    const response = await apiRequest<{ status?: string }>({
+      marketplace: 'eBay',
+      method: 'GET',
+      url: url(`/sell/inventory/v1/offer/${encodeURIComponent(offerId)}`),
+      accessToken: bearer(account),
+    });
+    return typeof response.body?.status === 'string' ? response.body.status.toUpperCase() : null;
+  } catch (err) {
+    log.warn({ err, offerId }, 'Could not read eBay offer status');
+    return null;
+  }
+}
+
+/**
  * Withdraws (ends) an offer.
  *
- * A 404 resolves rather than throwing — the listing is already gone, which is
- * the desired end state. Without this, a listing ended manually on eBay would
- * fail every delist retry and then dead-letter.
+ * Resolves rather than throwing when the offer is already not for sale — the
+ * desired end state — so a listing ended by hand, or withdrawn by an earlier
+ * delist, does not fail every retry and dead-letter:
+ *
+ *   404                         the offer is gone
+ *   any other refusal, offer    already withdrawn (e.g. a sold item whose
+ *   reads back UNPUBLISHED      republish was refused afterwards)
+ *
+ * A refusal while the offer still reads PUBLISHED, or cannot be read, rethrows:
+ * the item may still be for sale.
  */
 export async function withdrawOffer(
   account: MarketplaceAccountRow,
@@ -170,6 +196,13 @@ export async function withdrawOffer(
       log.info({ offerId }, 'eBay offer already gone — treating as withdrawn');
       return;
     }
+
+    const status = await getOfferStatus(account, offerId);
+    if (status !== null && status !== 'PUBLISHED') {
+      log.info({ offerId, status }, 'eBay offer is not published — nothing to withdraw');
+      return;
+    }
+
     throw err;
   }
 }

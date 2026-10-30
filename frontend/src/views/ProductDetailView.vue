@@ -165,7 +165,7 @@
                 <div class="mt-2.5 flex items-center gap-3">
                   <!-- Publish / Republish -->
                   <button
-                    v-if="l.listingStatus !== 'ACTIVE' && l.listingStatus !== 'PENDING' && l.listingStatus !== 'PUBLISHING' && l.listingStatus !== 'SOLD' && l.listingStatus !== 'ON_HOLD'"
+                    v-if="l.listingStatus !== 'ACTIVE' && l.listingStatus !== 'PENDING' && l.listingStatus !== 'PUBLISHING' && l.listingStatus !== 'SOLD' && l.listingStatus !== 'ON_HOLD' && !soldOut"
                     @click="publishListing(l)"
                     :disabled="publishingId === l.id || hasOverrideErrors(l)"
                     class="text-xs font-medium text-brand-400 hover:text-brand-300 disabled:opacity-40"
@@ -179,9 +179,21 @@
                     Publishing…
                   </span>
 
-                  <!-- Delist (only when live) -->
+                  <!-- Sold out: publishing would be refused, and is not what's wanted -->
+                  <span
+                    v-if="soldOut && ['FAILED', 'DELISTED', 'INACTIVE', 'NEEDS_REVIEW'].includes(l.listingStatus)"
+                    class="text-xs text-gray-500"
+                  >Sold out — nothing to publish</span>
+
+                  <!--
+                    Delist when live — or FAILED, which can still be for sale (a
+                    failed update leaves the marketplace listing in place) or be
+                    a stale error on a sold item. The takedown checks the
+                    marketplace first, so delisting an already-ended listing just
+                    tidies the record.
+                  -->
                   <button
-                    v-if="l.listingStatus === 'ACTIVE'"
+                    v-if="l.listingStatus === 'ACTIVE' || l.listingStatus === 'FAILED'"
                     @click="delistListing(l)"
                     :disabled="delistingId === l.id"
                     class="text-xs text-gray-500 hover:text-gray-300 disabled:opacity-40"
@@ -1164,6 +1176,16 @@ const publishForm = ref(emptyPublishForm())
 // Inline listing actions
 const publishingId = ref(null)
 const delistingId = ref(null)
+
+/**
+ * No stock and not special order — the item has sold. Grouped variants are
+ * left out: their listing's quantity is the whole group's, not this row's.
+ */
+const soldOut = computed(() => {
+  const p = product.value
+  if (!p || p.variantGroupLeadId) return false
+  return (p.quantity ?? 0) <= 0 && !p.specialOrder
+})
 
 // Overrides editor state
 const overridesOpen = ref({})  // { [listingId]: boolean } — which listings show the overrides editor.
