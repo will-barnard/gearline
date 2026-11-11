@@ -99,6 +99,29 @@
                   </div>
                 </div>
 
+                <!-- Special-order tags (Shopify only) -->
+                <div v-if="account.marketplaceType === 'SHOPIFY'" class="mt-2">
+                  <div class="flex items-center gap-2 flex-wrap">
+                    <span class="text-xs text-gray-500">Special-order tags:</span>
+                    <template v-if="account.specialOrderTags && account.specialOrderTags.length">
+                      <span
+                        v-for="tag in account.specialOrderTags"
+                        :key="tag"
+                        class="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs bg-gray-700 text-gray-300"
+                      >
+                        {{ tag }}
+                      </span>
+                    </template>
+                    <span v-else class="text-xs text-gray-600 italic">off</span>
+                    <button
+                      @click="openSpecialEditor(account)"
+                      class="text-xs text-gray-500 hover:text-gray-300 underline underline-offset-2"
+                    >
+                      Edit
+                    </button>
+                  </div>
+                </div>
+
                 <!-- Listing titles for variants (Shopify is where products come from) -->
                 <template v-if="account.marketplaceType === 'SHOPIFY'">
                   <div class="mt-3 border-t border-gray-800 pt-3 space-y-2">
@@ -561,6 +584,57 @@
           <button @click="editingTagsAccount = null" class="btn-secondary px-4 py-2 text-sm">Cancel</button>
           <button @click="saveTags" :disabled="savingTags" class="btn-primary px-4 py-2 text-sm">
             {{ savingTags ? 'Saving…' : 'Save' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Special-order tags editor modal ──────────────────────────────── -->
+    <div v-if="editingSpecialAccount" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+      <div class="card w-full max-w-md p-6">
+        <h2 class="text-base font-semibold text-white mb-1">Special-order Tags</h2>
+        <p class="text-xs text-gray-500 mb-4">
+          Products with any of these Shopify tags stay listed on marketplaces when
+          Shopify stock is 0 (shown as a small quantity, so a sale doesn't end the
+          listing). Real stock always wins once there is any. Restoration pre-orders
+          are never treated as special order. Removing every tag switches the feature
+          <strong class="text-gray-300">off</strong>.
+        </p>
+
+        <!-- Current tags as removable chips -->
+        <div class="flex flex-wrap gap-2 mb-3 min-h-[2rem]">
+          <span
+            v-for="tag in specialEditorTags"
+            :key="tag"
+            class="inline-flex items-center gap-1.5 rounded px-2 py-1 text-xs bg-gray-700 text-gray-200"
+          >
+            {{ tag }}
+            <button @click="removeSpecialTag(tag)" class="text-gray-400 hover:text-red-400 leading-none">✕</button>
+          </span>
+          <span v-if="specialEditorTags.length === 0" class="text-xs text-gray-600 italic self-center">No tags — special order is off</span>
+        </div>
+
+        <!-- Add a tag -->
+        <div class="flex gap-2">
+          <input
+            v-model="specialInput"
+            type="text"
+            placeholder="e.g. always-available"
+            class="flex-1 rounded-lg bg-gray-800 border border-gray-700 focus:border-brand-500 px-3 py-2 text-sm text-white placeholder-gray-600 outline-none"
+            @keydown.enter.prevent="addSpecialTag"
+            @keydown.comma.prevent="addSpecialTag"
+          />
+          <button @click="addSpecialTag" class="btn-secondary px-3 py-2 text-sm">Add</button>
+        </div>
+        <p class="mt-1 text-xs text-gray-600">
+          Press Enter or comma to add. Matching is case-insensitive. A change applies to
+          each product the next time Shopify updates it (or on a resync), not retroactively.
+        </p>
+
+        <div class="mt-6 flex gap-3 justify-end">
+          <button @click="editingSpecialAccount = null" class="btn-secondary px-4 py-2 text-sm">Cancel</button>
+          <button @click="saveSpecialTags" :disabled="savingSpecial" class="btn-primary px-4 py-2 text-sm">
+            {{ savingSpecial ? 'Saving…' : 'Save' }}
           </button>
         </div>
       </div>
@@ -1187,6 +1261,12 @@ const tagEditorTags = ref([])
 const tagInput = ref('')
 const savingTags = ref(false)
 
+// Special-order tags editor
+const editingSpecialAccount = ref(null)
+const specialEditorTags = ref([])
+const specialInput = ref('')
+const savingSpecial = ref(false)
+
 // Description suffix editor
 const editingSuffixAccount = ref(null)
 const suffixEditorText = ref('')
@@ -1412,6 +1492,38 @@ async function saveTags() {
     load()
   } finally {
     savingTags.value = false
+  }
+}
+
+// ── Special-order tags ────────────────────────────────────────────────────────
+function openSpecialEditor(account) {
+  editingSpecialAccount.value = account
+  specialEditorTags.value = [...(account.specialOrderTags || [])]
+  specialInput.value = ''
+}
+
+function addSpecialTag() {
+  const tag = specialInput.value.trim().toLowerCase().replace(/,/g, '')
+  if (tag && !specialEditorTags.value.includes(tag)) {
+    specialEditorTags.value.push(tag)
+  }
+  specialInput.value = ''
+}
+
+function removeSpecialTag(tag) {
+  specialEditorTags.value = specialEditorTags.value.filter(t => t !== tag)
+}
+
+async function saveSpecialTags() {
+  savingSpecial.value = true
+  try {
+    await api.patch(`/marketplace/accounts/${editingSpecialAccount.value.id}/settings`, {
+      specialOrderTags: specialEditorTags.value
+    })
+    editingSpecialAccount.value = null
+    load()
+  } finally {
+    savingSpecial.value = false
   }
 }
 

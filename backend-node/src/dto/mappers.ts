@@ -28,6 +28,7 @@ import type {
   SyncJobRow,
   UserRow,
 } from '../db/types.js';
+import { specialOrderTags } from '../services/special-order.js';
 
 /** Reproduces Jackson's non_null inclusion. Shallow by design — DTOs are flat. */
 export function stripNulls<T extends Record<string, unknown>>(obj: T): Partial<T> {
@@ -225,6 +226,9 @@ export function toMarketplaceAccountDto(
     pricingProfileName: profile?.name ?? null,
     // Always an array, never null — the frontend iterates it unguarded.
     excludedTags,
+    // The EFFECTIVE list: the default ["special-order"] when the setting was never
+    // saved, [] when special order has been switched off.
+    specialOrderTags: specialOrderTags(settings),
     descriptionSuffix: stringSetting(settings, 'description_suffix'),
     ebayMerchantLocationKey: stringSetting(settings, 'ebay_merchant_location_key'),
     ebayFulfillmentPolicyId: stringSetting(settings, 'ebay_fulfillment_policy_id'),

@@ -175,6 +175,12 @@ marketplaceAccountsRouter.patch(
 
 const settingsSchema = z.object({
   excludedTags: z.array(z.string()).nullish(),
+  /**
+   * Shopify tags that make a product "special order" (stock 0 but still
+   * orderable; see services/special-order.ts). Sent whole. Unlike excludedTags,
+   * an empty list is a real value, not a removal: it switches special order off.
+   */
+  specialOrderTags: z.array(z.string()).nullish(),
   descriptionSuffix: z.string().nullish(),
   ebayMerchantLocationKey: z.string().nullish(),
   ebayFulfillmentPolicyId: z.string().nullish(),
@@ -250,6 +256,16 @@ marketplaceAccountsRouter.patch(
         ),
       ];
       merge['excluded_tags'] = normalised;
+    }
+
+    if (body.specialOrderTags != null) {
+      merge['special_order_tags'] = [
+        ...new Set(
+          body.specialOrderTags
+            .map((t) => t.trim().toLowerCase())
+            .filter((t) => t !== ''),
+        ),
+      ];
     }
 
     /**
