@@ -9,6 +9,9 @@ import {
   collapsedValues,
   groupedProduct,
   groupImages,
+  variantImages,
+  listingImages,
+  selectedImages,
   groupTitle,
   isGroupLead,
   isGroupMember,
@@ -57,6 +60,7 @@ function variant(i: number, size: string, cut: string, color: string, extra: Par
     variant_position: i,
     variant_image_url: img(name),
     variant_group_lead_id: null,
+    listing_image_urls: null,
     ...extra,
   } as ProductRow;
 }
@@ -131,7 +135,7 @@ describe('groupTitle', () => {
 });
 
 describe('groupImages', () => {
-  it('puts the lead photo first, then the group, then general shots — never other groups', () => {
+  it('puts the lead photo first, then the group — never other groups or general shots', () => {
     const rows = catalogue();
     const members = rows.slice(0, 3); // Large / Mark I in Black, Red, Cream
     const lead = members[1]!; // Red
@@ -140,13 +144,91 @@ describe('groupImages', () => {
       img('Large / Mark I / Red'),
       img('Large / Mark I / Black'),
       img('Large / Mark I / Cream'),
-      GENERAL,
+    ]);
+  });
+
+  it("carries each member's extra shots along with its photo", () => {
+    const rows = catalogue();
+    const order = [GENERAL, ...rows.flatMap((r) => [r.variant_image_url!, `${r.variant_image_url!}#detail`])];
+    const withExtras = rows.map((r) => ({ ...r, image_urls: order }));
+
+    expect(groupImages(withExtras[0]!, withExtras.slice(0, 2), withExtras)).toEqual([
+      img('Large / Mark I / Black'),
+      `${img('Large / Mark I / Black')}#detail`,
+      img('Large / Mark I / Red'),
+      `${img('Large / Mark I / Red')}#detail`,
     ]);
   });
 
   it('falls back to the product photos when no variant has its own', () => {
     const rows = catalogue().map((r) => ({ ...r, variant_image_url: null }));
     expect(groupImages(rows[0]!, rows.slice(0, 3), rows)).toEqual(rows[0]!.image_urls);
+  });
+});
+
+describe('variantImages', () => {
+  // The Mellotron layout: an overview, then each variant's photo followed by its own shots.
+  const OVERVIEW = img('overview');
+  const STD = img('standard');
+  const BLACK = img('black');
+  const photos = [OVERVIEW, STD, img('white-rear'), img('white-keys'), BLACK, img('black-rear')];
+
+  const standard = variant(1, 'Full', 'Mark I', 'Standard', { image_urls: photos, variant_image_url: STD });
+  const black = variant(2, 'Full', 'Mark I', 'Black', { image_urls: photos, variant_image_url: BLACK });
+  const plain = variant(3, 'Full', 'Mark I', 'Plain', { image_urls: photos, variant_image_url: null });
+
+  it("takes the variant's photo and the shots after it, without the overview", () => {
+    expect(variantImages(standard, [standard, black])).toEqual([STD, img('white-rear'), img('white-keys')]);
+    expect(variantImages(black, [standard, black])).toEqual([BLACK, img('black-rear')]);
+  });
+
+  it('gives a variant without its own photo the general shots', () => {
+    expect(variantImages(plain, [standard, black, plain])).toEqual([OVERVIEW]);
+  });
+
+  it('gives every photo when there are no general shots to fall back on', () => {
+    const noOverview = { ...plain, image_urls: photos.slice(1) };
+    expect(variantImages(noOverview, [standard, black, noOverview])).toEqual(photos.slice(1));
+  });
+
+  it('leaves products whose variants have no photos alone', () => {
+    const tee = (i: number) => variant(i, 'M', 'Tee', 'Navy', { image_urls: photos, variant_image_url: null });
+    expect(variantImages(tee(1), [tee(1), tee(2)])).toEqual(photos);
+  });
+
+  it('leaves a single-variant product alone', () => {
+    expect(variantImages(black, [black])).toEqual(photos);
+  });
+
+  it('shares a photo between variants that are linked to the same one', () => {
+    const pair = variant(4, 'Full', 'Mark II', 'Black', { image_urls: photos, variant_image_url: BLACK });
+    expect(variantImages(pair, [standard, black, pair])).toEqual([BLACK, img('black-rear')]);
+  });
+});
+
+describe('selectedImages', () => {
+  const photos = [img('a'), img('b'), img('c')];
+  const row = (picked: string[] | null) => variant(1, 'L', 'Mark I', 'Red', { image_urls: photos, listing_image_urls: picked });
+
+  it('is null (automatic) when nothing is picked', () => {
+    expect(selectedImages(row(null))).toBeNull();
+    expect(selectedImages(row([]))).toBeNull();
+  });
+
+  it('keeps the picked order', () => {
+    expect(selectedImages(row([img('c'), img('a')]))).toEqual([img('c'), img('a')]);
+  });
+
+  it('drops photos no longer on the product, and falls back when none are left', () => {
+    expect(selectedImages(row([img('gone'), img('b')]))).toEqual([img('b')]);
+    expect(selectedImages(row([img('gone')]))).toBeNull();
+  });
+
+  it('wins over the automatic photos for an ungrouped variant', () => {
+    const rows = catalogue();
+    const picked = { ...rows[0]!, listing_image_urls: [GENERAL] };
+    expect(listingImages(picked, rows)).toEqual([GENERAL]);
+    expect(listingImages(rows[0]!, rows)).toEqual([img('Large / Mark I / Black')]);
   });
 });
 
@@ -165,6 +247,13 @@ describe('groupedProduct', () => {
     expect(grouped.description).toContain('<strong>Color options:</strong> Black, Red, Cream');
     expect(grouped.description).toContain('send us a message with the color you would like');
     expect(grouped.image_urls[0]).toBe(img('Large / Mark I / Black'));
+  });
+
+  it("uses the photos picked on the lead for the whole group", () => {
+    const rows = catalogue();
+    const lead = { ...rows[0]!, listing_image_urls: [GENERAL, img('Large / Mark I / Red')] };
+    const grouped = groupedProduct(lead, [lead, ...rows.slice(1, 3)], rows, grouping);
+    expect(grouped.image_urls).toEqual([GENERAL, img('Large / Mark I / Red')]);
   });
 
   it('lists a special-order group with no stock at the special-order quantity', () => {

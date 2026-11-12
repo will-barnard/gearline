@@ -97,6 +97,8 @@
           <!-- Variant grouping: one listing per size × cut, colour chosen after the sale -->
           <VariantGroupingCard v-if="!product.marketplaceExcluded" :product="product" @changed="load" />
 
+          <ListingPhotosCard v-if="!product.marketplaceExcluded" :product="product" />
+
           <div class="card">
             <div class="flex items-center justify-between mb-4">
               <h2 class="text-sm font-semibold uppercase tracking-wider text-gray-500">Marketplace Listings</h2>
@@ -1053,6 +1055,7 @@ import { ref, computed, onMounted, watch, defineComponent, h } from 'vue'
 import ReverbProductTypeSelect from '@/components/products/ReverbProductTypeSelect.vue'
 import CopyOverridesPicker from '@/components/products/CopyOverridesPicker.vue'
 import VariantGroupingCard from '@/components/products/VariantGroupingCard.vue'
+import ListingPhotosCard from '@/components/products/ListingPhotosCard.vue'
 import { useRoute } from 'vue-router'
 import api from '@/lib/api'
 import { isTransientStatus, pollUntilSettled } from '@/lib/listingStatus'

@@ -23,6 +23,7 @@ import { configuredCategoryFor, resolveCategoryUuid } from './categories.js';
 import { resolveConditionUuid } from './conditions.js';
 import { mapCondition, toReverbRequest } from './listing-mapper.js';
 import { toImportedOrder } from './order-mapper.js';
+import { PHOTO_SOURCES_KEY, reverbPhotos, syncListingPhotos } from './photo-sync.js';
 import {
   isBehindWatermark,
   isImportCandidate,
@@ -378,7 +379,9 @@ export const reverbConnector: MarketplaceConnector = {
         String(result.id),
         extractPrice(result),
         request.quantity,
-        buildMetadata(result),
+        // What was sent, so a later photo change knows these are ours to
+        // replace (photo-sync.ts).
+        { ...buildMetadata(result), [PHOTO_SOURCES_KEY]: reverbPhotos(request.imageUrls) },
       );
     } catch (err) {
       if (err instanceof PermanentMarketplaceError) {
@@ -418,7 +421,8 @@ export const reverbConnector: MarketplaceConnector = {
 
     try {
       // No `publish` on update — see ReverbRequestOptions. An update must not
-      // change listing state. No `photos` either: Reverb appends them.
+      // change listing state. No `photos` either: Reverb appends them — photo
+      // changes go through syncListingPhotos below.
       body = toReverbRequest(product, request, {
         conditionUuid: await conditionUuidFor(current, product, request),
         categoryUuid: await categoryUuidFor(current, product, request),
@@ -435,13 +439,17 @@ export const reverbConnector: MarketplaceConnector = {
     try {
       const result = await client.updateListing(current, externalId, body);
 
+      // Photos are never in the update body (Reverb appends them); a photo
+      // change is applied as its own replace step.
+      const photoMetadata = await syncListingPhotos(current, externalId, existingListing, request);
+
       return publishSuccess(
         // Reverb may omit the id on an update response; fall back to the one we
         // already hold rather than nulling a valid external ID.
         String(result.id ?? externalId),
         extractPrice(result),
         request.quantity,
-        buildMetadata(result),
+        { ...buildMetadata(result), ...photoMetadata },
       );
     } catch (err) {
       if (err instanceof PermanentMarketplaceError) {

@@ -344,6 +344,15 @@
                   {{ syncing[account.id] ? 'Syncing…' : 'Sync Products' }}
                 </button>
                 <button
+                  v-if="account.marketplaceType !== 'SHOPIFY'"
+                  @click="pushPhotos(account)"
+                  :disabled="pushingPhotos[account.marketplaceType]"
+                  class="btn-secondary px-3 py-1.5 text-xs"
+                  title="Replace the photos on every live listing with the photos Gearline would publish today"
+                >
+                  {{ pushingPhotos[account.marketplaceType] ? 'Queuing…' : photoPushResult[account.marketplaceType] || 'Push Photos' }}
+                </button>
+                <button
                   @click="healthCheck(account.id)"
                   :disabled="checking[account.id]"
                   class="btn-secondary px-3 py-1.5 text-xs"
@@ -1303,6 +1312,34 @@ async function healthCheck(id) {
 async function toggleActive(account) {
   await api.patch(`/marketplace/accounts/${account.id}/toggle`, null, { params: { active: !account.active } })
   load()
+}
+
+// ── Photo push ──────────────────────────────────────────────────────────────
+// Brings live listings in line with the photos each product would publish now
+// (services/listing-photos.ts). Mainly for Reverb, which never re-reads photos
+// on an ordinary update.
+const pushingPhotos = ref({})
+const photoPushResult = ref({})
+
+async function pushPhotos(account) {
+  const type = account.marketplaceType
+  const name = { EBAY: 'eBay', REVERB: 'Reverb', GEAR_EXCHANGE: 'Gear Exchange' }[type] || type
+  const ok = window.confirm(
+    `Replace the photos on every live ${name} listing with the photos Gearline would publish today?\n\n` +
+      `Photos added by hand on ${name} will be removed. Listings that already match are left alone.`,
+  )
+  if (!ok) return
+  pushingPhotos.value[type] = true
+  try {
+    const res = await api.post('/listings/push-photos', { marketplaceType: type })
+    photoPushResult.value[type] = `Queued ${res.data.queued}`
+  } catch (e) {
+    photoPushResult.value[type] = 'Push failed'
+    console.error('Photo push failed:', e)
+  } finally {
+    pushingPhotos.value[type] = false
+    setTimeout(() => { photoPushResult.value[type] = '' }, 6000)
+  }
 }
 
 async function syncProducts(account) {

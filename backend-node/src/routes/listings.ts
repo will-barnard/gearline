@@ -8,6 +8,7 @@ import type { ListingStatus, ProductRow } from '../db/types.js';
 import { toListingDto } from '../dto/mappers.js';
 import { asyncHandler, ConflictError, ResourceNotFoundError } from '../http/errors.js';
 import { enqueue } from '../queue/sync-job-producer.js';
+import { pushAllListingPhotos } from '../services/listing-photos.js';
 import { checkEligibility } from '../services/marketplace-eligibility.js';
 
 /** Port of ListingController. Mounted at /api/v1/listings. */
@@ -102,6 +103,26 @@ listingsRouter.get(
     ]);
 
     res.json(listings.map((l) => toListingDto(l, product)));
+  }),
+);
+
+// ── POST /push-photos ────────────────────────────────────────────────────────
+
+/**
+ * Replaces the photos on every live listing on one marketplace with what each
+ * product would publish today. For catching up listings published before a
+ * photo-rule change — Reverb in particular never re-reads photos on an
+ * ordinary update. Declared before /:id routes so the path is not taken as an id.
+ */
+const pushPhotosSchema = z.object({
+  marketplaceType: z.enum(['EBAY', 'REVERB', 'GEAR_EXCHANGE']),
+});
+
+listingsRouter.post(
+  '/push-photos',
+  asyncHandler(async (req, res) => {
+    const body = pushPhotosSchema.parse(req.body);
+    res.status(202).json({ queued: await pushAllListingPhotos(body.marketplaceType) });
   }),
 );
 

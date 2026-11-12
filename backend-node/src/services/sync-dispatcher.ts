@@ -224,6 +224,7 @@ async function updateListing(job: SyncJobRow): Promise<void> {
   // Re-resolve on every update so newly-set overrides are picked up.
   let request = resolve(product, listing, account);
   request = await applyPricingProfile(request, product.price, account.pricing_profile_id);
+  if (job.payload?.['replacePhotos'] === true) request = { ...request, replacePhotos: true };
 
   const result = await connector.updateListing(account, product, listing, request);
 

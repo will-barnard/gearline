@@ -60,6 +60,13 @@ export interface PublishListingRequest {
    * untouched so the resolver does not need to know each marketplace's schema.
    */
   extraParams: Record<string, unknown>;
+  /**
+   * Set on an update queued by a photo change (services/listing-photos.ts):
+   * the listing's photos must be REPLACED with imageUrls. Connectors whose
+   * ordinary update already replaces photos (eBay) can ignore it; Reverb only
+   * touches photos on create unless this is set (reverb/photo-sync.ts).
+   */
+  replacePhotos?: boolean;
 }
 
 export interface PublishListingResult {

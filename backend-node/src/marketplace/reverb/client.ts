@@ -664,3 +664,62 @@ export function reverbProviderFor(carrier: string | null): string {
   if (c.includes('canadapost')) return 'Canada Post';
   return 'Other';
 }
+
+// ── Listing images ───────────────────────────────────────────────────────────
+
+/**
+ * Reverb's own ids for a listing's images, in the order Reverb returns them.
+ * GET /listings/{id}/images. The documented shape is a list of `{ id, url }`;
+ * the bare array, `{ images }` and HAL `_embedded.images` are all accepted,
+ * because a shape we fail to read would look like "no photos" and skip the
+ * deletes, stacking duplicates.
+ */
+export async function getListingImageIds(
+  account: MarketplaceAccountRow,
+  listingId: string,
+): Promise<string[]> {
+  const response = await apiRequest<unknown>({
+    marketplace: 'Reverb',
+    method: 'GET',
+    url: url(`/listings/${encodeURIComponent(listingId)}/images`),
+    accessToken: getAccessToken(account),
+    headers: baseHeaders(),
+  });
+
+  const body = response.body as Record<string, unknown> | unknown[] | null;
+  const list: unknown[] = Array.isArray(body)
+    ? body
+    : Array.isArray(body?.['images'])
+      ? (body['images'] as unknown[])
+      : Array.isArray((body?.['_embedded'] as Record<string, unknown> | undefined)?.['images'])
+        ? ((body!['_embedded'] as Record<string, unknown>)['images'] as unknown[])
+        : [];
+
+  return list
+    .map((img) => (img && typeof img === 'object' ? (img as Record<string, unknown>)['id'] : undefined))
+    .filter((id): id is string | number => typeof id === 'string' || typeof id === 'number')
+    .map((id) => String(id));
+}
+
+/**
+ * Removes one image from a listing. An image Reverb no longer has counts as
+ * removed — a retried replace must not fail on the deletes it already made.
+ */
+export async function deleteListingImage(
+  account: MarketplaceAccountRow,
+  listingId: string,
+  imageId: string,
+): Promise<void> {
+  try {
+    await apiRequest<unknown>({
+      marketplace: 'Reverb',
+      method: 'DELETE',
+      url: url(`/listings/${encodeURIComponent(listingId)}/images/${encodeURIComponent(imageId)}`),
+      accessToken: getAccessToken(account),
+      headers: baseHeaders(),
+    });
+  } catch (err) {
+    if (isNotFound(err)) return;
+    throw err;
+  }
+}

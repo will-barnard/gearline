@@ -17,6 +17,7 @@ import {
   bulkSetExcluded,
   setExcludedMarketplaces,
 } from '../services/product-exclusion.js';
+import { describeListingPhotos, pushListingPhotos, saveListingPhotos } from '../services/listing-photos.js';
 import { describeGrouping, saveGrouping } from '../services/variant-group-admin.js';
 
 /** Port of ProductController. Mounted at /api/v1/products. */
@@ -599,6 +600,61 @@ productsRouter.put(
     });
 
     res.json(result);
+  }),
+);
+
+// ── Listing photos ───────────────────────────────────────────────────────────
+
+/**
+ * Which photos this variant's marketplace listings carry. Automatic by default
+ * (its own Shopify photo and the shots after it — see variant-groups.ts
+ * variantImages); the operator can pick them instead. See
+ * services/listing-photos.ts.
+ */
+productsRouter.get(
+  '/:id/listing-photos',
+  asyncHandler(async (req, res) => {
+    const id = uuidSchema.parse(req.params.id);
+    res.json(await describeListingPhotos(id));
+  }),
+);
+
+const listingPhotosSchema = z.object({
+  /** The photos in order. null or [] goes back to automatic. */
+  imageUrls: z.array(z.string().url().max(2048)).max(100).nullable(),
+});
+
+/** Saves the selection and replaces the photos on every live listing. */
+productsRouter.put(
+  '/:id/listing-photos',
+  asyncHandler(async (req, res) => {
+    const user = currentUser(req);
+    const id = uuidSchema.parse(req.params.id);
+    const body = listingPhotosSchema.parse(req.body);
+
+    const result = await saveListingPhotos(id, body.imageUrls);
+
+    audit.record({
+      type: 'PRODUCT_UPDATED',
+      actorId: user.id,
+      entityType: 'Product',
+      entityId: id,
+      metadata: { listingPhotos: result.mode, photoCount: String(result.effective.length) },
+    });
+
+    res.json(result);
+  }),
+);
+
+/** Re-sends the current photos to every live listing without changing them. */
+productsRouter.post(
+  '/:id/listing-photos/push',
+  asyncHandler(async (req, res) => {
+    const id = uuidSchema.parse(req.params.id);
+    const product = await db.selectFrom('products').select('id').where('id', '=', id).executeTakeFirst();
+    if (!product) throw new ResourceNotFoundError('Product', id);
+
+    res.json({ queued: await pushListingPhotos(id, 'listing_photos_pushed') });
   }),
 );
 

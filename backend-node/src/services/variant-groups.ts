@@ -33,8 +33,9 @@ const log = loggerFor('variant-groups');
  *
  *   title        the collapsed option removed ("… Large / Mark I")
  *   description  + the options on offer and the "message us" note
- *   image_urls   the lead variant's photo first, then the other members'
- *                photos, then product photos not tied to any variant
+ *   image_urls   the photos picked on the lead (V24), else the lead variant's
+ *                photos first, then the other members' — never the
+ *                product's general shots (groupImages)
  *   quantity     the total stock across the group
  *
  * so no marketplace connector needs to know groups exist. Price, SKU, weight,
@@ -206,26 +207,106 @@ export function groupTitle(leadTitle: string, leadOptions: VariantOptionJson[], 
 }
 
 type ImageRow = Pick<ProductRow, 'id' | 'image_urls' | 'variant_image_url' | 'variant_position' | 'sku'>;
+type SelectionRow = Pick<ProductRow, 'image_urls' | 'listing_image_urls'>;
+
+/** Most photos any marketplace takes (Reverb and Gear Exchange; eBay uses the first 12). */
+export const MAX_LISTING_PHOTOS = 25;
 
 /**
- * Photos for a group listing: the lead variant's photo first, then the other
- * members' photos, then product photos that belong to no variant (general
- * shots). Photos of variants OUTSIDE the group are left out — a Small lid's
- * photo has no place on the Large listing.
+ * The operator's hand-picked photos (V24), or null for automatic. Photos no
+ * longer on the product — deleted or replaced in Shopify, which changes the
+ * URL — are dropped, and a selection left empty counts as automatic, so a
+ * stale choice can never publish a broken image or a photo-less listing.
+ */
+export function selectedImages(row: SelectionRow): string[] | null {
+  const picked = row.listing_image_urls;
+  if (!Array.isArray(picked) || picked.length === 0) return null;
+
+  const available = new Set(row.image_urls ?? []);
+  const kept = [...new Set(picked.filter((u) => typeof u === 'string' && available.has(u)))];
+  return kept.length > 0 ? kept.slice(0, MAX_LISTING_PHOTOS) : null;
+}
+
+/**
+ * The photos that belong to ONE variant, out of its product's photo list.
  *
- * When no variant in the group has its own photo, this is just the product's
- * photos, which is what an ungrouped listing gets today.
+ * Shopify links at most one photo to a variant (variant.image_id), which would
+ * make every variant listing a one-photo listing. So a variant's photos are
+ * read the way variant-gallery themes read them: its linked photo, plus the
+ * unlinked photos that FOLLOW it in the product's media order, up to the next
+ * photo linked to some variant.
+ *
+ *   [overview, BLACK, black-rear, black-keys, WHITE, white-rear]
+ *    └ general  └──── Black ─────────────────┘ └── White ─────┘
+ *
+ * Photos before the first linked photo are the product's general shots. A
+ * variant with its own photo gets none of them — the listing should show the
+ * thing being sold, not the overall product. A variant with no photo gets the
+ * general shots, or every photo when there are none (a listing without photos
+ * fails on Reverb and Gear Exchange, so a wrong-colour photo beats no listing).
+ *
+ * A product whose variants have no linked photos at all — the t-shirts — is
+ * unaffected: every variant gets every photo, as before.
+ *
+ * Getting the right shots onto a variant is therefore a matter of photo order
+ * in Shopify: drag a variant's extra shots to sit right after its linked photo.
+ */
+export function variantImages(row: ImageRow, siblings: ImageRow[]): string[] {
+  const all = row.image_urls ?? [];
+  const own = row.variant_image_url;
+
+  // A single-variant product has nothing to tell apart: its linked photo (if
+  // any) is just one of the product's photos.
+  const variants = new Set([row.id, ...siblings.map((s) => s.id)]);
+  if (variants.size < 2) return all;
+
+  const claimed = new Set(
+    [row, ...siblings].map((s) => s.variant_image_url).filter((u): u is string => !!u),
+  );
+
+  if (own) {
+    const start = all.indexOf(own);
+    // The linked photo is missing from the product list (stale row): it is
+    // still the best photo of this variant there is.
+    if (start === -1) return [own];
+
+    const run = [own];
+    for (const url of all.slice(start + 1)) {
+      if (claimed.has(url)) break;
+      run.push(url);
+    }
+    return run;
+  }
+
+  const firstClaimed = all.findIndex((u) => claimed.has(u));
+  const general = firstClaimed === -1 ? all : all.slice(0, firstClaimed);
+  return general.length > 0 ? general : all;
+}
+
+/**
+ * What an ungrouped variant lists: the hand-picked photos when there are any,
+ * otherwise the automatic ones. (A group lead goes through groupedProduct.)
+ */
+export function listingImages(row: ImageRow & SelectionRow, siblings: ImageRow[]): string[] {
+  return selectedImages(row) ?? variantImages(row, siblings);
+}
+
+/**
+ * Photos for a group listing: the lead variant's photos first, then each other
+ * member's photos (see variantImages). Photos of variants OUTSIDE the group are
+ * left out — a Small lid's photo has no place on the Large listing — and so are
+ * the product's general shots, as on an ungrouped variant listing.
+ *
+ * When no variant in the group has its own photo, the group gets what a lone
+ * photo-less variant would: the general shots, else every product photo.
  */
 export function groupImages(lead: ImageRow, members: ImageRow[], siblings: ImageRow[]): string[] {
   const ordered = [lead, ...members.filter((m) => m.id !== lead.id).sort(byVariantOrder)];
-  const memberImages = ordered.map((m) => m.variant_image_url).filter((u): u is string => !!u);
+  const withPhotos = ordered.filter((m) => !!m.variant_image_url);
 
-  if (memberImages.length === 0) return lead.image_urls ?? [];
+  if (withPhotos.length === 0) return variantImages(lead, siblings);
 
-  const claimed = new Set(siblings.map((s) => s.variant_image_url).filter((u): u is string => !!u));
-  const general = (lead.image_urls ?? []).filter((u) => !claimed.has(u));
-
-  return [...new Set([...memberImages, ...general])];
+  return [...new Set(withPhotos.flatMap((m) => variantImages(m, siblings)))];
 }
 
 const escapeHtml = (s: string): string =>
@@ -276,7 +357,7 @@ export function groupedProduct(
     ...lead,
     title: groupTitle(lead.title, lead.variant_options ?? [], grouping.collapsed_options),
     description: base === '' ? note : `${base}\n${note}`,
-    image_urls: groupImages(lead, all, siblings),
+    image_urls: selectedImages(lead) ?? groupImages(lead, all, siblings),
     // Real stock across every colour. A special-order group with none in stock
     // lists at the special-order quantity, exactly as a single variant would.
     quantity: all.reduce((sum, m) => sum + Math.max(0, m.quantity), 0),
@@ -308,11 +389,22 @@ async function groupRows(leadId: string, ex: Executor): Promise<ProductRow[]> {
 
 /**
  * What a connector should publish for this row: the grouped view for a group
- * lead, the row itself otherwise. Every publish, update and inventory sync goes
+ * lead, otherwise the row itself with only its own variant's photos (picked
+ * by hand, or worked out by variantImages). Every publish, update and inventory sync goes
  * through this (sync-dispatcher.ts).
  */
 export async function listingProduct(product: ProductRow, ex: Executor = db): Promise<ProductRow> {
-  if (!isGroupLead(product) || !product.shopify_product_id) return product;
+  if (!product.shopify_product_id) return product;
+
+  // An ungrouped variant lists its own photos only (see variantImages).
+  if (!isGroupLead(product)) {
+    const siblings = await ex
+      .selectFrom('products')
+      .select(['id', 'image_urls', 'variant_image_url', 'variant_position', 'sku'])
+      .where('shopify_product_id', '=', product.shopify_product_id)
+      .execute();
+    return { ...product, image_urls: listingImages(product, siblings) };
+  }
 
   const grouping = await getGrouping(product.shopify_product_id, ex);
   if (!grouping) return product; // stale lead id; the next regroup clears it

@@ -277,6 +277,17 @@ export interface ProductsTable {
    * NULL = not grouped, own id = group lead, another id = member of that lead.
    */
   variant_group_lead_id: ColumnType<string | null, string | null | undefined, string | null>;
+  /**
+   * V24. Photos picked by hand for this variant's listings, in order. NULL =
+   * automatic (variant-groups.ts variantImages). Read through
+   * variant-groups.ts selectedImages(), which drops photos no longer on the
+   * product.
+   */
+  listing_image_urls: ColumnType<
+    string[] | null,
+    string | RawBuilder<string> | null | undefined,
+    string | RawBuilder<string> | null
+  >;
 }
 
 export interface VariantOptionJson {

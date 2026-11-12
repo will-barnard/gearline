@@ -94,6 +94,11 @@
               />
               <span v-if="g.imageUrls.length > 8" class="self-center px-1 text-xs text-gray-500">+{{ g.imageUrls.length - 8 }}</span>
             </div>
+            <router-link
+              v-if="data.grouping && !dirty"
+              :to="`/products/${g.leadProductId}#listing-photos`"
+              class="mt-1 inline-block text-[11px] text-blue-400 hover:text-blue-300"
+            >Choose this listing's photos →</router-link>
 
             <!-- Lead picker -->
             <div class="mt-2 text-[11px] uppercase tracking-wider text-gray-600">Lead variant (its photo goes first)</div>
