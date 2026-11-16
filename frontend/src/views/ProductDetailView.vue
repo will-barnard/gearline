@@ -248,6 +248,14 @@
                     </div>
                   </div>
 
+                  <!-- Description override (all marketplaces) — carries the "Remove links" action -->
+                  <DescriptionOverrideField
+                    v-model="editOverrides[l.id].description"
+                    :fallback="product.description || ''"
+                    :limit="descriptionLimitFor(l.marketplaceType)"
+                    :placeholder="`Override the description for ${marketplaceName(l.marketplaceType)}`"
+                  />
+
                   <!-- Reverb-specific -->
                   <template v-if="l.marketplaceType === 'REVERB'">
                     <p class="text-xs font-medium text-gray-400">Reverb</p>
@@ -626,26 +634,6 @@
                         >Add</button>
                       </div>
                     </div>
-                    <!-- Description override — eBay product.description max 4000 chars -->
-                    <div>
-                      <div class="flex items-center justify-between mb-1">
-                        <label class="text-xs text-gray-500">Description override</label>
-                        <CharCounter :value="editOverrides[l.id].description || product.description || ''" :limit="LIMITS.EBAY.description" />
-                      </div>
-                      <textarea
-                        v-model="editOverrides[l.id].description"
-                        :placeholder="product.description || 'Override description for eBay (max 4000 chars)'"
-                        rows="4"
-                        class="input w-full mt-0 py-1 text-xs resize-none"
-                        :class="descriptionOverLimit('EBAY', editOverrides[l.id].description) ? 'border-red-500' : ''"
-                      ></textarea>
-                      <p v-if="descriptionOverLimit('EBAY', editOverrides[l.id].description)" class="mt-1 text-xs text-red-400">
-                        Exceeds eBay's {{ LIMITS.EBAY.description }}-character limit. Trim the description or it will be rejected.
-                      </p>
-                      <p v-else-if="!editOverrides[l.id].description && productDescriptionWarning('EBAY')" class="mt-1 text-xs text-yellow-400">
-                        ⚠ Product description is {{ (product.description || '').length }} chars — over eBay's {{ LIMITS.EBAY.description }}-char limit. Enter an override above.
-                      </p>
-                    </div>
                   </template>
 
                   <!-- Validation summary -->
@@ -824,6 +812,15 @@
                 size="sm"
               />
             </div>
+
+            <!-- Description override (all marketplaces) — carries the "Remove links" action -->
+            <DescriptionOverrideField
+              v-model="publishForm.description"
+              :fallback="product.description || ''"
+              :limit="descriptionLimitFor(selectedAccountType)"
+              :placeholder="`Override the description for ${marketplaceName(selectedAccountType)}`"
+              size="sm"
+            />
 
             <!-- Reverb fields -->
             <template v-if="selectedAccountType === 'REVERB'">
@@ -1007,23 +1004,6 @@
                   <input v-model="publishForm.ebay_return_policy_id" placeholder="UUID" class="input w-full py-1.5 text-sm" />
                 </div>
               </div>
-              <!-- Description override -->
-              <div>
-                <div class="flex items-center justify-between mb-1">
-                  <label class="block text-xs font-medium text-gray-400">Description override</label>
-                  <CharCounter :value="publishForm.description || product.description || ''" :limit="LIMITS.EBAY.description" />
-                </div>
-                <textarea
-                  v-model="publishForm.description"
-                  :placeholder="product.description || 'Override description for eBay (max 4000 chars)'"
-                  rows="4"
-                  class="input w-full py-1.5 text-sm resize-none"
-                  :class="descriptionOverLimit('EBAY', publishForm.description) ? 'border-red-500' : ''"
-                ></textarea>
-                <p v-if="!publishForm.description && productDescriptionWarning('EBAY')" class="mt-1 text-xs text-yellow-400">
-                  ⚠ Product description is {{ (product.description || '').length }} chars — over eBay's {{ LIMITS.EBAY.description }}-char limit.
-                </p>
-              </div>
             </template>
 
             <!-- Publish modal validation errors -->
@@ -1056,6 +1036,7 @@ import ReverbProductTypeSelect from '@/components/products/ReverbProductTypeSele
 import CopyOverridesPicker from '@/components/products/CopyOverridesPicker.vue'
 import VariantGroupingCard from '@/components/products/VariantGroupingCard.vue'
 import ListingPhotosCard from '@/components/products/ListingPhotosCard.vue'
+import DescriptionOverrideField from '@/components/products/DescriptionOverrideField.vue'
 import { useRoute } from 'vue-router'
 import api from '@/lib/api'
 import { isTransientStatus, pollUntilSettled } from '@/lib/listingStatus'
@@ -1302,27 +1283,14 @@ watch(() => publishForm.value.accountId, (accountId) => {
  * Returns true if product.title (the fallback) would exceed the marketplace title limit,
  * and no override has been entered yet.
  */
+/** Character limit to show on the description box; 0 hides the counter (Gear Exchange has no stated limit). */
+function descriptionLimitFor(marketplaceType) {
+  return LIMITS[marketplaceType]?.description || 0
+}
+
 function productTitleWarning(marketplaceType) {
   if (!product.value || !LIMITS[marketplaceType]?.title) return false
   return product.value.title.length > LIMITS[marketplaceType].title
-}
-
-/**
- * Returns true if product.description (the fallback) would exceed the marketplace description limit.
- */
-function productDescriptionWarning(marketplaceType) {
-  if (!product.value || !LIMITS[marketplaceType]?.description) return false
-  return (product.value.description || '').length > LIMITS[marketplaceType].description
-}
-
-/**
- * Returns true if the given description override (or product fallback) exceeds the limit.
- */
-function descriptionOverLimit(marketplaceType, overrideValue) {
-  const limit = LIMITS[marketplaceType]?.description
-  if (!limit) return false
-  const val = overrideValue || ''
-  return val.length > limit
 }
 
 /**
