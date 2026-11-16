@@ -97,6 +97,7 @@ const FIELD_LABELS = {
   ebay_item_specifics: 'item specifics',
   ebay_merchant_location_key: 'location',
   description: 'description',
+  strip_links: 'remove links',
   price: 'price',
   title: 'title',
 }

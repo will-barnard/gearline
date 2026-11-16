@@ -251,6 +251,8 @@
                   <!-- Description override (all marketplaces) — carries the "Remove links" action -->
                   <DescriptionOverrideField
                     v-model="editOverrides[l.id].description"
+                    v-model:strip-links="editOverrides[l.id].strip_links"
+                    :marketplace="marketplaceName(l.marketplaceType)"
                     :fallback="product.description || ''"
                     :limit="descriptionLimitFor(l.marketplaceType)"
                     :placeholder="`Override the description for ${marketplaceName(l.marketplaceType)}`"
@@ -816,6 +818,8 @@
             <!-- Description override (all marketplaces) — carries the "Remove links" action -->
             <DescriptionOverrideField
               v-model="publishForm.description"
+              v-model:strip-links="publishForm.strip_links"
+              :marketplace="marketplaceName(selectedAccountType)"
               :fallback="product.description || ''"
               :limit="descriptionLimitFor(selectedAccountType)"
               :placeholder="`Override the description for ${marketplaceName(selectedAccountType)}`"
@@ -2027,6 +2031,7 @@ function emptyPublishForm() {
     price: '',
     title: '',
     description: '',
+    strip_links: false,
     reverb_model: '',
     reverb_year: '',
     reverb_finish: '',
@@ -2054,7 +2059,9 @@ function buildOverrides(form) {
   const map = OVERRIDE_FORM_KEYS
   for (const [formKey, overrideKey] of Object.entries(map)) {
     const val = form[formKey]
-    if (val !== '' && val != null) result[overrideKey] = val
+    // `false` is "off", which is the same as the key being absent — skipping it
+    // lets saveOverrides send null for a previously-saved true, clearing it.
+    if (val !== '' && val != null && val !== false) result[overrideKey] = val
   }
   return result
 }
@@ -2068,6 +2075,7 @@ const OVERRIDE_FORM_KEYS = {
     price: 'price',
     title: 'title',
     description: 'description',
+    strip_links: 'strip_links',
     reverb_model: 'reverb_model',
     reverb_year: 'reverb_year',
     reverb_finish: 'reverb_finish',
@@ -2095,6 +2103,8 @@ function flattenOverrides(listing) {
     price: o.price ?? '',
     title: o.title ?? '',
     description: o.description ?? '',
+    // Strictly true: the server only honours a real boolean.
+    strip_links: o.strip_links === true,
     reverb_model: o.reverb_model ?? '',
     reverb_year: o.reverb_year ?? '',
     reverb_finish: o.reverb_finish ?? '',

@@ -1,6 +1,7 @@
 import type { MarketplaceAccountRow, MarketplaceListingRow, ProductRow } from '../db/types.js';
 import { loggerFor } from '../logger.js';
 import type { PublishListingRequest } from '../marketplace/types.js';
+import { stripLinks } from './description-links.js';
 import { resolveShipping } from './shipping-calculator.js';
 import { channelQuantity } from './special-order.js';
 
@@ -23,7 +24,7 @@ const log = loggerFor('listing-attribute-resolver');
  *
  * Generic (all marketplaces):
  *   title, description, price, category_id, condition_mapping, image_urls,
- *   weight_oz_override
+ *   weight_oz_override, strip_links
  *
  * Reverb:
  *   reverb_shipping_profile_name, reverb_model, reverb_year, reverb_finish
@@ -51,6 +52,8 @@ const RESOLVED_KEYS = [
   'image_urls',
   'weight_oz_override',
   'reverb_shipping_profile_name',
+  // Consumed by resolveDescription; it is a switch, not something a connector sends.
+  'strip_links',
 ] as const;
 
 /**
@@ -97,8 +100,19 @@ function getDecimalString(map: Record<string, unknown>, key: string): string | n
 }
 
 /**
- * Description resolution: override, else product description, then the
- * account-level suffix appended as its own paragraph.
+ * Description resolution: override, else product description, then (optionally)
+ * link removal, then the account-level suffix appended as its own paragraph.
+ *
+ * ── strip_links ──────────────────────────────────────────────────────────────
+ * `listing_overrides.strip_links === true` removes hyperlinks from the base
+ * description at resolve time. It is a SWITCH rather than a saved cleaned copy
+ * on purpose: a saved copy pins the text, so editing the description in Shopify
+ * would silently stop reaching the listing. As a switch it is applied to
+ * whatever the description is NOW, and a Shopify edit (which re-queues a
+ * LISTING_UPDATE for live listings) goes out already cleaned.
+ *
+ * The suffix is added AFTER stripping, so a link the operator deliberately put
+ * in the account suffix is left alone.
  *
  * The suffix is applied AFTER the override so it is always present regardless
  * of whether a per-listing description was set. That ordering is intentional —
@@ -113,6 +127,12 @@ function resolveDescription(
 
   if (base === null && product.description && product.description.trim() !== '') {
     base = product.description;
+  }
+
+  // Strict `=== true`: the editor only ever writes a real boolean, and a stray
+  // "false" string should not switch link removal on.
+  if (base !== null && overrides['strip_links'] === true) {
+    base = stripLinks(base);
   }
 
   const settings = account?.sync_settings ?? {};
