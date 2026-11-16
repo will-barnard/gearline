@@ -116,6 +116,12 @@ export interface ReverbRequestOptions {
    * more than 25 images".
    */
   includePhotos?: boolean;
+  /**
+   * SKU to send instead of product.sku. Only a relist sets this: the sold
+   * listing still holds the product's own SKU and Reverb requires them unique
+   * (see relist.ts).
+   */
+  sku?: string;
 }
 
 /** Reverb refuses to publish a listing with more than this many photos. */
@@ -164,7 +170,7 @@ export function toReverbRequest(
   // what the Java version did — an omitted make is rejected outright, whereas
   // "Unknown" at least produces a live listing the operator can correct.
   listing['make'] = product.brand ?? 'Unknown';
-  listing['sku'] = product.sku;
+  listing['sku'] = options.sku ?? product.sku;
 
   /**
    * ── UPC ────────────────────────────────────────────────────────────────────

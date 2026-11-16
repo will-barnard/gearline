@@ -22,7 +22,16 @@ import * as client from './client.js';
 import { configuredCategoryFor, resolveCategoryUuid } from './categories.js';
 import { resolveConditionUuid } from './conditions.js';
 import { mapCondition, toReverbRequest } from './listing-mapper.js';
+import {
+  PREVIOUS_IDS_KEY,
+  RELIST_SKU_KEY,
+  allListingIds,
+  needsRelist,
+  previousListingIds,
+  relistSku,
+} from './relist.js';
 import { toImportedOrder } from './order-mapper.js';
+import { enqueue } from '../../queue/sync-job-producer.js';
 import { PHOTO_SOURCES_KEY, reverbPhotos, syncListingPhotos } from './photo-sync.js';
 import {
   isBehindWatermark,
@@ -215,16 +224,18 @@ async function adoptExistingListing(
   product: ProductRow,
   request: PublishListingRequest,
   cause: PermanentMarketplaceError,
+  /** The SKU the failed create carried — a relist's `-R1` SKU, not the product's own. */
+  sku: string = product.sku,
 ): Promise<PublishListingResult | null> {
   if (!/sku already exists/i.test(cause.message)) return null;
 
   let existing;
 
   try {
-    existing = await client.findListingBySku(account, product.sku);
+    existing = await client.findListingBySku(account, sku);
   } catch (lookupErr) {
     log.warn(
-      { err: lookupErr, sku: product.sku },
+      { err: lookupErr, sku },
       'SKU collision, but the Reverb lookup failed — reporting the original error',
     );
     return null;
@@ -232,14 +243,14 @@ async function adoptExistingListing(
 
   if (!existing?.id) {
     log.warn(
-      { sku: product.sku },
+      { sku },
       'Reverb reported a SKU collision but no listing with that exact SKU came back',
     );
     return null;
   }
 
   log.info(
-    { sku: product.sku, reverbId: existing.id, state: existing.state },
+    { sku, reverbId: existing.id, state: existing.state },
     'Adopting the existing Reverb listing that already holds this SKU',
   );
 
@@ -257,6 +268,7 @@ async function adoptExistingListing(
         // No photos either: the listing already has its own, and Reverb adds
         // to them rather than replacing.
         includePhotos: false,
+        sku,
       }),
     );
   } catch (updateErr) {
@@ -275,7 +287,7 @@ async function adoptExistingListing(
        */
       if (client.listingStateSlug(existing) === 'live') {
         log.warn(
-          { reverbId: existing.id, sku: product.sku },
+          { reverbId: existing.id, sku },
           'Adopting live Reverb listing despite failed update',
         );
         const metadata = buildMetadata(existing);
@@ -301,6 +313,101 @@ async function adoptExistingListing(
     request.quantity,
     metadata,
   );
+}
+
+/** The row this product's Reverb listing lives on, if it has one yet. */
+async function listingRowFor(
+  account: MarketplaceAccountRow,
+  product: ProductRow,
+): Promise<MarketplaceListingRow | undefined> {
+  return db
+    .selectFrom('marketplace_listings')
+    .selectAll()
+    .where('product_id', '=', product.id)
+    .where('marketplace_account_id', '=', account.id)
+    .executeTakeFirst();
+}
+
+/**
+ * Queues the publish of the NEXT unit after a used-condition listing sold.
+ *
+ * The dispatcher runs it as an ordinary LISTING_PUBLISH for this row;
+ * publishListing below notices the row's current Reverb listing is locked and
+ * creates the replacement. Idempotent per sold listing: the order import and
+ * every retry of the inventory sync can all notice the same sale, and only one
+ * new listing may come of it.
+ */
+async function enqueueRelist(listing: MarketplaceListingRow, soldReverbId: string): Promise<void> {
+  await enqueue({
+    jobType: 'LISTING_PUBLISH',
+    marketplaceType: 'REVERB',
+    marketplaceAccountId: listing.marketplace_account_id,
+    productId: listing.product_id,
+    listingId: listing.id,
+    payload: { reason: 'reverb_relist_after_sale', soldListingId: soldReverbId },
+    idempotencyKey: `reverb-relist-${listing.id}-${soldReverbId}`,
+  });
+
+  log.info(
+    { listingId: listing.id, soldReverbId },
+    'Reverb listing is locked after its sale and more units are for sale — queued a new listing for the next unit',
+  );
+}
+
+function stateAndCondition(dto: ReverbListingDto | null): { state: string | null; conditionSlug: string | null } {
+  return {
+    state: dto ? client.listingStateSlug(dto) : null,
+    conditionSlug: dto?.condition?.slug?.toLowerCase() ?? null,
+  };
+}
+
+/**
+ * Re-points line items on a Reverb order at the Gearline product they sold,
+ * by Reverb LISTING ID.
+ *
+ * A relisted unit carries a suffixed SKU (relist.ts), so the SKU on its order
+ * is not a product SKU and inventory deduction, restocking and the Shopify
+ * mirror order would all miss it. The listing id is stable: it is either the
+ * row's current id or one it has retired. When a row is found the line item
+ * gets the product's own id and SKU; when none is, the item is left exactly as
+ * Reverb sent it, so nothing changes for listings made any other way.
+ */
+async function attachGearlineProducts(
+  account: MarketplaceAccountRow,
+  lineItems: ImportedOrder['lineItems'],
+): Promise<ImportedOrder['lineItems']> {
+  const ids = lineItems.map((li) => li.externalListingId).filter((id): id is string => !!id);
+  if (ids.length === 0) return lineItems;
+
+  const rows = await db
+    .selectFrom('marketplace_listings')
+    .select(['product_id', 'external_listing_id', 'marketplace_metadata'])
+    .where('marketplace_account_id', '=', account.id)
+    .where('marketplace_type', '=', 'REVERB')
+    .execute();
+
+  const out: ImportedOrder['lineItems'] = [];
+
+  for (const li of lineItems) {
+    const row = li.externalListingId
+      ? rows.find((r) => allListingIds(r).includes(li.externalListingId as string))
+      : undefined;
+
+    if (!row) {
+      out.push(li);
+      continue;
+    }
+
+    const product = await db
+      .selectFrom('products')
+      .select(['id', 'sku'])
+      .where('id', '=', row.product_id)
+      .executeTakeFirst();
+
+    out.push(product ? { ...li, productId: product.id, sku: product.sku } : li);
+  }
+
+  return out;
 }
 
 export const reverbConnector: MarketplaceConnector = {
@@ -330,6 +437,33 @@ export const reverbConnector: MarketplaceConnector = {
 
     const current = await ensureValidToken(account);
 
+    /**
+     * ── Relist after a sale ────────────────────────────────────────────────
+     *
+     * If this product's row already points at a Reverb listing that sold and is
+     * locked (a used-condition listing after its first sale — see relist.ts),
+     * the next unit is a NEW listing under a suffixed SKU, and the sold id is
+     * remembered. Anything else — no row, no id, a live or draft listing — is
+     * the ordinary publish it always was.
+     */
+    const row = await listingRowFor(current, product);
+    const history = previousListingIds(row);
+    let relisting = false;
+
+    if (row?.external_listing_id) {
+      const dto = await client.getListing(current, row.external_listing_id);
+      if (needsRelist(stateAndCondition(dto), request.quantity)) {
+        relisting = true;
+        history.unshift(row.external_listing_id);
+        log.info(
+          { sku: product.sku, soldReverbId: row.external_listing_id, generation: history.length },
+          'Previous Reverb listing sold and is locked — creating a new one for the next unit',
+        );
+      }
+    }
+
+    const sku = relisting ? relistSku(product.sku, history) : product.sku;
+
     let body: Record<string, unknown>;
 
     try {
@@ -337,6 +471,7 @@ export const reverbConnector: MarketplaceConnector = {
         conditionUuid: await conditionUuidFor(current, product, request),
         categoryUuid: await categoryUuidFor(current, product, request),
         publish: shouldPublishImmediately(current),
+        sku,
       });
     } catch (err) {
       // An unresolvable condition or category is permanent — retrying cannot
@@ -379,9 +514,16 @@ export const reverbConnector: MarketplaceConnector = {
         String(result.id),
         extractPrice(result),
         request.quantity,
-        // What was sent, so a later photo change knows these are ours to
-        // replace (photo-sync.ts).
-        { ...buildMetadata(result), [PHOTO_SOURCES_KEY]: reverbPhotos(request.imageUrls) },
+        {
+          ...buildMetadata(result),
+          // What was sent, so a later photo change knows these are ours to
+          // replace (photo-sync.ts).
+          [PHOTO_SOURCES_KEY]: reverbPhotos(request.imageUrls),
+          // The dispatcher replaces the row's metadata wholesale, so the history
+          // of retired listings has to travel with this result or it is lost.
+          ...(history.length > 0 ? { [PREVIOUS_IDS_KEY]: history } : {}),
+          ...(relisting ? { [RELIST_SKU_KEY]: sku } : {}),
+        },
       );
     } catch (err) {
       if (err instanceof PermanentMarketplaceError) {
@@ -395,11 +537,16 @@ export const reverbConnector: MarketplaceConnector = {
          *
          * So adopt it instead.
          */
-        const adopted = await adoptExistingListing(current, product, request, err);
-        if (adopted) return adopted;
+        const adopted = await adoptExistingListing(current, product, request, err, sku);
+        if (adopted) {
+          // An adopted relist still retires the sold listing it replaces.
+          if (history.length > 0) adopted.rawMetadata[PREVIOUS_IDS_KEY] = history;
+          if (relisting) adopted.rawMetadata[RELIST_SKU_KEY] = sku;
+          return adopted;
+        }
 
-        log.error({ err, sku: product.sku }, 'Reverb rejected the listing');
-        return publishFailure(explainSkuConflict(err.message, product.sku));
+        log.error({ err, sku }, 'Reverb rejected the listing');
+        return publishFailure(explainSkuConflict(err.message, sku));
       }
       throw err; // retryable — let the consumer's ladder handle it
     }
@@ -490,15 +637,38 @@ export const reverbConnector: MarketplaceConnector = {
 
     const current = await ensureValidToken(account);
 
+    /**
+     * ── A sold used-condition listing cannot be restocked ──────────────────
+     *
+     * After a sale Gearline tops the listing back up. For a used condition
+     * Reverb has locked the listing in "Ordered", so that either errors or
+     * quietly changes nothing. If more units ARE for sale, the next one goes up
+     * as a new listing (publishListing); synced_quantity reports 0 meanwhile
+     * because nothing is for sale on the locked one.
+     */
+    let readBack: ReverbListingDto | null;
+
     try {
-      await client.updateInventory(current, externalId, newQuantity);
-      return inventorySuccess(newQuantity);
+      readBack = await client.updateInventory(current, externalId, newQuantity);
     } catch (err) {
-      if (err instanceof PermanentMarketplaceError) {
-        return inventoryFailure(err.message);
+      if (!(err instanceof PermanentMarketplaceError)) throw err;
+
+      const dto = await client.getListing(current, externalId).catch(() => null);
+
+      if (needsRelist(stateAndCondition(dto), newQuantity)) {
+        await enqueueRelist(listing, externalId);
+        return inventorySuccess(0);
       }
-      throw err;
+
+      return inventoryFailure(err.message);
     }
+
+    if (needsRelist(stateAndCondition(readBack), newQuantity)) {
+      await enqueueRelist(listing, externalId);
+      return inventorySuccess(0);
+    }
+
+    return inventorySuccess(newQuantity);
   },
 
   // ── Orders ─────────────────────────────────────────────────────────────────
@@ -690,6 +860,9 @@ export const reverbConnector: MarketplaceConnector = {
         'Reverb order detail carries no recognisable item data — logging its field names',
       );
     }
+
+    // Match by listing id so a relisted unit's suffixed SKU still finds its product.
+    if (mapped) mapped.lineItems = await attachGearlineProducts(current, mapped.lineItems);
 
     return mapped;
   },

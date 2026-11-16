@@ -231,6 +231,30 @@ export async function endListing(
   log.info({ listingId, state }, 'Reverb listing end verified');
 }
 
+/**
+ * The listing as Reverb reports it right now, or null when it is not found.
+ * Other errors propagate: a connector deciding whether to relist must not read
+ * "Reverb is down" as "the listing is gone".
+ */
+export async function getListing(
+  account: MarketplaceAccountRow,
+  listingId: string,
+): Promise<ReverbListingDto | null> {
+  try {
+    const response = await apiRequest<ReverbListingDto>({
+      marketplace: 'Reverb',
+      method: 'GET',
+      url: url(`/listings/${encodeURIComponent(listingId)}`),
+      accessToken: getAccessToken(account),
+      headers: baseHeaders(),
+    });
+    return unwrapListing(response.body);
+  } catch (err) {
+    if (isNotFound(err)) return null;
+    throw err;
+  }
+}
+
 /** The listing's current state slug, or null if it could not be read. */
 async function readListingState(token: string, listingId: string): Promise<string | null> {
   try {
@@ -429,7 +453,7 @@ export async function updateInventory(
   account: MarketplaceAccountRow,
   listingId: string,
   quantity: number,
-): Promise<void> {
+): Promise<ReverbListingDto> {
   const token = getAccessToken(account);
   const listingUrl = url(`/listings/${encodeURIComponent(listingId)}`);
 
@@ -457,7 +481,8 @@ export async function updateInventory(
    * though it is written flat — the asymmetry that made the original confusion
    * plausible in the first place.
    */
-  const actual = unwrapListing(check.body).inventory?.total;
+  const readBack = unwrapListing(check.body);
+  const actual = readBack.inventory?.total;
 
   if (actual === undefined || actual === null) {
     // Cannot confirm either way. Do not fail the job over a missing read field.
@@ -465,7 +490,7 @@ export async function updateInventory(
       { listingId, requested: quantity },
       'Reverb did not report inventory.total on read-back — quantity could not be verified',
     );
-    return;
+    return readBack;
   }
 
   if (actual !== quantity) {
@@ -478,6 +503,7 @@ export async function updateInventory(
   }
 
   log.debug({ listingId, quantity }, 'Reverb inventory update verified');
+  return readBack;
 }
 
 export async function getOrders(
