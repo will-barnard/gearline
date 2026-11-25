@@ -25,6 +25,9 @@ import { map as mapOrder } from './order-mapper.js';
 
 const log = loggerFor('ebay-connector');
 
+/** How far behind the poll watermark to re-scan for late-appearing orders. */
+const ORDER_OVERLAP_MS = 2 * 60 * 60 * 1000;
+
 /**
  * eBay marketplace connector. Port of EbayConnector.
  *
@@ -411,6 +414,23 @@ export const ebayConnector: MarketplaceConnector = {
         );
       }
 
+      /**
+       * The live quantity is the lower of the inventory-item quantity and the
+       * offer's availableQuantity, and eBay decrements the offer one on every
+       * sale. Updating only the inventory item is why a special-order listing
+       * at 2 fell to 1 after a sale and never came back up. With the offerId on
+       * hand, set both together.
+       */
+      const offerId = getOfferId(listing);
+
+      if (offerId) {
+        await client.bulkUpdatePriceQuantity(current, sku, offerId, newQuantity);
+        log.info({ sku, offerId, newQuantity }, 'eBay inventory synced (item + offer)');
+        return inventorySuccess(newQuantity);
+      }
+
+      log.warn({ sku, listingId: listing.id }, 'No eBay offerId on listing — syncing inventory item only');
+
       const merged = {
         ...existing,
         availability: { shipToLocationAvailability: { quantity: newQuantity } },
@@ -435,7 +455,33 @@ export const ebayConnector: MarketplaceConnector = {
     since: Date | null,
   ): Promise<ImportedOrder[]> {
     const current = await ensureValidToken(account);
-    const sinceStr = (since ?? new Date(Date.now() - 86_400_000)).toISOString();
+
+    /**
+     * ── Overlap window ──────────────────────────────────────────────────────
+     *
+     * The filter is on creationDate, but an order does NOT appear in getOrders
+     * the moment it is created — eBay writes order line items via back-end
+     * batch jobs, so there is a lag of minutes. With a strict watermark, an
+     * order created at 12:58 that only becomes visible at 13:03 is missed by
+     * the 13:01 poll, and the 13:11 poll asks for creationdate >= 13:01 —
+     * so it is skipped forever.
+     *
+     * Re-scanning the last ORDER_OVERLAP_MS on every poll fixes that. Already
+     * imported orders are deduplicated on (marketplace_type, external_order_id)
+     * in order-import, so the overlap costs one cheap lookup per order.
+     *
+     * lastmodifieddate is deliberately NOT used instead: eBay bumps it on old
+     * orders for unrelated reasons (e.g. buyer account deletions), which would
+     * import years-old sales and deduct inventory for them.
+     *
+     * Clamped to the account's created_at so a freshly connected account never
+     * reaches back before it was connected (the first-run guard's promise).
+     */
+    const base = since ?? new Date(Date.now() - 86_400_000);
+    let windowStart = new Date(base.getTime() - ORDER_OVERLAP_MS);
+    const connectedAt = account.created_at ? new Date(account.created_at) : null;
+    if (connectedAt && windowStart < connectedAt) windowStart = connectedAt;
+    const sinceStr = windowStart.toISOString();
 
     const results: ImportedOrder[] = [];
 

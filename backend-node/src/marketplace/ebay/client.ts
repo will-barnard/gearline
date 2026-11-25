@@ -132,6 +132,53 @@ export async function updateOffer(
   });
 }
 
+/**
+ * Sets the inventory-item quantity AND the offer's availableQuantity in one call.
+ *
+ * Both matter: when both are set, eBay lists the LOWER of the two. Gearline
+ * publishes offers with availableQuantity, and eBay decrements it on every
+ * sale, so topping up only the inventory item leaves the listing stuck at the
+ * reduced offer quantity.
+ *
+ * eBay answers 200/207 with a per-SKU status, so a failure for this SKU is
+ * read from the body and raised as a permanent error.
+ */
+export async function bulkUpdatePriceQuantity(
+  account: MarketplaceAccountRow,
+  sku: string,
+  offerId: string,
+  quantity: number,
+): Promise<void> {
+  const response = await apiRequest<{
+    responses?: Array<{ sku?: string; offerId?: string; statusCode?: number; errors?: unknown[] }>;
+  }>({
+    marketplace: 'eBay',
+    method: 'POST',
+    url: url('/sell/inventory/v1/bulk_update_price_quantity'),
+    accessToken: bearer(account),
+    headers: { 'content-language': 'en-US' },
+    json: {
+      requests: [
+        {
+          sku,
+          shipToLocationAvailability: { quantity },
+          offers: [{ offerId, availableQuantity: quantity }],
+        },
+      ],
+    },
+  });
+
+  const failed = (response.body?.responses ?? []).filter(
+    (r) => r.statusCode !== undefined && r.statusCode !== 200,
+  );
+
+  if (failed.length > 0) {
+    throw new PermanentMarketplaceError(
+      `eBay bulkUpdatePriceQuantity failed for SKU ${sku}: ${JSON.stringify(failed).slice(0, 500)}`,
+    );
+  }
+}
+
 /** Publishes an offer, making it live. Returns { listingId }. */
 export async function publishOffer(
   account: MarketplaceAccountRow,
