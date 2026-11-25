@@ -3,6 +3,7 @@ import type { OrderRow } from '../db/types.js';
 import { loggerFor } from '../logger.js';
 import * as reverbClient from '../marketplace/reverb/client.js';
 import * as ebayClient from '../marketplace/ebay/client.js';
+import { ensureValidToken as ensureValidEbayToken } from '../marketplace/ebay/connector.js';
 import * as gxClient from '../marketplace/gear-exchange/client.js';
 import type { GxOption } from '../marketplace/gear-exchange/types.js';
 import * as audit from './audit.js';
@@ -136,8 +137,16 @@ export async function notifyMarketplace(details: FulfillmentDetails): Promise<No
           'Notifying eBay of shipment',
         );
 
+        /**
+         * Refresh first. The client sends whatever token is stored, and that
+         * token expires 2 hours after the last refresh — so a shipment entered
+         * near that boundary went out with a dead token, failed with 401, and
+         * left the tracking saved but never sent.
+         */
+        const ebayAccount = await ensureValidEbayToken(account);
+
         await ebayClient.markOrderShipped(
-          account,
+          ebayAccount,
           order.external_order_id,
           lineItems,
           trackingNumber,

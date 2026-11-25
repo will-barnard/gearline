@@ -45,7 +45,13 @@ const ORDER_OVERLAP_MS = 2 * 60 * 60 * 1000;
  */
 
 /** Refreshes the token if needed and returns the current account row. */
-async function ensureValidToken(account: MarketplaceAccountRow): Promise<MarketplaceAccountRow> {
+/**
+ * Exported for callers outside the connector that hit the eBay client directly
+ * (fulfillment-notification). Every eBay call must go through this: the stored
+ * access token lasts 2 hours and is otherwise only refreshed when a poll or
+ * sync job happens to need it.
+ */
+export async function ensureValidToken(account: MarketplaceAccountRow): Promise<MarketplaceAccountRow> {
   if (await ebayAuthProvider.areCredentialsValid(account)) return account;
 
   log.info({ accountId: account.id }, 'eBay token expired or near-expiry — refreshing');
