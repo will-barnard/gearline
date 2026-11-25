@@ -320,15 +320,33 @@ export async function markOrderShipped(
   await apiRequest({
     marketplace: 'eBay',
     method: 'POST',
-    url: url(`/sell/fulfillment/v1/order/${encodeURIComponent(orderId)}/shippingFulfillment`),
+    url: url(`/sell/fulfillment/v1/order/${encodeURIComponent(orderId)}/shipping_fulfillment`),
     accessToken: bearer(account),
     json: {
       lineItems,
       shippedDate,
-      shippingCarrierCode: carrier ?? 'OTHER',
-      trackingNumber: trackingNumber ?? '',
+      // Carrier and tracking number are mutually dependent on eBay: send both
+      // or neither. A blank tracking number with a carrier is rejected.
+      ...(trackingNumber && trackingNumber.trim() !== ''
+        ? { shippingCarrierCode: ebayCarrierCode(carrier), trackingNumber: trackingNumber.trim() }
+        : {}),
     },
   });
+}
+
+/**
+ * Maps Shopify's free-text tracking_company onto eBay's ShippingCarrierCodeType.
+ * Shopify's own names for the common carriers ("USPS", "UPS", "FedEx") already
+ * match; variants like "FedEx Ground" or "DHL Express" are normalised, and
+ * anything unknown goes as "Other".
+ */
+function ebayCarrierCode(carrier: string | null): string {
+  const c = (carrier ?? '').toLowerCase().replace(/[^a-z]/g, '');
+  if (c.startsWith('usps') || c.includes('postal')) return 'USPS';
+  if (c.startsWith('ups')) return 'UPS';
+  if (c.startsWith('fedex')) return 'FedEx';
+  if (c.startsWith('dhl')) return 'DHL';
+  return 'Other';
 }
 
 // ── Account API — locations and policies ─────────────────────────────────────
